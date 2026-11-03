@@ -62,10 +62,29 @@ int main(void) {
         {"int main(){return 0", false},
         {"int main(){/* unterminated", false},
         {"int main(){return 42oops;}", false},
-        {"int main(){return @;}", false}
+        {"int main(){return @;}", false},
+        {"import std.io; int main(){return 0;}", false},
+        {"int main(){void n=1;return 0;}", false},
+        {"int main(){int n=1;return -n;}", true},
+        {"int main(){return (true+);}", false},
+        {"int main(){", false},
+        {"int main();", false},
+        {"int main(){1=2;return 0;}", false},
+        {"int main(){missing=2;return 0;}", false},
+        {"int main(){return 1==true;}", false},
+        {"int main(){return (1+2)();}", false},
+        {"int f(){return 0;}int main(){return f(1);}", false},
+        {"int f(auto n){return 0;}int main(){return 0;}", false},
+        {"int main(){{return 0;int n=1;}int m=2;return m;}", true},
+        {"int MAIN_2(){return 0;} int main(){return MAIN_2();}", true},
+        {"\t\r\n// comment\nint main(){/*a\nb*c/d*/return 0;}// tail", true},
+        {"int main(){return 0;} /", false},
+        {"int main(){return 0;} &x", false},
+        {"int main(){return 0;} |x", false},
+        {"int main(){return 0;} x", false}
     };
     int failures = 0;
     for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); ++i) failures += check(cases[i].source, cases[i].valid);
-    if (!failures) puts("frontend: 41 cases passed");
+    if (!failures) printf("frontend: %zu cases passed\n", sizeof(cases) / sizeof(*cases));
     return failures != 0;
 }

@@ -53,6 +53,8 @@ program 42 'int main(){int n=43;int old=n--;if(old!=43)return 1;return n;}'
 program 42 'int main(){for(;;){return 42;}return 0;}'
 program 42 'int main(){int n=0;for(n=40;n<42;){n++;}return n;}'
 program 42 'int main(){if(false){return 0;}else{int x=1;}return 42;}'
+program 42 'int main(){if(true){int x=1;}else{return 0;}return 42;}'
+program 42 'int main(){if(false){return 0;}return 42;}'
 program 0 'int main(){return -2147483648%3+2;}'
 program 0 'int main(){return 2147483647-2147483647;}'
 program 0 'int main(){;return 7/2-3;}'
@@ -86,6 +88,18 @@ status 74 "$compiler" compile "$root/examples/answer.l" -o "$work/missing/out.lb
 status 74 "$compiler" compile "$root/examples/answer.l" -o /dev/full
 printf 'nope' >"$work/bad.lbc"
 status 65 "$compiler" run "$work/bad.lbc"
+
+# Exercise format sniffing independently of file suffix and file length.
+cp "$work/first.lbc" "$work/bytecode.data"
+status 0 "$compiler" check "$work/bytecode.data"
+printf '' >"$work/empty.l"
+status 65 "$compiler" check "$work/empty.l"
+status 74 "$compiler" check x
+# A successful load through a name shorter than four characters.
+status 0 "$compiler" compile "$root/examples/answer.l" -o "$work/answer.lbc"
+cp "$work/answer.lbc" b
+status 42 "$compiler" run b
+rm -f b
 printf 'LBC\000\002\000\000\000' >"$work/bad.lbc"
 status 65 "$compiler" run "$work/bad.lbc"
 printf 'LBC\000' >"$work/bad.lbc"

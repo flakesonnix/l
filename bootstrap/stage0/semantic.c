@@ -82,6 +82,7 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         if (param || arg) token_fail(s->ctx, e->token, "wrong number of function arguments");
         e->type = fn->result; break;
     }
+    default: token_fail(s->ctx, e->token, "invalid AST expression");
     }
     leave(s->ctx);
     return e->type;
@@ -136,6 +137,7 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
         require(s, stmt->condition->token, analyze_expr(s, stmt->condition), TY_BOOL);
         (void)scoped_stmt(s, stmt->body); break;
     case ST_EMPTY: break;
+    default: token_fail(s->ctx, stmt->token, "invalid AST statement");
     }
     leave(s->ctx);
     return falls;

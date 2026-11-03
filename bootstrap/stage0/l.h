@@ -16,7 +16,7 @@
 #define L_MAX_REGISTERS 4096u
 #define L_MAX_SLOTS 1024u
 #define L_MAX_CODE 16384u
-#define L_MAX_ARGS 65536u
+#define L_MAX_ARGS 2048u
 #define L_MAX_DEPTH 256u
 #define L_MAX_STEPS UINT64_C(10000000)
 

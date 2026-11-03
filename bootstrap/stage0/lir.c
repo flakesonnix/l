@@ -86,8 +86,8 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
         r = e->type == TY_VOID ? L_NONE : reg(l, e->type);
         emit(l, e->token, OP_CALL, r, e->symbol, start, count); return r;
     }
+    default: token_fail(l->ctx, e->token, "invalid AST expression during lowering");
     }
-    return L_NONE;
 }
 static bool lower_stmt(Lower *l, Stmt *s) {
     switch (s->kind) {
@@ -126,6 +126,7 @@ static bool lower_stmt(Lower *l, Stmt *s) {
         break;
     }
     case ST_EMPTY: break;
+    default: token_fail(l->ctx, s->token, "invalid AST statement during lowering");
     }
     return true;
 }

@@ -52,7 +52,7 @@ void cleanup(Context *ctx) {
 
 void reserve(Context *ctx, void **data, size_t *capacity, size_t needed, size_t size) {
     if (needed <= *capacity) return;
-    size_t next = *capacity ? *capacity * 2 : 16;
+    size_t next = *capacity ? *capacity : 16;
     while (next < needed) {
         if (next > SIZE_MAX / 2) fail(ctx, 0, 0, "container size overflow");
         next *= 2;
@@ -100,8 +100,11 @@ unsigned char *read_file(Context *ctx, const char *path, size_t *size) {
         size_t got = fread(bytes + length, 1, capacity - length, file);
         length += got;
         if (ferror(file)) { fclose(file); ctx->status = 74; fail(ctx, 0, 0, "cannot read input file"); }
-        if (feof(file)) break;
-        if (capacity >= 16u * 1024u * 1024u) { fclose(file); fail(ctx, 0, 0, "input exceeds 16 MiB limit"); }
+        if (!got) {
+            if (!feof(file)) { fclose(file); ctx->status = 74; fail(ctx, 0, 0, "cannot read input file"); }
+            break;
+        }
+        if (capacity > 16u * 1024u * 1024u) { fclose(file); fail(ctx, 0, 0, "input exceeds 16 MiB limit"); }
         size_t next = capacity * 2;
         unsigned char *larger = allocate(ctx, next + 1);
         memcpy(larger, bytes, length);
