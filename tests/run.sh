@@ -90,9 +90,29 @@ program 70 'int main(){int a[1];a[1]=1/0;return 0;}' 'array index out of bounds'
 program 70 'int main(){int a[1];a[0]=2147483647;a[0]++;return 0;}' 'integer overflow'
 program 70 'int main(){int a[1];a[0]=-2147483648;a[0]--;return 0;}' 'integer overflow'
 
+program 42 'int main(){int n=0;int sum=0;while(true){n++;if(n==7)break;sum=sum+n;}return sum*2;}'
+program 42 'int main(){int n=0;int sum=0;while(n<8){n++;if(n%2==1)continue;sum=sum+n;}return sum+22;}'
+program 42 'int main(){int sum=0;for(int i=0;i<10;i++){if(i<2)continue;if(i>4)continue;sum=sum+i;}return sum+33;}'
+program 42 'int main(){int sum=0;for(int i=0;i<10;i++){if(i==3)break;if(i>5)break;sum=sum+i;}return sum+39;}'
+program 42 'int main(){int sum=0;for(int i=0;i<10;i++){if(i==7)break;if(i==3)break;sum=sum+i;}return sum+39;}'
+program 42 'int main(){int n=0;for(int i=0;i<5;i++){if(i==3)break;for(int j=0;j<5;j++){if(j==1)continue;if(j==4)break;n++;}}return n+33;}'
+program 42 'int main(){for(int i=0;i<3;i++){while(true)break;continue;1/0;}return 42;}'
+program 42 'int main(){int n=0;int sum=0;while(n<3){n++;int i=0;while(true){i++;if(i==2)continue;if(i==4)break;sum++;}if(n<3)continue;break;}return sum+36;}'
+program 42 'int main(){for(;;1/0){break;}return 42;}'
+program 42 'int main(){for(;;1/0){return 42;}return 0;}'
+program 42 'int main(){int n=0;for(;n<3;){n++;continue;}return n+39;}'
+program 42 'int main(){int n=0;for(;;n++){if(n<3)continue;else break;}return n+39;}'
+program 42 'int main(){for(int i=0;i<3;i++)continue;return 42;}'
+program 42 'int main(){int n=0;while((n=n+1)<3)continue;return n+39;}'
+program 42 'int main(){int sum=0;for(int i=0;i<3;i++){int a[1];if(a[0]!=0)return 1;a[0]=i;if(i<2)continue;sum=sum+a[0];}return sum+40;}'
+program 42 'void f(){for(;;){break;}}int main(){f();return 42;}'
+program 70 'int main(){while(true)continue;return 0;}' 'instruction limit exceeded'
+program 70 'int main(){for(;;1/0)continue;return 0;}' 'division by zero'
+
 status 42 "$compiler" run "$root/examples/answer.l"
 status 55 "$compiler" run "$root/examples/fibonacci.l"
 status 42 "$compiler" run "$root/examples/arrays.l"
+status 42 "$compiler" run "$root/examples/loop-control.l"
 status 64 "$compiler"
 status 64 "$compiler" unknown ignored
 status 64 "$compiler" compile ignored
@@ -105,6 +125,12 @@ status 65 "$compiler" check "$work/bad.l"
 grep -q ':1:12: error: expected int, got bool' "$work/stderr"
 status 65 "$compiler" compile "$work/bad.l" -o "$work/invalid.lbc"
 test ! -e "$work/invalid.lbc"
+printf 'int main(){break;return 0;}\n' >"$work/bad.l"
+status 65 "$compiler" check "$work/bad.l"
+grep -Fq ':1:12: error: break requires an enclosing loop' "$work/stderr"
+printf 'int main(){continue;return 0;}\n' >"$work/bad.l"
+status 65 "$compiler" check "$work/bad.l"
+grep -Fq ':1:12: error: continue requires an enclosing loop' "$work/stderr"
 status 65 "$compiler" compile "$work/first.lbc" -o "$work/no.lbc"
 status 74 "$compiler" compile "$root/examples/answer.l" -o "$work/missing/out.lbc"
 status 74 "$compiler" compile "$root/examples/answer.l" -o /dev/full

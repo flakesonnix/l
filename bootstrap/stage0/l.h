@@ -37,7 +37,8 @@ typedef enum { TY_VOID, TY_INT, TY_BOOL, TY_AUTO } Type;
 enum {
     TK_EOF = 256, TK_NAME, TK_INTEGER, TK_INT, TK_BOOL, TK_VOID, TK_AUTO,
     TK_CONST, TK_TRUE, TK_FALSE, TK_IF, TK_ELSE, TK_WHILE, TK_FOR, TK_RETURN,
-    TK_MODULE, TK_EQ, TK_NE, TK_LE, TK_GE, TK_AND, TK_OR, TK_INC, TK_DEC
+    TK_MODULE, TK_EQ, TK_NE, TK_LE, TK_GE, TK_AND, TK_OR, TK_INC, TK_DEC,
+    TK_BREAK, TK_CONTINUE
 };
 
 typedef struct Expr Expr;
@@ -59,7 +60,7 @@ struct Expr {
     ExprList *args;
 };
 struct Decl { Token name; Type type; bool immutable; uint32_t slot; uint32_t array; Expr *value; Decl *next; };
-typedef enum { ST_BLOCK, ST_DECL, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_EMPTY } StmtKind;
+typedef enum { ST_BLOCK, ST_DECL, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_EMPTY, ST_BREAK, ST_CONTINUE } StmtKind;
 struct Stmt {
     StmtKind kind;
     Token token;

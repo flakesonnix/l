@@ -178,6 +178,10 @@ static Stmt *statement(Parser *p) {
     } else if (take(p, TK_RETURN)) {
         s = new_stmt(p, ST_RETURN, token);
         if (!take(p, ';')) { s->expr = expression(p, 1); expect(p, ';', "expected ';' after return"); }
+    } else if (token.kind == TK_BREAK || token.kind == TK_CONTINUE) {
+        ++p->at;
+        s = new_stmt(p, token.kind == TK_BREAK ? ST_BREAK : ST_CONTINUE, token);
+        expect(p, ';', "expected ';' after loop control statement");
     } else if (starts_decl(p)) {
         s = new_stmt(p, ST_DECL, token); s->decl = declaration(p, false);
     } else if (take(p, ';')) s = new_stmt(p, ST_EMPTY, token);

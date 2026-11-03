@@ -1,95 +1,97 @@
 # Language L — Stage 0
 
-C11-Bootstrap für den ersten vertikalen Schnitt der vorgegebenen L-Spezifikation
-0.1.0. **Noch keine L-0.1-konforme Implementierung und noch kein vollständiges
-L-Core.** Keine LLVM- oder sonstigen Bibliotheksabhängigkeiten.
+C11 bootstrap for the first end-to-end slice of the L 0.1.0 specification.
+**Not yet L 0.1 conformant, and not yet a complete L-Core implementation.**
+No LLVM or external library dependencies.
 
 ```sh
 make
 ./build/l check examples/answer.l
-./build/l run examples/answer.l                  # Exit-Code 42
+./build/l run examples/answer.l                  # Exit code 42
 ./build/l compile examples/answer.l -o build/answer.lbc
-./build/l run build/answer.lbc                   # Exit-Code 42
+./build/l run build/answer.lbc                   # Exit code 42
 ./build/l inspect build/answer.lbc
 make test
 make sanitize
-make coverage                                 # benötigt GCC/gcov und Node.js 22+
+make coverage                                  # Requires GCC/gcov and Node.js 22+
 ```
 
-## Unterstützter Ausschnitt
+## Supported subset
 
-- ASCII-Bezeichner, Dezimalzahlen, `//`- und `/* … */`-Kommentare.
-- Optionale `module a.b;`-Identität, eine Quelldatei pro Programm.
-- `int` (exakt 32 Bit), `bool`, `void`-Funktionen, lokale Typinferenz mit `auto`.
-- Initialisierte lokale Variablen, `const`, lexikalische Sichtbarkeit/Shadowing.
-- Feste lokale `int`-/`bool`-Arrays: `int values[10];`, Indexzugriffe und
-  Elementzuweisungen mit Laufzeit-Grenzprüfung.
-- Direkte Funktionsaufrufe, Vorwärtsreferenzen, Rekursion und Wertparameter.
-- Blöcke, `if`/`else`, `while`, `for`, `return`, leere Statements.
-- `=`, nachgestelltes `++`/`--`, unäres `+`/`-`/`!`, `+ - * / %`, Vergleiche,
-  `&&`/`||` mit Kurzschlussauswertung und C-Operatorrangfolge.
+- ASCII identifiers, decimal literals, `//` and `/* … */` comments.
+- Optional `module a.b;` identity, one source file per program.
+- `int` (exactly 32 bits), `bool`, `void` functions, local inference with `auto`.
+- Initialized local variables, `const`, lexical scopes and shadowing.
+- Fixed local `int`/`bool` arrays: `int values[10];`, indexing and element
+  assignment with runtime bounds checks.
+- Direct calls, forward function references, recursion and value parameters.
+- Blocks, `if`/`else`, `while`, `for`, `return`, empty statements.
+- `break` and `continue` targeting the innermost loop.
+- `=`, postfix `++`/`--`, unary `+`/`-`/`!`, `+ - * / %`, comparisons,
+  short-circuit `&&`/`||` and C operator precedence.
 
-Keine impliziten Konversionen zwischen `int` und `bool`. Bedingungen sind `bool`.
-Skalare lokale Deklarationen brauchen Initialisierer; alle Parameter und
-Funktionsrückgaben explizite Typen. Eintrittspunkt: `int main()`.
-Nicht-`void`-Funktionen müssen strukturell auf allen Pfaden zurückkehren;
-eine Schleife allein gilt noch nicht als Rückgabebeweis. Auswertungsreihenfolge
-für Operanden und Argumente: links nach rechts.
+No implicit conversions between `int` and `bool`. Conditions must be `bool`.
+Scalar local declarations require initializers; parameters and function returns
+require explicit types. Entry point: `int main()`.
+Non-`void` functions must structurally return on all paths; a loop alone is not
+yet considered proof of a return. Operands and arguments evaluate left to right.
 
-Arrays werden bei jeder Ausführung ihrer Deklaration mit `0` bzw. `false`
-initialisiert. Ihre Länge ist ein Dezimalliteral von 1 bis 65535; pro Funktion
-sind höchstens 65536 Array-Elemente erlaubt. Indexausdrücke müssen `int` sein.
-Negative Indizes und Indizes ab der Array-Länge lösen einen definierten Trap aus.
-Bei Elementzuweisungen wird der Index genau einmal ausgewertet und geprüft,
-bevor die rechte Seite ausgewertet wird. `const`-Arrays erlauben keine
-Elementänderungen. Array-Initialisierungslisten, Array-Parameter/-Rückgaben,
-Ganzarray-Zuweisungen und mehrdimensionale Arrays sind noch nicht unterstützt.
+`break` exits the innermost `while`/`for` loop. `continue` rechecks a `while`
+condition; in a `for` loop it executes the step expression first. Both statements
+require a semicolon and are compilation errors outside a loop body. Unreachable
+source is still type-checked. Loop control uses existing IR jumps; bytecode stays 1.1.
 
-Overflow, Division/Rest durch null und `INT32_MIN / -1` bzw. `% -1` lösen
-definierte Traps aus, ohne C-Overflow-UB. Die VM begrenzt Ausführung auf
-10 Millionen Instruktionen, Aufruftiefe auf 256 und verwalteten Arbeitsspeicher
-auf 128 MiB. Diese Grenzen gehören zum Seed-Profil, nicht zu L allgemein.
+Arrays initialize to `0` or `false` each time their declaration executes.
+Lengths must be decimal literals from 1 to 65535, with at most 65536 array elements
+per function. Index expressions must be `int`. Negative indexes and indexes at or
+above the array length produce a defined trap. Element assignment evaluates and
+checks the index exactly once, before evaluating the right-hand side. `const`
+arrays prohibit element mutation. Initializer lists, array parameters/returns,
+whole-array assignment and multidimensional arrays are not supported yet.
 
-Noch nicht implementiert: Imports/Modulauflösung, weitere Primitivtypen,
-Strings/IO, Structs/Enums, Pointer/Slices, Ownership/Borrows, Generics/Concepts,
-Dynamic, GC, Klassen, Effects, Native/LLVM, Self-Hosting und Build-/Paketverwaltung.
-Die Verzeichnisstruktur täuscht keine Implementierung dieser Subsysteme vor.
+Overflow, division/remainder by zero, and `INT32_MIN / -1` or `% -1` produce
+defined traps without C overflow UB. The VM limits execution to 10 million
+instructions, call depth to 256 and managed working memory to 128 MiB.
+These are seed-profile limits, not general L language limits.
 
-## Pipeline und Artefakte
+Not implemented yet: imports/module resolution, other primitive types,
+strings/IO, structs/enums, pointers/slices, ownership/borrows, generics/concepts,
+dynamic values, GC, classes, effects, native/LLVM, self-hosting and build/package
+management. The repository does not imply these subsystems have been implemented.
 
-Lexer → AST → Namensauflösung/Typprüfung → typisiertes SSA-Register-IR mit
-expliziten lokalen Speicher-Slots → Verifikation → Bytecode → VM.
-HIR, Typed IR und MIR werden im Seed noch nicht separat materialisiert.
-Es existiert noch kein Ownership-Modell im implementierten Ausschnitt.
+## Pipeline and artifacts
 
-IR und Bytecode sind getrennt versioniert, aktuell jeweils **1.1**.
-Bytecode 1.1 ergänzt pro Slot eine 32-Bit-Länge (0 für Skalare) sowie
-`bounds_check` und `clear`. Der Loader akzeptiert nur die exakte Formatversion;
-ältere 1.0-Artefakte müssen aus Quelltext neu kompiliert werden. Der Verifier prüft
-Instruktionstypen, Sprungziele, eindeutige Registerdefinitionen, Dominanz,
-Initialisierung von Slots, Array-Metadaten, Adressierungsarten,
-Aufrufsignaturen und Rückgaben. Indexregister müssen ebenfalls ihre Verwendung
-dominieren; Elementzugriffe setzen ein initialisiertes Array voraus. Auch geladener
-Bytecode wird vor Ausführung vollständig verifiziert.
-Die VM prüft Array-Grenzen zusätzlich direkt bei jedem Elementzugriff, damit
-manipulierter Bytecode ohne vorgelagertes `bounds_check` keine Prüfung umgehen kann.
-`inspect` zeigt das IR, keine ABI-stabile Textrepräsentation.
+Lexer → AST → name resolution/type checking → typed SSA register IR with explicit
+local storage slots → verification → bytecode → VM.
+The seed does not materialize separate HIR, Typed IR and MIR representations yet.
+The implemented subset has no ownership model yet.
 
-Artefakte enthalten keine Zeitstempel oder absoluten Quellpfade. Identische
-Quelldateien erzeugen identische Bytecodes, unabhängig vom Eingabepfad.
-Das ist **noch kein hermetisches Buildsystem** und keine Stage-2/3-Verifikation.
+IR and bytecode are versioned independently, currently both **1.1**.
+Bytecode 1.1 adds a 32-bit length per slot (0 for scalars), `bounds_check` and
+`clear`. The loader accepts only the exact format version; recompile older 1.0
+artifacts from source. The verifier checks instruction types, jump targets, unique
+register definitions, dominance, slot initialization, array metadata, addressing
+modes, call signatures and returns. Index register definitions must also dominate
+their uses; element accesses require an initialized array. Loaded bytecode is
+fully verified before execution.
+The VM additionally checks bounds at each element access, so manipulated bytecode
+cannot bypass safety by omitting a preceding `bounds_check`.
+`inspect` displays the IR, not an ABI-stable text representation.
 
-CLI-Exit-Codes: Programmresultat modulo 256, Verwendung `64`, Compiler-/Formatfehler
-`65`, VM-Trap `70`, Start-Speicherfehler `71`, Dateifehler `74`.
-Programmresultate können dieselben Zahlen haben; Fehlermeldungen erscheinen auf stderr.
+Artifacts contain no timestamps or absolute source paths. Identical source files
+produce identical bytecode regardless of the input path. This is **not yet a
+hermetic build system** or stage-2/3 bootstrap verification.
+
+CLI exit codes: program result modulo 256, usage `64`, compilation/format errors
+`65`, VM trap `70`, startup allocation failure `71`, file errors `74`.
+Program results can overlap these codes; diagnostics are written to stderr.
 
 ## Tests
 
-`make test` prüft Frontend, Ausführung aus Quelltext und serialisiertem Bytecode,
-IR-Roundtrips, reproduzierbare Ausgabe sowie definierte Fehler.
-`make sanitize` baut und testet mit AddressSanitizer und UndefinedBehaviorSanitizer.
-`make coverage` misst alle Stage-0-C-Dateien ohne Quellcode-Ausschlüsse und
-schlägt unter 100% Zeilen-, Funktions- **oder Branch-Coverage** fehl. Es laufen
-auch Fault-Injection-, Verifikator- und Bytecode-Mutationstests. Der Bericht steht
-unter `build/coverage/report.json`. 100% Coverage ersetzt keinen Korrektheitsbeweis
-oder vollständige Sprachkonformität.
+`make test` checks the frontend, source and serialized-bytecode execution, IR
+roundtrips, reproducible output and defined failures.
+`make sanitize` builds and tests with AddressSanitizer and UndefinedBehaviorSanitizer.
+`make coverage` measures all stage-0 C files without source exclusions and fails
+below 100% line, function **or branch coverage**. It also runs fault-injection,
+verifier and bytecode-mutation tests. The report is `build/coverage/report.json`.
+100% coverage does not establish correctness or full language conformance.

@@ -12,7 +12,8 @@ static int keyword(Token token) {
         {"int", TK_INT}, {"bool", TK_BOOL}, {"void", TK_VOID}, {"auto", TK_AUTO},
         {"const", TK_CONST}, {"true", TK_TRUE}, {"false", TK_FALSE},
         {"if", TK_IF}, {"else", TK_ELSE}, {"while", TK_WHILE}, {"for", TK_FOR},
-        {"return", TK_RETURN}, {"module", TK_MODULE}
+        {"return", TK_RETURN}, {"module", TK_MODULE},
+        {"break", TK_BREAK}, {"continue", TK_CONTINUE}
     };
     for (size_t i = 0; i < sizeof(keywords) / sizeof(*keywords); ++i)
         if (strlen(keywords[i].name) == token.length &&

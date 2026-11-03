@@ -125,6 +125,16 @@ static void low_literal(Context *ctx) {
     ast->functions->body->body->expr->integer = INT64_C(-2147483649);
     analyze(ctx, ast);
 }
+static void break_outside_lower(Context *ctx) {
+    Ast *ast = frontend(ctx, "int main(){return 0;}"); analyze(ctx, ast);
+    ast->functions->body->body->kind = ST_BREAK;
+    (void)lower(ctx, ast);
+}
+static void continue_outside_lower(Context *ctx) {
+    Ast *ast = frontend(ctx, "int main(){return 0;}"); analyze(ctx, ast);
+    ast->functions->body->body->kind = ST_CONTINUE;
+    (void)lower(ctx, ast);
+}
 
 static char generated[300000];
 static void append(const char *text) {
@@ -203,12 +213,13 @@ int main(void) {
     check(read_failure, 74); check(read_zero, 74); check(read_growth, 0); check(read_limit, 65); check(close_failure, 74);
     check(bad_expr_analyze, 65); check(bad_stmt_analyze, 65);
     check(bad_expr_lower, 65); check(bad_stmt_lower, 65); check(low_literal, 65);
+    check(break_outside_lower, 65); check(continue_outside_lower, 65);
     check(many_functions, 65); check(many_parameters, 65); check(many_locals, 65);
     check(many_temps, 65); check(many_registers, 65); check(many_instructions, 65); check(many_arguments, 65);
     char *args[] = {"l", "check", "examples/answer.l", NULL};
     fail_allocation = true;
     if (l_main(3, args) != 71) return 1;
     remove("build/fault-input"); remove("build/fault-output.lbc");
-    puts("fault injection: 31 cases passed");
+    puts("fault injection: 33 cases passed");
     return 0;
 }

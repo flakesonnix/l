@@ -111,7 +111,31 @@ int main(void) {
         {"int main(){bool a[1];a[0]++;return 0;}", false},
         {"int main(){missing[0]=1;return 0;}", false},
         {"int main(){(1+2)[0]=1;return 0;}", false},
-        {"int f(int n){return n;}int main(){int a[1];return f(a);}", false}
+        {"int f(int n){return n;}int main(){int a[1];return f(a);}", false},
+        {"int main(){while(true)break;return 0;}", true},
+        {"int main(){while(false)continue;return 0;}", true},
+        {"int main(){for(;;)break;return 0;}", true},
+        {"int main(){for(int i=0;i<3;i++)continue;return 0;}", true},
+        {"int main(){while(true){if(false)continue;else break;}return 0;}", true},
+        {"int main(){for(;;){while(true)break;continue;}return 0;}", true},
+        {"int main(){int breakfast=1;int continue_count=2;return breakfast+continue_count;}", true},
+        {"int main(){break;return 0;}", false},
+        {"int main(){continue;return 0;}", false},
+        {"int main(){if(false)break;return 0;}", false},
+        {"int main(){if(false)continue;return 0;}", false},
+        {"int main(){while(false){}break;return 0;}", false},
+        {"int main(){for(;;)break;continue;return 0;}", false},
+        {"void f(){break;}int main(){while(true){f();break;}return 0;}", false},
+        {"void f(){continue;}int main(){for(;;){f();break;}return 0;}", false},
+        {"int main(){while(true){break}return 0;}", false},
+        {"int main(){while(true){continue}return 0;}", false},
+        {"int main(){for(;;){break 1;}return 0;}", false},
+        {"int main(){for(;;){continue 1;}return 0;}", false},
+        {"int main(){while(true){break;}}", false},
+        {"int main(){for(;;){continue;}}", false},
+        {"int main(){while(true){break;missing();}return 0;}", false},
+        {"int main(){while(true){continue;int n=true;}return 0;}", false},
+        {"int main(){for(;;true+1){break;}return 0;}", false}
     };
     int failures = 0;
     for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); ++i) failures += check(cases[i].source, cases[i].valid);

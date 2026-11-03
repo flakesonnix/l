@@ -2,7 +2,9 @@
 
 #include <string.h>
 
-typedef struct { Context *ctx; Program *program; IrFunction *fn; } Lower;
+typedef struct Loop Loop;
+struct Loop { uint32_t breaks, continues; Loop *parent; };
+typedef struct { Context *ctx; Program *program; IrFunction *fn; Loop *loop; } Lower;
 static uint32_t lower_expr(Lower *, Expr *);
 static bool lower_stmt(Lower *, Stmt *);
 
@@ -25,6 +27,14 @@ static uint32_t emit(Lower *l, Token t, Opcode op, uint32_t dst, uint32_t a, uin
     reserve(l->ctx, (void **)&f->code, &f->code_capacity, f->code_count + 1, sizeof(*f->code));
     f->code[f->code_count] = (Instruction){ op, dst, a, b, c, t.line, t.column };
     return f->code_count++;
+}
+static void patch_jumps(Lower *l, uint32_t head, uint32_t target) {
+    /* Pending jumps form a list through operand a until the loop target is known. */
+    while (head != L_NONE) {
+        uint32_t next = l->fn->code[head].a;
+        l->fn->code[head].a = target;
+        head = next;
+    }
 }
 static uint32_t constant(Lower *l, Token t, Type type, int32_t value) {
     uint32_t r = reg(l, type);
@@ -128,6 +138,12 @@ static bool lower_stmt(Lower *l, Stmt *s) {
         uint32_t value = s->expr ? lower_expr(l, s->expr) : L_NONE;
         emit(l, s->token, OP_RETURN, 0, value, 0, 0); return false;
     }
+    case ST_BREAK: case ST_CONTINUE: {
+        if (!l->loop) token_fail(l->ctx, s->token, "loop control statement outside a loop during lowering");
+        uint32_t *head = s->kind == ST_BREAK ? &l->loop->breaks : &l->loop->continues;
+        *head = emit(l, s->token, OP_JUMP, 0, *head, 0, 0);
+        return false;
+    }
     case ST_IF: {
         uint32_t cond = lower_expr(l, s->condition);
         uint32_t branch = emit(l, s->token, OP_BRANCH, 0, cond, l->fn->code_count + 1, 0);
@@ -143,11 +159,18 @@ static bool lower_stmt(Lower *l, Stmt *s) {
         uint32_t start = l->fn->code_count;
         uint32_t cond = s->condition ? lower_expr(l, s->condition) : constant(l, s->token, TY_BOOL, 1);
         uint32_t branch = emit(l, s->token, OP_BRANCH, 0, cond, l->fn->code_count + 1, 0);
-        if (lower_stmt(l, s->body)) {
+        Loop loop = { L_NONE, L_NONE, l->loop };
+        l->loop = &loop;
+        bool body_falls = lower_stmt(l, s->body);
+        l->loop = loop.parent;
+        if (body_falls || loop.continues != L_NONE) {
+            /* for-continues run the step; while-continues recheck the condition. */
+            patch_jumps(l, loop.continues, l->fn->code_count);
             if (s->step) (void)lower_expr(l, s->step);
             emit(l, s->token, OP_JUMP, 0, start, 0, 0);
         }
         l->fn->code[branch].c = l->fn->code_count;
+        patch_jumps(l, loop.breaks, l->fn->code_count);
         break;
     }
     case ST_EMPTY: break;
@@ -170,7 +193,7 @@ Program *lower(Context *ctx, Ast *ast) {
         memcpy(f->slots, fn->slots, fn->slot_count * sizeof(*f->slots));
         memcpy(f->slot_lengths, fn->lengths, fn->slot_count * sizeof(*f->slot_lengths));
         if (!strcmp(f->name, "main")) p->entry = index;
-        Lower l = { ctx, p, f };
+        Lower l = { ctx, p, f, NULL };
         if (lower_stmt(&l, fn->body)) emit(&l, fn->name, OP_RETURN, 0, L_NONE, 0, 0);
     }
     return p;

@@ -4,7 +4,7 @@
 
 typedef struct Binding Binding;
 struct Binding { Decl *decl; unsigned depth; Binding *next; };
-typedef struct { Context *ctx; Ast *ast; Function *fn; Binding *bindings; unsigned depth; uint32_t elements; } Semantic;
+typedef struct { Context *ctx; Ast *ast; Function *fn; Binding *bindings; unsigned depth; uint32_t elements; unsigned loops; } Semantic;
 static Type analyze_expr(Semantic *, Expr *);
 static bool analyze_stmt(Semantic *, Stmt *);
 
@@ -150,6 +150,10 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
     case ST_RETURN:
         require(s, stmt->token, stmt->expr ? analyze_expr(s, stmt->expr) : TY_VOID, s->fn->result);
         falls = false; break;
+    case ST_BREAK: case ST_CONTINUE:
+        if (!s->loops) token_fail(s->ctx, stmt->token, stmt->kind == ST_BREAK ?
+            "break requires an enclosing loop" : "continue requires an enclosing loop");
+        falls = false; break;
     case ST_IF: {
         require(s, stmt->condition->token, analyze_expr(s, stmt->condition), TY_BOOL);
         bool a = scoped_stmt(s, stmt->body);
@@ -162,12 +166,16 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
         if (stmt->init) (void)analyze_stmt(s, stmt->init);
         if (stmt->condition) require(s, stmt->condition->token, analyze_expr(s, stmt->condition), TY_BOOL);
         if (stmt->step) (void)analyze_expr(s, stmt->step);
+        ++s->loops;
         (void)scoped_stmt(s, stmt->body);
+        --s->loops;
         --s->depth; s->bindings = saved; break;
     }
     case ST_WHILE:
         require(s, stmt->condition->token, analyze_expr(s, stmt->condition), TY_BOOL);
-        (void)scoped_stmt(s, stmt->body); break;
+        ++s->loops;
+        (void)scoped_stmt(s, stmt->body);
+        --s->loops; break;
     case ST_EMPTY: break;
     default: token_fail(s->ctx, stmt->token, "invalid AST statement");
     }
@@ -190,7 +198,7 @@ void analyze(Context *ctx, Ast *ast) {
     }
     if (!main_found) fail(ctx, 0, 0, "missing entry point int main()");
     for (Function *fn = ast->functions; fn; fn = fn->next) {
-        Semantic s = { ctx, ast, fn, NULL, 0, 0 };
+        Semantic s = { ctx, ast, fn, NULL, 0, 0, 0 };
         for (Decl *p = fn->parameters; p; p = p->next) bind(&s, p);
         /* Parameters and the outermost function block share one scope. */
         bool falls = true;
