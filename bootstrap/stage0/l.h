@@ -113,5 +113,6 @@ void write_bytecode(Context *, const Program *, const char *);
 Program *read_bytecode(Context *, const unsigned char *, size_t);
 void inspect(const Program *, FILE *);
 int32_t execute_program(Context *, const Program *);
+int l_main(int, char **);
 
 #endif
