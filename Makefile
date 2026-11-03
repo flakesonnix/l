@@ -8,7 +8,7 @@ SOURCES = bootstrap/stage0/common.c bootstrap/stage0/lexer.c \
           bootstrap/stage0/lir.c bootstrap/stage0/bytecode.c \
           bootstrap/stage0/vm.c bootstrap/stage0/main.c
 
-.PHONY: all test coverage sanitize clean
+.PHONY: all test fuzz coverage sanitize clean
 all: build/l
 
 build/l: $(SOURCES) bootstrap/stage0/l.h
@@ -23,6 +23,12 @@ test: build/l
 	./build/faults-test
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DL_NO_MAIN $(SOURCES) tests/verifier.c $(LDFLAGS) -o build/verifier-test
 	./build/verifier-test
+	$(MAKE) fuzz
+
+fuzz:
+	mkdir -p build
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DL_NO_MAIN $(SOURCES) tests/fuzz.c $(LDFLAGS) -o build/fuzz-test
+	./build/fuzz-test
 
 sanitize:
 	$(MAKE) clean

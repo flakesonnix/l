@@ -22,7 +22,7 @@ invoke(cc, ['--coverage', ...objects, 'tests/entry.c', '-o', resolve(directory, 
 invoke('sh', ['tests/run.sh', resolve(directory, 'l')]);
 invoke(cc, ['-std=c11', '--coverage', ...objects, 'tests/frontend.c', '-o', resolve(directory, 'frontend-test')]);
 invoke(resolve(directory, 'frontend-test'), []);
-for (const name of ['faults', 'verifier']) {
+for (const name of ['faults', 'verifier', 'fuzz']) {
   if (!existsSync(resolve(root, `tests/${name}.c`))) continue;
   invoke(cc, ['-std=c11', '-Wall', '-Wextra', '-Wpedantic', '-Werror', '--coverage', ...objects,
     `tests/${name}.c`, ...(name === 'faults' ? ['-Wl,--wrap=calloc,--wrap=fread,--wrap=ferror,--wrap=fclose'] : []),

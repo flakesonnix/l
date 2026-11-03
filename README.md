@@ -12,6 +12,7 @@ make
 ./build/l run build/answer.lbc                   # Exit code 42
 ./build/l inspect build/answer.lbc
 make test
+make fuzz                                      # Deterministic mutation/model tests
 make sanitize
 make coverage                                  # Requires GCC/gcov and Node.js 22+
 ```
@@ -90,6 +91,16 @@ Program results can overlap these codes; diagnostics are written to stderr.
 
 `make test` checks the frontend, source and serialized-bytecode execution, IR
 roundtrips, reproducible output and defined failures.
+It also runs `make fuzz`: a fixed-seed bytecode mutation corpus plus generated
+array programs checked against an independent host-side model. Mutations include
+truncation, bit/word replacement, insertion, deletion, splicing and random data.
+The semantic tests compare full 32-bit results before and after serialization and
+check signed index boundaries for integer/boolean array reads and writes.
+The seed is `0x4c313146`; diagnostics and generated sources are in `build/fuzz.log`.
+Arbitrary bytecode mutants are parsed and verified, not executed, because they
+may contain nonterminating loops. VM executions use bounded generated programs
+with known expected values or traps. This is bounded, deterministic mutation and
+model-based testing, not an exhaustive or coverage-guided fuzzing campaign.
 `make sanitize` builds and tests with AddressSanitizer and UndefinedBehaviorSanitizer.
 `make coverage` measures all stage-0 C files without source exclusions and fails
 below 100% line, function **or branch coverage**. It also runs fault-injection,
