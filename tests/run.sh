@@ -23,14 +23,15 @@ status() {
 program() {
     program_status=$1
     source=$2
+    program_error=${3:-'VM trap:'}
     printf '%s\n' "$source" >"$work/input.l"
     status 0 "$compiler" check "$work/input.l"
     status "$program_status" "$compiler" run "$work/input.l"
-    if [ "$program_status" -eq 70 ]; then grep -q 'VM trap:' "$work/stderr"; fi
+    if [ "$program_status" -eq 70 ]; then grep -Fq "$program_error" "$work/stderr"; fi
     status 0 "$compiler" compile "$work/input.l" -o "$work/first.lbc"
     status 0 "$compiler" check "$work/first.lbc"
     status "$program_status" "$compiler" run "$work/first.lbc"
-    if [ "$program_status" -eq 70 ]; then grep -q 'VM trap:' "$work/stderr"; fi
+    if [ "$program_status" -eq 70 ]; then grep -Fq "$program_error" "$work/stderr"; fi
     status 0 "$compiler" inspect "$work/input.l"
     cp "$work/stdout" "$work/source.ir"
     status 0 "$compiler" inspect "$work/first.lbc"
@@ -69,8 +70,29 @@ program 70 'int main(){return -2147483648%-1;}'
 program 70 'int recurse(){return recurse();}int main(){return recurse();}'
 program 70 'int main(){while(true){}return 0;}'
 
+program 42 'int main(){int a[3];a[0]=40;a[2]=2;return a[0]+a[1]+a[2];}'
+program 0 'int main(){int a[65535];int b[1];return a[65534]+b[0];}'
+program 42 'int main(){bool b[2];b[1]=true;if(!b[0]&&b[1])return 42;return 0;}'
+program 42 'int main(){int a[5];for(int i=0;i<5;i++)a[i]=i*i;int sum=0;for(int i=0;i<5;i++)sum=sum+a[i];return sum+12;}'
+program 42 'int main(){int a[2];int i=0;a[i++]=40;int old=a[0]++;a[0]--;return old+i+1;}'
+program 42 'int main(){int a[2];int i=0;a[i++]=i;int old=a[i++]++;return a[0]+old+i+39;}'
+program 42 'int main(){int a[2];a[0]=a[1]=21;return a[0]+a[1];}'
+program 42 'int main(){int a[2];int b[1];b[0]=1;a[b[0]]=42;return a[b[0]];}'
+program 0 'int main(){for(int i=0;i<2;i++){int a[1];if(a[0]!=0)return 1;a[0]=42;}return 0;}'
+program 42 'int f(int n){int a[1];a[0]=n;if(n>0)return a[0]+f(n-1);return 0;}int main(){return f(6)*2;}'
+program 0 'int main(){const int a[1];{int a[1];a[0]=42;}return a[0];}'
+program 70 'int main(){int a[3];return a[3];}' 'array index out of bounds'
+program 70 'int main(){int a[3];return a[-1];}' 'array index out of bounds'
+program 70 'int main(){int a[3];a[3]=1;return 0;}' 'array index out of bounds'
+program 70 'int main(){int a[3];a[-1]=1;return 0;}' 'array index out of bounds'
+program 70 'int main(){int a[3];a[3]++;return 0;}' 'array index out of bounds'
+program 70 'int main(){int a[1];a[1]=1/0;return 0;}' 'array index out of bounds'
+program 70 'int main(){int a[1];a[0]=2147483647;a[0]++;return 0;}' 'integer overflow'
+program 70 'int main(){int a[1];a[0]=-2147483648;a[0]--;return 0;}' 'integer overflow'
+
 status 42 "$compiler" run "$root/examples/answer.l"
 status 55 "$compiler" run "$root/examples/fibonacci.l"
+status 42 "$compiler" run "$root/examples/arrays.l"
 status 64 "$compiler"
 status 64 "$compiler" unknown ignored
 status 64 "$compiler" compile ignored
@@ -97,9 +119,8 @@ status 65 "$compiler" check "$work/empty.l"
 status 74 "$compiler" check x
 # A successful load through a name shorter than four characters.
 status 0 "$compiler" compile "$root/examples/answer.l" -o "$work/answer.lbc"
-cp "$work/answer.lbc" b
-status 42 "$compiler" run b
-rm -f b
+cp "$work/answer.lbc" "$work/b"
+status 42 sh -c 'cd "$1"; exec "$2" run b' sh "$work" "$compiler"
 printf 'LBC\000\002\000\000\000' >"$work/bad.lbc"
 status 65 "$compiler" run "$work/bad.lbc"
 printf 'LBC\000' >"$work/bad.lbc"

@@ -84,6 +84,11 @@ static Expr *primary(Parser *p) {
                 expect(p, ')', "expected ')' after arguments");
             }
             e = call;
+        } else if (take(p, '[')) {
+            Expr *index = new_expr(p, EX_INDEX, e->token);
+            index->left = e; index->right = expression(p, 1);
+            expect(p, ']', "expected ']' after array index");
+            e = index;
         } else if (peek(p).kind == TK_INC || peek(p).kind == TK_DEC) {
             Token op = p->tokens[p->at++];
             Expr *post = new_expr(p, EX_POSTFIX, op); post->op = op.kind; post->left = e; e = post;
@@ -112,10 +117,23 @@ static Decl *declaration(Parser *p, bool parameter) {
     decl->immutable = take(p, TK_CONST);
     decl->type = parse_type(p);
     decl->name = expect(p, TK_NAME, "expected variable name");
+    if (take(p, '[')) {
+        Token length = expect(p, TK_INTEGER, "expected a literal array length");
+        if (!length.integer || length.integer > L_MAX_ARRAY)
+            token_fail(p->ctx, length, "array length must be between 1 and 65535");
+        decl->array = (uint32_t)length.integer;
+        expect(p, ']', "expected ']' after array length");
+        if (parameter) token_fail(p->ctx, decl->name, "arrays are not supported as parameters");
+    }
     if (!parameter) {
-        expect(p, '=', "Stage 0 local declarations require an initializer");
-        decl->value = expression(p, 1);
-        expect(p, ';', "expected ';' after declaration");
+        if (decl->array) {
+            if (peek(p).kind == '=') token_fail(p->ctx, peek(p), "arrays initialize to zero and cannot have an initializer");
+            expect(p, ';', "expected ';' after array declaration");
+        } else {
+            expect(p, '=', "Stage 0 local declarations require an initializer");
+            decl->value = expression(p, 1);
+            expect(p, ';', "expected ';' after declaration");
+        }
     }
     return decl;
 }

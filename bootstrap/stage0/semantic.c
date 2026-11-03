@@ -4,7 +4,7 @@
 
 typedef struct Binding Binding;
 struct Binding { Decl *decl; unsigned depth; Binding *next; };
-typedef struct { Context *ctx; Ast *ast; Function *fn; Binding *bindings; unsigned depth; } Semantic;
+typedef struct { Context *ctx; Ast *ast; Function *fn; Binding *bindings; unsigned depth; uint32_t elements; } Semantic;
 static Type analyze_expr(Semantic *, Expr *);
 static bool analyze_stmt(Semantic *, Stmt *);
 
@@ -19,17 +19,41 @@ static void bind(Semantic *s, Decl *decl) {
     for (Binding *b = s->bindings; b && b->depth == s->depth; b = b->next)
         if (token_equal(b->decl->name, decl->name)) token_fail(s->ctx, decl->name, "duplicate local declaration");
     if (s->fn->slot_count == L_MAX_SLOTS) token_fail(s->ctx, decl->name, "too many local slots (maximum 1024)");
+    if (s->elements > L_MAX_SLOTS_ELEMENTS - decl->array)
+        token_fail(s->ctx, decl->name, "too many array elements in one function (maximum 65536)");
+    s->elements += decl->array;
     decl->slot = s->fn->slot_count++;
     s->fn->slots[decl->slot] = decl->type;
+    s->fn->lengths[decl->slot] = decl->array;
     Binding *b = allocate(s->ctx, sizeof(*b));
     b->decl = decl; b->depth = s->depth; b->next = s->bindings; s->bindings = b;
 }
+static Decl *resolve_index(Semantic *s, Expr *e) {
+    if (e->left->kind != EX_NAME) token_fail(s->ctx, e->left->token, "arrays must be indexed through a variable name");
+    Binding *b = lookup(s, e->left->token);
+    if (!b) token_fail(s->ctx, e->left->token, "unknown local variable");
+    if (!b->decl->array) token_fail(s->ctx, e->left->token, "variable is not an array");
+    require(s, e->right->token, analyze_expr(s, e->right), TY_INT);
+    e->symbol = b->decl->slot;
+    e->length = b->decl->array;
+    e->type = b->decl->type;
+    return b->decl;
+}
 static Decl *lvalue(Semantic *s, Expr *e) {
-    if (e->kind != EX_NAME) token_fail(s->ctx, e->token, "assignment requires a local variable");
-    Binding *b = lookup(s, e->token);
-    if (!b) token_fail(s->ctx, e->token, "unknown local variable");
+    if (e->kind != EX_NAME && e->kind != EX_INDEX)
+        token_fail(s->ctx, e->token, "assignment requires a local variable or an array element");
+    Binding *b;
+    if (e->kind == EX_INDEX) {
+        Decl *d = resolve_index(s, e);
+        if (d->immutable) token_fail(s->ctx, e->token, "cannot modify const binding");
+        return d;
+    } else {
+        b = lookup(s, e->token);
+        if (!b) token_fail(s->ctx, e->token, "unknown local variable");
+        if (b->decl->array) token_fail(s->ctx, e->token, "cannot assign to a whole array");
+        e->symbol = b->decl->slot; e->type = b->decl->type;
+    }
     if (b->decl->immutable) token_fail(s->ctx, e->token, "cannot modify const binding");
-    e->symbol = b->decl->slot; e->type = b->decl->type;
     return b->decl;
 }
 static Type analyze_expr(Semantic *s, Expr *e) {
@@ -42,8 +66,11 @@ static Type analyze_expr(Semantic *s, Expr *e) {
     case EX_NAME: {
         Binding *b = lookup(s, e->token);
         if (!b) token_fail(s->ctx, e->token, "unknown local variable");
+        if (b->decl->array) token_fail(s->ctx, e->token, "array used without an index");
         e->symbol = b->decl->slot; e->type = b->decl->type; break;
     }
+    case EX_INDEX:
+        (void)resolve_index(s, e); break;
     case EX_ASSIGN: {
         Decl *d = lvalue(s, e->left);
         require(s, e->token, analyze_expr(s, e->right), d->type);
@@ -109,6 +136,11 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
     }
     case ST_DECL: {
         Decl *d = stmt->decl;
+        if (d->array) {
+            if (d->type != TY_INT && d->type != TY_BOOL)
+                token_fail(s->ctx, d->name, "array element type must be int or bool");
+            bind(s, d); break;
+        }
         Type init = analyze_expr(s, d->value);
         if (d->type == TY_AUTO) d->type = init;
         if (d->type == TY_VOID) token_fail(s->ctx, d->name, "variable cannot have void type");
@@ -158,7 +190,7 @@ void analyze(Context *ctx, Ast *ast) {
     }
     if (!main_found) fail(ctx, 0, 0, "missing entry point int main()");
     for (Function *fn = ast->functions; fn; fn = fn->next) {
-        Semantic s = { ctx, ast, fn, NULL, 0 };
+        Semantic s = { ctx, ast, fn, NULL, 0, 0 };
         for (Decl *p = fn->parameters; p; p = p->next) bind(&s, p);
         /* Parameters and the outermost function block share one scope. */
         bool falls = true;

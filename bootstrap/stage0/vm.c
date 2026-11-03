@@ -16,8 +16,16 @@ static int32_t run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, 
     if (depth >= L_MAX_DEPTH) trap(vm, callsite, "call depth limit exceeded (256)");
     const IrFunction *f = &vm->program->functions[index];
     int32_t *registers = allocate(vm->ctx, f->register_count * sizeof(*registers));
-    int32_t *slots = allocate(vm->ctx, f->slot_count * sizeof(*slots));
-    if (f->parameter_count) memcpy(slots, args, f->parameter_count * sizeof(*slots));
+    /* Each slot is a region inside one flat element store; scalar slots occupy one element. */
+    uint32_t total = 0;
+    uint32_t *offsets = allocate(vm->ctx, f->slot_count * sizeof(*offsets));
+    for (uint32_t j = 0; j < f->slot_count; ++j) {
+        offsets[j] = total;
+        uint32_t width = f->slot_lengths[j] ? f->slot_lengths[j] : 1;
+        total += width;
+    }
+    int32_t *elements = allocate(vm->ctx, total * sizeof(*elements));
+    if (f->parameter_count) memcpy(elements, args, f->parameter_count * sizeof(*elements));
     uint32_t pc = 0;
     for (;;) {
         Instruction i = f->code[pc++];
@@ -27,8 +35,25 @@ static int32_t run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, 
         case OP_CONST:
             /* Define the bit-pattern conversion without implementation-defined unsigned-to-signed casts. */
             registers[i.dst] = i.a <= INT32_MAX ? (int32_t)i.a : (int32_t)((int64_t)i.a - INT64_C(4294967296)); break;
-        case OP_LOAD: registers[i.dst] = slots[i.a]; break;
-        case OP_STORE: slots[i.dst] = registers[i.a]; break;
+        case OP_LOAD:
+            if (!i.c) {
+                registers[i.dst] = elements[offsets[i.a]];
+            } else {
+                /* Defense in depth: the verifier does not force a bounds_check in front of every access. */
+                uint32_t index = (uint32_t)registers[i.b];
+                if (index >= f->slot_lengths[i.a]) trap(vm, i, "array index out of bounds");
+                registers[i.dst] = elements[offsets[i.a] + index];
+            }
+            break;
+        case OP_STORE:
+            if (!i.c) {
+                elements[offsets[i.dst]] = registers[i.a];
+            } else {
+                uint32_t index = (uint32_t)registers[i.b];
+                if (index >= f->slot_lengths[i.dst]) trap(vm, i, "array index out of bounds");
+                elements[offsets[i.dst] + index] = registers[i.a];
+            }
+            break;
         case OP_ADD: registers[i.dst] = checked(vm, i, (int64_t)registers[i.a] + registers[i.b]); break;
         case OP_SUB: registers[i.dst] = checked(vm, i, (int64_t)registers[i.a] - registers[i.b]); break;
         case OP_MUL: registers[i.dst] = checked(vm, i, (int64_t)registers[i.a] * registers[i.b]); break;
@@ -57,8 +82,15 @@ static int32_t run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, 
         }
         case OP_RETURN: {
             int32_t value = i.a == L_NONE ? 0 : registers[i.a];
-            release(vm->ctx, slots); release(vm->ctx, registers); return value;
+            release(vm->ctx, elements); release(vm->ctx, offsets); release(vm->ctx, registers); return value;
         }
+        case OP_BOUNDS:
+            /* The conversion is the defined mod-2^32 wrap, so negative indexes are caught here. */
+            if ((uint32_t)registers[i.a] >= i.c) trap(vm, i, "array index out of bounds");
+            break;
+        case OP_CLEAR:
+            memset(elements + offsets[i.dst], 0, f->slot_lengths[i.dst] * sizeof(*elements));
+            break;
         default: trap(vm, i, "invalid opcode");
         }
     }

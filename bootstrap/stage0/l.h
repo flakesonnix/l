@@ -8,13 +8,15 @@
 #include <setjmp.h>
 
 #define L_IR_MAJOR 1
-#define L_IR_MINOR 0
+#define L_IR_MINOR 1
 #define L_BC_MAJOR 1
-#define L_BC_MINOR 0
+#define L_BC_MINOR 1
 #define L_NONE UINT32_MAX
 #define L_MAX_FUNCTIONS 256u
 #define L_MAX_REGISTERS 4096u
 #define L_MAX_SLOTS 1024u
+#define L_MAX_ARRAY 65535u
+#define L_MAX_SLOTS_ELEMENTS 65536u
 #define L_MAX_CODE 16384u
 #define L_MAX_ARGS 2048u
 #define L_MAX_DEPTH 256u
@@ -44,18 +46,19 @@ typedef struct Decl Decl;
 typedef struct Function Function;
 typedef struct ExprList ExprList;
 struct ExprList { Expr *value; ExprList *next; };
-typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX } ExprKind;
+typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX } ExprKind;
 struct Expr {
     ExprKind kind;
     Token token;
     Type type;
     int op;
     uint32_t symbol;
+    uint32_t length;
     int64_t integer;
     Expr *left, *right;
     ExprList *args;
 };
-struct Decl { Token name; Type type; bool immutable; uint32_t slot; Expr *value; Decl *next; };
+struct Decl { Token name; Type type; bool immutable; uint32_t slot; uint32_t array; Expr *value; Decl *next; };
 typedef enum { ST_BLOCK, ST_DECL, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_EMPTY } StmtKind;
 struct Stmt {
     StmtKind kind;
@@ -70,6 +73,7 @@ struct Function {
     Decl *parameters;
     uint32_t parameter_count, slot_count;
     Type slots[L_MAX_SLOTS];
+    uint32_t lengths[L_MAX_SLOTS];
     Stmt *body;
     Function *next;
 };
@@ -78,7 +82,7 @@ typedef struct { Function *functions; uint32_t function_count; } Ast;
 typedef enum {
     OP_CONST, OP_LOAD, OP_STORE, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_REM,
     OP_NEG, OP_NOT, OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE,
-    OP_JUMP, OP_BRANCH, OP_CALL, OP_RETURN, OP_COUNT
+    OP_JUMP, OP_BRANCH, OP_CALL, OP_RETURN, OP_BOUNDS, OP_CLEAR, OP_COUNT
 } Opcode;
 typedef struct { Opcode op; uint32_t dst, a, b, c, line, column; } Instruction;
 typedef struct {
@@ -86,6 +90,7 @@ typedef struct {
     Type result;
     uint32_t parameter_count, slot_count, register_count, code_count, argument_count;
     Type *slots, *registers;
+    uint32_t *slot_lengths;
     Instruction *code;
     uint32_t *arguments;
     size_t register_capacity, code_capacity, argument_capacity;

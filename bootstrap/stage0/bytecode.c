@@ -26,6 +26,7 @@ void write_bytecode(Context *ctx, const Program *p, const char *path) {
         put(file, f->result, 1); put(file, f->parameter_count, 4); put(file, f->slot_count, 4);
         put(file, f->register_count, 4); put(file, f->code_count, 4); put(file, f->argument_count, 4);
         for (uint32_t j = 0; j < f->slot_count; ++j) put(file, f->slots[j], 1);
+        for (uint32_t j = 0; j < f->slot_count; ++j) put(file, f->slot_lengths[j], 4);
         for (uint32_t j = 0; j < f->register_count; ++j) put(file, f->registers[j], 1);
         for (uint32_t j = 0; j < f->argument_count; ++j) put(file, f->arguments[j], 4);
         for (uint32_t j = 0; j < f->code_count; ++j) {
@@ -63,6 +64,14 @@ Program *read_bytecode(Context *ctx, const unsigned char *data, size_t size) {
         f->arguments = allocate(ctx, f->argument_count * sizeof(*f->arguments));
         f->code = allocate(ctx, f->code_count * sizeof(*f->code));
         for (uint32_t j = 0; j < f->slot_count; ++j) f->slots[j] = (Type)get(&r, 1);
+        f->slot_lengths = allocate(ctx, f->slot_count * sizeof(*f->slot_lengths));
+        uint32_t elements = 0;
+        for (uint32_t j = 0; j < f->slot_count; ++j) {
+            f->slot_lengths[j] = get(&r, 4);
+            if (f->slot_lengths[j] > L_MAX_ARRAY) fail(ctx, 0, 0, "bytecode array length out of range");
+            if (elements > L_MAX_SLOTS_ELEMENTS - f->slot_lengths[j]) fail(ctx, 0, 0, "bytecode exceeds the array element limit");
+            elements += f->slot_lengths[j];
+        }
         for (uint32_t j = 0; j < f->register_count; ++j) f->registers[j] = (Type)get(&r, 1);
         for (uint32_t j = 0; j < f->argument_count; ++j) f->arguments[j] = get(&r, 4);
         for (uint32_t j = 0; j < f->code_count; ++j) {
@@ -79,13 +88,16 @@ Program *read_bytecode(Context *ctx, const unsigned char *data, size_t size) {
 void inspect(const Program *p, FILE *file) {
     static const char *const names[] = {
         "const", "load", "store", "add.checked", "sub.checked", "mul.checked", "div.checked", "rem.checked",
-        "neg.checked", "not", "eq", "ne", "lt", "le", "gt", "ge", "jump", "branch", "call", "return"
+        "neg.checked", "not", "eq", "ne", "lt", "le", "gt", "ge", "jump", "branch", "call", "return",
+        "bounds_check", "clear"
     };
     fprintf(file, "LIR %u.%u; bytecode %u.%u; entry f%u\n", L_IR_MAJOR, L_IR_MINOR, L_BC_MAJOR, L_BC_MINOR, p->entry);
     for (uint32_t n = 0; n < p->function_count; ++n) {
         const IrFunction *f = &p->functions[n];
         fprintf(file, "f%u %s -> %s (%u parameters, %u slots, %u registers)\n", n, f->name,
                 type_name(f->result), f->parameter_count, f->slot_count, f->register_count);
+        for (uint32_t j = 0; j < f->slot_count; ++j)
+            fprintf(file, "  slot s%u: %s length=%u (0=scalar)\n", j, type_name(f->slots[j]), f->slot_lengths[j]);
         for (uint32_t j = 0; j < f->code_count; ++j) {
             Instruction i = f->code[j];
             fprintf(file, "  %04u %-12s dst=%u a=%u b=%u c=%u @%u:%u\n", j, names[i.op], i.dst, i.a, i.b, i.c, i.line, i.column);

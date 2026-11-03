@@ -45,9 +45,33 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
     case EX_INT: case EX_BOOL: return constant(l, e->token, e->type, (int32_t)e->integer);
     case EX_NAME:
         r = reg(l, e->type); emit(l, e->token, OP_LOAD, r, e->symbol, 0, 0); return r;
+    case EX_INDEX: {
+        uint32_t idx = lower_expr(l, e->right);
+        emit(l, e->token, OP_BOUNDS, 0, idx, 0, e->length);
+        r = reg(l, e->type);
+        emit(l, e->token, OP_LOAD, r, e->symbol, idx, 1);
+        return r;
+    }
     case EX_ASSIGN:
+        if (e->left->kind == EX_INDEX) {
+            /* Left-to-right: the index is evaluated and bounds-checked before the stored value. */
+            uint32_t idx = lower_expr(l, e->left->right);
+            emit(l, e->token, OP_BOUNDS, 0, idx, 0, e->left->length);
+            r = lower_expr(l, e->right);
+            emit(l, e->token, OP_STORE, e->left->symbol, r, idx, 1);
+            return r;
+        }
         r = lower_expr(l, e->right); emit(l, e->token, OP_STORE, e->left->symbol, r, 0, 0); return r;
     case EX_POSTFIX:
+        if (e->left->kind == EX_INDEX) {
+            uint32_t idx = lower_expr(l, e->left->right);
+            emit(l, e->token, OP_BOUNDS, 0, idx, 0, e->left->length);
+            a = reg(l, TY_INT); emit(l, e->token, OP_LOAD, a, e->left->symbol, idx, 1);
+            b = constant(l, e->token, TY_INT, 1); r = reg(l, TY_INT);
+            emit(l, e->token, e->op == TK_INC ? OP_ADD : OP_SUB, r, a, b, 0);
+            emit(l, e->token, OP_STORE, e->left->symbol, r, idx, 1);
+            return a;
+        }
         a = lower_expr(l, e->left); b = constant(l, e->token, TY_INT, 1); r = reg(l, TY_INT);
         emit(l, e->token, e->op == TK_INC ? OP_ADD : OP_SUB, r, a, b, 0);
         emit(l, e->token, OP_STORE, e->left->symbol, r, 0, 0); return a;
@@ -95,6 +119,7 @@ static bool lower_stmt(Lower *l, Stmt *s) {
         for (Stmt *child = s->body; child; child = child->next) if (!lower_stmt(l, child)) return false;
         break;
     case ST_DECL: {
+        if (s->decl->array) { emit(l, s->token, OP_CLEAR, s->decl->slot, 0, 0, 0); break; }
         uint32_t value = lower_expr(l, s->decl->value);
         emit(l, s->token, OP_STORE, s->decl->slot, value, 0, 0); break;
     }
@@ -141,7 +166,9 @@ Program *lower(Context *ctx, Ast *ast) {
         f->name = copy_text(ctx, fn->name.text, fn->name.length);
         f->result = fn->result; f->parameter_count = fn->parameter_count; f->slot_count = fn->slot_count;
         f->slots = allocate(ctx, L_MAX_SLOTS * sizeof(*f->slots));
+        f->slot_lengths = allocate(ctx, L_MAX_SLOTS * sizeof(*f->slot_lengths));
         memcpy(f->slots, fn->slots, fn->slot_count * sizeof(*f->slots));
+        memcpy(f->slot_lengths, fn->lengths, fn->slot_count * sizeof(*f->slot_lengths));
         if (!strcmp(f->name, "main")) p->entry = index;
         Lower l = { ctx, p, f };
         if (lower_stmt(&l, fn->body)) emit(&l, fn->name, OP_RETURN, 0, L_NONE, 0, 0);
@@ -160,6 +187,12 @@ static Type slot_type(Context *ctx, const IrFunction *f, uint32_t r) {
 }
 static void same(Context *ctx, Type a, Type b) {
     if (a != b) invalid(ctx, "operand type mismatch");
+}
+static void access_mode(Context *ctx, const IrFunction *f, uint32_t slot, Instruction i) {
+    (void)slot_type(ctx, f, slot);
+    if (i.c > 1) invalid(ctx, "invalid addressing mode");
+    if ((f->slot_lengths[slot] != 0) != (i.c == 1)) invalid(ctx, "slot shape does not match addressing mode");
+    if (i.c) same(ctx, register_type(ctx, f, i.b), TY_INT);
 }
 static bool defines(Opcode op) { return op <= OP_LOAD || (op >= OP_ADD && op <= OP_GE) || op == OP_CALL; }
 static unsigned successors(Context *ctx, const IrFunction *f, uint32_t pc, uint32_t next[2]) {
@@ -193,7 +226,7 @@ static void dataflow(Context *ctx, const IrFunction *f, bool **seen_out) {
         memcpy(out, state + pc * words, words * sizeof(*out));
         Instruction i = f->code[pc];
         if (defines(i.op) && i.dst != L_NONE) set_bit(out, i.dst);
-        if (i.op == OP_STORE) set_bit(out, f->register_count + i.dst);
+        if (i.op == OP_CLEAR || (i.op == OP_STORE && !i.c)) set_bit(out, f->register_count + i.dst);
         uint32_t next[2]; unsigned count = successors(ctx, f, pc, next);
         for (unsigned j = 0; j < count; ++j) {
             uint32_t target = next[j];
@@ -213,8 +246,15 @@ static void dataflow(Context *ctx, const IrFunction *f, bool **seen_out) {
         const uint64_t *bits = state + pc * words;
         Instruction i = f->code[pc];
         switch (i.op) {
-        case OP_LOAD: use(ctx, bits, f->register_count + i.a); break;
-        case OP_STORE: case OP_NEG: case OP_NOT: case OP_BRANCH: use(ctx, bits, i.a); break;
+        case OP_LOAD:
+            use(ctx, bits, f->register_count + i.a);
+            if (i.c) use(ctx, bits, i.b);
+            break;
+        case OP_STORE:
+            use(ctx, bits, i.a);
+            if (i.c) { use(ctx, bits, f->register_count + i.dst); use(ctx, bits, i.b); }
+            break;
+        case OP_NEG: case OP_NOT: case OP_BRANCH: use(ctx, bits, i.a); break;
         case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_REM:
         case OP_EQ: case OP_NE: case OP_LT: case OP_LE: case OP_GT: case OP_GE:
             use(ctx, bits, i.a); use(ctx, bits, i.b); break;
@@ -222,6 +262,7 @@ static void dataflow(Context *ctx, const IrFunction *f, bool **seen_out) {
             for (uint32_t j = 0; j < i.c; ++j) use(ctx, bits, f->arguments[i.b + j]);
             break;
         case OP_RETURN: if (i.a != L_NONE) use(ctx, bits, i.a); break;
+        case OP_BOUNDS: use(ctx, bits, i.a); break;
         default: break;
         }
     }
@@ -241,6 +282,14 @@ void verify(Context *ctx, const Program *p) {
             f->argument_count > L_MAX_ARGS) invalid(ctx, "invalid function limits or result type");
         for (uint32_t j = 0; j < f->slot_count; ++j)
             if (f->slots[j] != TY_INT && f->slots[j] != TY_BOOL) invalid(ctx, "invalid slot type");
+        uint32_t elements = 0;
+        for (uint32_t j = 0; j < f->slot_count; ++j) {
+            if (f->slot_lengths[j] > L_MAX_ARRAY) invalid(ctx, "array length out of range");
+            if (j < f->parameter_count && f->slot_lengths[j]) invalid(ctx, "array parameters are not supported");
+            if (elements > L_MAX_SLOTS_ELEMENTS - f->slot_lengths[j])
+                invalid(ctx, "too many array elements");
+            elements += f->slot_lengths[j];
+        }
         for (uint32_t j = 0; j < f->register_count; ++j)
             if (f->registers[j] != TY_INT && f->registers[j] != TY_BOOL) invalid(ctx, "invalid register type");
         bool *defined = allocate(ctx, f->register_count * sizeof(*defined));
@@ -256,8 +305,20 @@ void verify(Context *ctx, const Program *p) {
             case OP_CONST:
                 if (f->registers[i.dst] == TY_BOOL && i.a > 1) invalid(ctx, "invalid bool constant");
                 break;
-            case OP_LOAD: same(ctx, register_type(ctx, f, i.dst), slot_type(ctx, f, i.a)); break;
-            case OP_STORE: same(ctx, slot_type(ctx, f, i.dst), register_type(ctx, f, i.a)); break;
+            case OP_LOAD:
+                access_mode(ctx, f, i.a, i);
+                same(ctx, register_type(ctx, f, i.dst), slot_type(ctx, f, i.a)); break;
+            case OP_STORE:
+                access_mode(ctx, f, i.dst, i);
+                same(ctx, slot_type(ctx, f, i.dst), register_type(ctx, f, i.a)); break;
+            case OP_BOUNDS:
+                same(ctx, register_type(ctx, f, i.a), TY_INT);
+                if (!i.c || i.c > L_MAX_ARRAY) invalid(ctx, "invalid array bounds limit");
+                break;
+            case OP_CLEAR:
+                (void)slot_type(ctx, f, i.dst);
+                if (!f->slot_lengths[i.dst]) invalid(ctx, "cannot clear a scalar slot");
+                break;
             case OP_NEG: case OP_NOT:
                 same(ctx, register_type(ctx, f, i.dst), i.op == OP_NEG ? TY_INT : TY_BOOL);
                 same(ctx, register_type(ctx, f, i.a), f->registers[i.dst]); break;

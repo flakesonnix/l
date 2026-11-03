@@ -78,7 +78,7 @@ Token *lex(Context *ctx, const char *source, size_t length, size_t *count) {
                 else if (c == '-' && next == '-') token.kind = TK_DEC;
                 if (token.kind >= TK_EQ) { ++at; token.length = 2; }
             }
-            if (token.kind < 256 && !strchr("{}();,.+-*/%!<>=", c))
+            if (token.kind < 256 && !strchr("{}()[];,.+-*/%!<>=", c))
                 token_fail(ctx, token, "unsupported character in Stage 0 source");
             if (!c) token_fail(ctx, token, "NUL byte in source");
         }
