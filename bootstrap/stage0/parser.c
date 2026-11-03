@@ -1,0 +1,202 @@
+#include "l.h"
+
+typedef struct { Context *ctx; Token *tokens; size_t at, count; } Parser;
+static Token peek(Parser *p) { return p->tokens[p->at]; }
+static bool take(Parser *p, int kind) {
+    if (peek(p).kind != kind) return false;
+    ++p->at;
+    return true;
+}
+static Token expect(Parser *p, int kind, const char *message) {
+    Token token = peek(p);
+    if (!take(p, kind)) token_fail(p->ctx, token, message);
+    return token;
+}
+static Type parse_type(Parser *p) {
+    Token token = peek(p);
+    ++p->at;
+    switch (token.kind) {
+    case TK_INT: return TY_INT;
+    case TK_BOOL: return TY_BOOL;
+    case TK_VOID: return TY_VOID;
+    case TK_AUTO: return TY_AUTO;
+    default: token_fail(p->ctx, token, "expected Stage 0 type (int, bool, void, auto)");
+    }
+}
+static bool starts_decl(Parser *p) {
+    int k = peek(p).kind;
+    return k == TK_CONST || k == TK_INT || k == TK_BOOL || k == TK_VOID || k == TK_AUTO;
+}
+static Expr *expression(Parser *, int);
+static Stmt *statement(Parser *);
+static Expr *new_expr(Parser *p, ExprKind kind, Token token) {
+    Expr *e = allocate(p->ctx, sizeof(*e));
+    e->kind = kind; e->token = token;
+    return e;
+}
+static Stmt *new_stmt(Parser *p, StmtKind kind, Token token) {
+    Stmt *s = allocate(p->ctx, sizeof(*s));
+    s->kind = kind; s->token = token;
+    return s;
+}
+static int precedence(int op) {
+    switch (op) {
+    case '=': return 1;
+    case TK_OR: return 2;
+    case TK_AND: return 3;
+    case TK_EQ: case TK_NE: return 4;
+    case '<': case '>': case TK_LE: case TK_GE: return 5;
+    case '+': case '-': return 6;
+    case '*': case '/': case '%': return 7;
+    default: return 0;
+    }
+}
+static Expr *primary(Parser *p) {
+    Token token = peek(p);
+    Expr *e;
+    if (take(p, TK_INTEGER)) {
+        e = new_expr(p, EX_INT, token); e->integer = token.integer;
+    } else if (take(p, TK_TRUE) || take(p, TK_FALSE)) {
+        e = new_expr(p, EX_BOOL, token); e->integer = token.kind == TK_TRUE;
+    } else if (take(p, TK_NAME)) {
+        e = new_expr(p, EX_NAME, token);
+    } else if (take(p, '(')) {
+        e = expression(p, 1);
+        expect(p, ')', "expected ')' after expression");
+    } else if (token.kind == '-' || token.kind == '+' || token.kind == '!') {
+        ++p->at;
+        e = new_expr(p, EX_UNARY, token); e->op = token.kind;
+        e->left = expression(p, 8);
+        /* The only positive literal outside int range is legal directly under unary minus. */
+        if (token.kind == '-' && e->left->kind == EX_INT && e->left->integer == INT64_C(2147483648)) {
+            e->kind = EX_INT; e->integer = INT32_MIN; e->left = NULL;
+        }
+    } else token_fail(p->ctx, token, "expected expression");
+    for (;;) {
+        if (take(p, '(')) {
+            Expr *call = new_expr(p, EX_CALL, e->token); call->left = e;
+            ExprList **tail = &call->args;
+            if (!take(p, ')')) {
+                do {
+                    ExprList *arg = allocate(p->ctx, sizeof(*arg));
+                    arg->value = expression(p, 1); *tail = arg; tail = &arg->next;
+                } while (take(p, ','));
+                expect(p, ')', "expected ')' after arguments");
+            }
+            e = call;
+        } else if (peek(p).kind == TK_INC || peek(p).kind == TK_DEC) {
+            Token op = p->tokens[p->at++];
+            Expr *post = new_expr(p, EX_POSTFIX, op); post->op = op.kind; post->left = e; e = post;
+        } else break;
+    }
+    return e;
+}
+static Expr *expression(Parser *p, int minimum) {
+    enter(p->ctx, peek(p));
+    Expr *left = primary(p);
+    for (;;) {
+        Token op = peek(p);
+        int prec = precedence(op.kind);
+        if (prec < minimum) break;
+        ++p->at;
+        Expr *e = new_expr(p, op.kind == '=' ? EX_ASSIGN : EX_BINARY, op);
+        e->op = op.kind; e->left = left;
+        e->right = expression(p, prec + (op.kind != '='));
+        left = e;
+    }
+    leave(p->ctx);
+    return left;
+}
+static Decl *declaration(Parser *p, bool parameter) {
+    Decl *decl = allocate(p->ctx, sizeof(*decl));
+    decl->immutable = take(p, TK_CONST);
+    decl->type = parse_type(p);
+    decl->name = expect(p, TK_NAME, "expected variable name");
+    if (!parameter) {
+        expect(p, '=', "Stage 0 local declarations require an initializer");
+        decl->value = expression(p, 1);
+        expect(p, ';', "expected ';' after declaration");
+    }
+    return decl;
+}
+static Expr *condition(Parser *p) {
+    expect(p, '(', "expected '(' before condition");
+    Expr *e = expression(p, 1);
+    expect(p, ')', "expected ')' after condition");
+    return e;
+}
+static Stmt *statement(Parser *p) {
+    Token token = peek(p);
+    enter(p->ctx, token);
+    Stmt *s;
+    if (take(p, '{')) {
+        s = new_stmt(p, ST_BLOCK, token);
+        Stmt **tail = &s->body;
+        while (!take(p, '}')) {
+            if (peek(p).kind == TK_EOF) token_fail(p->ctx, peek(p), "expected '}' before end of file");
+            *tail = statement(p); tail = &(*tail)->next;
+        }
+    } else if (take(p, TK_IF)) {
+        s = new_stmt(p, ST_IF, token); s->condition = condition(p); s->body = statement(p);
+        if (take(p, TK_ELSE)) s->other = statement(p);
+    } else if (take(p, TK_WHILE)) {
+        s = new_stmt(p, ST_WHILE, token); s->condition = condition(p); s->body = statement(p);
+    } else if (take(p, TK_FOR)) {
+        s = new_stmt(p, ST_FOR, token);
+        expect(p, '(', "expected '(' after for");
+        if (starts_decl(p)) {
+            s->init = new_stmt(p, ST_DECL, peek(p)); s->init->decl = declaration(p, false);
+        } else if (!take(p, ';')) {
+            s->init = new_stmt(p, ST_EXPR, peek(p)); s->init->expr = expression(p, 1);
+            expect(p, ';', "expected ';' after for initializer");
+        }
+        if (!take(p, ';')) {
+            s->condition = expression(p, 1); expect(p, ';', "expected ';' after for condition");
+        }
+        if (!take(p, ')')) {
+            s->step = expression(p, 1); expect(p, ')', "expected ')' after for step");
+        }
+        s->body = statement(p);
+    } else if (take(p, TK_RETURN)) {
+        s = new_stmt(p, ST_RETURN, token);
+        if (!take(p, ';')) { s->expr = expression(p, 1); expect(p, ';', "expected ';' after return"); }
+    } else if (starts_decl(p)) {
+        s = new_stmt(p, ST_DECL, token); s->decl = declaration(p, false);
+    } else if (take(p, ';')) s = new_stmt(p, ST_EMPTY, token);
+    else {
+        s = new_stmt(p, ST_EXPR, token); s->expr = expression(p, 1);
+        expect(p, ';', "expected ';' after expression");
+    }
+    leave(p->ctx);
+    return s;
+}
+
+Ast *parse(Context *ctx, Token *tokens, size_t count) {
+    Parser p = { ctx, tokens, 0, count };
+    Ast *ast = allocate(ctx, sizeof(*ast));
+    if (take(&p, TK_MODULE)) {
+        expect(&p, TK_NAME, "expected module name");
+        while (take(&p, '.')) expect(&p, TK_NAME, "expected module name after '.'");
+        expect(&p, ';', "expected ';' after module declaration");
+    }
+    Function **tail = &ast->functions;
+    while (peek(&p).kind != TK_EOF) {
+        if (ast->function_count++ >= L_MAX_FUNCTIONS) token_fail(ctx, peek(&p), "too many functions (maximum 256)");
+        Function *fn = allocate(ctx, sizeof(*fn));
+        fn->result = parse_type(&p);
+        fn->name = expect(&p, TK_NAME, "expected function name");
+        expect(&p, '(', "expected '(' after function name");
+        Decl **param = &fn->parameters;
+        if (!take(&p, ')')) {
+            do {
+                if (++fn->parameter_count > L_MAX_SLOTS) token_fail(ctx, peek(&p), "too many parameters");
+                *param = declaration(&p, true); param = &(*param)->next;
+            } while (take(&p, ','));
+            expect(&p, ')', "expected ')' after parameters");
+        }
+        if (peek(&p).kind != '{') token_fail(ctx, peek(&p), "expected function body");
+        fn->body = statement(&p);
+        *tail = fn; tail = &fn->next;
+    }
+    return ast;
+}
