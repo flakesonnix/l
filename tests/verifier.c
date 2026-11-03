@@ -133,7 +133,7 @@ static void check(int which) {
         int32_t result = execute_program(ctx, &x.program);
         if (result != 42) exit(1);
     }
-    int expected = which == VALID || which == DIAMOND || which == UNREACHABLE || which == LOAD_STORE ? 0 : 65;
+    int expected = which == VALID || which == DIAMOND || which == LOAD_STORE ? 0 : 65;
     if (which == VM_BAD_OPCODE) expected = 70;
     if (ctx->status != expected) { fprintf(stderr, "verifier case %d: expected %d, got %d\n", which, expected, ctx->status); exit(1); }
     cleanup(ctx); free(ctx);

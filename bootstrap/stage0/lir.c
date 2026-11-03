@@ -176,7 +176,7 @@ static void set_bit(uint64_t *bits, uint32_t bit) { bits[bit / 64] |= UINT64_C(1
 static void use(Context *ctx, const uint64_t *bits, uint32_t bit) {
     if (!(bits[bit / 64] & (UINT64_C(1) << (bit % 64)))) invalid(ctx, "value does not dominate use or slot is uninitialized");
 }
-static void dataflow(Context *ctx, const IrFunction *f) {
+static void dataflow(Context *ctx, const IrFunction *f, bool **seen_out) {
     size_t words = ((size_t)f->register_count + f->slot_count + 63) / 64;
     /* Empty void functions still need a nonzero row size. */
     if (!words) words = 1;
@@ -225,7 +225,8 @@ static void dataflow(Context *ctx, const IrFunction *f) {
         default: break;
         }
     }
-    release(ctx, queue); release(ctx, queued); release(ctx, seen); release(ctx, out); release(ctx, state);
+    release(ctx, queue); release(ctx, queued); release(ctx, out); release(ctx, state);
+    *seen_out = seen;
 }
 
 void verify(Context *ctx, const Program *p) {
@@ -291,8 +292,19 @@ void verify(Context *ctx, const Program *p) {
             }
             uint32_t next[2]; (void)successors(ctx, f, pc, next);
         }
-        for (uint32_t j = 0; j < f->register_count; ++j) if (!defined[j]) invalid(ctx, "SSA register has no definition");
+        bool *seen = NULL;
+        dataflow(ctx, f, &seen);
+        /* Definitions that live only on unreachable paths are rejected: SSA values must be well-defined everywhere. */
+        bool *reachable_defined = allocate(ctx, f->register_count * sizeof(*reachable_defined));
+        for (uint32_t pc = 0; pc < f->code_count; ++pc) {
+            if (!seen[pc]) continue;
+            Instruction i = f->code[pc];
+            if (defines(i.op) && !(i.op == OP_CALL && i.dst == L_NONE)) reachable_defined[i.dst] = true;
+        }
+        for (uint32_t j = 0; j < f->register_count; ++j)
+            if (!reachable_defined[j]) invalid(ctx, "SSA register has no definition");
+        release(ctx, reachable_defined);
+        release(ctx, seen);
         release(ctx, defined);
-        dataflow(ctx, f);
     }
 }
