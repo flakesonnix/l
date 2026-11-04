@@ -12,6 +12,17 @@ static uint32_t get(Reader *r, unsigned width) {
 static void put(FILE *file, uint32_t value, unsigned width) {
     for (unsigned j = 0; j < width; ++j) fputc((int)((value >> (8 * j)) & 255), file);
 }
+static char *get_name(Reader *r) {
+    uint32_t length = get(r, 4);
+    if (!length || length > r->size - r->at) fail(r->ctx, 0, 0, "invalid bytecode symbol name");
+    if (memchr(r->data + r->at, 0, length)) fail(r->ctx, 0, 0, "NUL byte in symbol name");
+    char *name = copy_text(r->ctx, (const char *)r->data + r->at, length); r->at += length;
+    return name;
+}
+static int32_t get_signed(Reader *r) {
+    uint32_t value = get(r, 4);
+    return value <= INT32_MAX ? (int32_t)value : (int32_t)((int64_t)value - INT64_C(4294967296));
+}
 
 void write_bytecode(Context *ctx, const Program *p, const char *path) {
     FILE *file = fopen(path, "wb");
@@ -19,6 +30,13 @@ void write_bytecode(Context *ctx, const Program *p, const char *path) {
     fwrite("LBC\0", 1, 4, file);
     put(file, L_BC_MAJOR, 2); put(file, L_BC_MINOR, 2);
     put(file, p->function_count, 4); put(file, p->entry, 4);
+    put(file, p->global_count, 4);
+    for (uint32_t n = 0; n < p->global_count; ++n) {
+        const IrGlobal *g = &p->globals[n];
+        uint32_t length = (uint32_t)strlen(g->name);
+        put(file, length, 4); fwrite(g->name, 1, length, file);
+        put(file, g->type, 1); put(file, (uint32_t)g->initial, 4);
+    }
     for (uint32_t n = 0; n < p->function_count; ++n) {
         const IrFunction *f = &p->functions[n];
         uint32_t length = (uint32_t)strlen(f->name);
@@ -53,13 +71,17 @@ Program *read_bytecode(Context *ctx, const unsigned char *data, size_t size) {
     Program *p = allocate(ctx, sizeof(*p));
     p->function_count = get(&r, 4); p->entry = get(&r, 4);
     if (!p->function_count || p->function_count > L_MAX_FUNCTIONS) fail(ctx, 0, 0, "invalid bytecode function count");
+    p->global_count = get(&r, 4);
+    if (p->global_count > L_MAX_GLOBALS) fail(ctx, 0, 0, "bytecode global limit exceeded");
+    p->globals = allocate(ctx, p->global_count * sizeof(*p->globals));
+    for (uint32_t n = 0; n < p->global_count; ++n) {
+        IrGlobal *g = &p->globals[n];
+        g->name = get_name(&r); g->type = (Type)get(&r, 1); g->initial = get_signed(&r);
+    }
     p->functions = allocate(ctx, p->function_count * sizeof(*p->functions));
     for (uint32_t n = 0; n < p->function_count; ++n) {
         IrFunction *f = &p->functions[n];
-        uint32_t length = get(&r, 4);
-        if (!length || length > r.size - r.at) fail(ctx, 0, 0, "invalid bytecode function name");
-        if (memchr(r.data + r.at, 0, length)) fail(ctx, 0, 0, "NUL byte in function name");
-        f->name = copy_text(ctx, (const char *)r.data + r.at, length); r.at += length;
+        f->name = get_name(&r);
         f->result = (Type)get(&r, 1); f->parameter_count = get(&r, 4); f->slot_count = get(&r, 4);
         f->register_count = get(&r, 4); f->code_count = get(&r, 4); f->argument_count = get(&r, 4);
         f->switch_count = get(&r, 4);
@@ -83,9 +105,7 @@ Program *read_bytecode(Context *ctx, const unsigned char *data, size_t size) {
         for (uint32_t j = 0; j < f->register_count; ++j) f->registers[j] = (Type)get(&r, 1);
         for (uint32_t j = 0; j < f->argument_count; ++j) f->arguments[j] = get(&r, 4);
         for (uint32_t j = 0; j < f->switch_count; ++j) {
-            uint32_t value = get(&r, 4);
-            f->switch_entries[j].value = value <= INT32_MAX ? (int32_t)value :
-                (int32_t)((int64_t)value - INT64_C(4294967296));
+            f->switch_entries[j].value = get_signed(&r);
             f->switch_entries[j].target = get(&r, 4);
         }
         for (uint32_t j = 0; j < f->code_count; ++j) {
@@ -103,9 +123,11 @@ void inspect(const Program *p, FILE *file) {
     static const char *const names[] = {
         "const", "load", "store", "add.checked", "sub.checked", "mul.checked", "div.checked", "rem.checked",
         "neg.checked", "not", "eq", "ne", "lt", "le", "gt", "ge", "jump", "branch", "call", "return",
-        "bounds_check", "clear", "switch", "trap"
+        "bounds_check", "clear", "switch", "trap", "global.load", "global.store"
     };
     fprintf(file, "LIR %u.%u; bytecode %u.%u; entry f%u\n", L_IR_MAJOR, L_IR_MINOR, L_BC_MAJOR, L_BC_MINOR, p->entry);
+    for (uint32_t n = 0; n < p->global_count; ++n)
+        fprintf(file, "global g%u %s: %s initial=%d\n", n, p->globals[n].name, type_name(p->globals[n].type), p->globals[n].initial);
     for (uint32_t n = 0; n < p->function_count; ++n) {
         const IrFunction *f = &p->functions[n];
         fprintf(file, "f%u %s -> %s (%u parameters, %u slots, %u registers, %u switch cases)\n", n, f->name,

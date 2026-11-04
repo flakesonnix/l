@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-typedef struct { Context *ctx; const Program *program; uint64_t steps; } Vm;
+typedef struct { Context *ctx; const Program *program; uint64_t steps; int32_t *globals; } Vm;
 
 static _Noreturn void trap(Vm *vm, Instruction i, const char *message) {
     vm->ctx->status = 70;
@@ -37,6 +37,8 @@ static int32_t run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, 
         case OP_CONST:
             /* Define the bit-pattern conversion without implementation-defined unsigned-to-signed casts. */
             registers[i.dst] = i.a <= INT32_MAX ? (int32_t)i.a : (int32_t)((int64_t)i.a - INT64_C(4294967296)); break;
+        case OP_GLOBAL_LOAD: registers[i.dst] = vm->globals[i.a]; break;
+        case OP_GLOBAL_STORE: vm->globals[i.dst] = registers[i.a]; break;
         case OP_LOAD:
             if (!i.c) {
                 registers[i.dst] = elements[offsets[i.a]];
@@ -111,7 +113,10 @@ static int32_t run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, 
 }
 
 int32_t execute_program(Context *ctx, const Program *p) {
-    Vm vm = { ctx, p, 0 };
+    Vm vm = {.ctx = ctx, .program = p, .globals = allocate(ctx, p->global_count * sizeof(int32_t))};
+    for (uint32_t n = 0; n < p->global_count; ++n) vm.globals[n] = p->globals[n].initial;
     Instruction entry = {0};
-    return run(&vm, p->entry, NULL, 0, entry);
+    int32_t value = run(&vm, p->entry, NULL, 0, entry);
+    release(ctx, vm.globals);
+    return value;
 }

@@ -63,6 +63,8 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
     case EX_INT: case EX_BOOL: return constant(l, e->token, e->type, (int32_t)e->integer);
     case EX_NAME:
         r = reg(l, e->type); emit(l, e->token, OP_LOAD, r, e->symbol, 0, 0); return r;
+    case EX_GLOBAL:
+        r = reg(l, e->type); emit(l, e->token, OP_GLOBAL_LOAD, r, e->symbol, 0, 0); return r;
     case EX_INDEX: {
         uint32_t idx = lower_expr(l, e->right);
         emit(l, e->token, OP_BOUNDS, 0, idx, 0, e->length);
@@ -79,7 +81,8 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
             emit(l, e->token, OP_STORE, e->left->symbol, r, idx, 1);
             return r;
         }
-        r = lower_expr(l, e->right); emit(l, e->token, OP_STORE, e->left->symbol, r, 0, 0); return r;
+        r = lower_expr(l, e->right);
+        emit(l, e->token, e->left->kind == EX_GLOBAL ? OP_GLOBAL_STORE : OP_STORE, e->left->symbol, r, 0, 0); return r;
     case EX_POSTFIX:
         if (e->left->kind == EX_INDEX) {
             uint32_t idx = lower_expr(l, e->left->right);
@@ -92,7 +95,7 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
         }
         a = lower_expr(l, e->left); b = constant(l, e->token, TY_INT, 1); r = reg(l, TY_INT);
         emit(l, e->token, e->op == TK_INC ? OP_ADD : OP_SUB, r, a, b, 0);
-        emit(l, e->token, OP_STORE, e->left->symbol, r, 0, 0); return a;
+        emit(l, e->token, e->left->kind == EX_GLOBAL ? OP_GLOBAL_STORE : OP_STORE, e->left->symbol, r, 0, 0); return a;
     case EX_UNARY:
         a = lower_expr(l, e->left);
         if (e->op == '+') return a;
@@ -218,20 +221,31 @@ static bool lower_stmt(Lower *l, Stmt *s) {
     return true;
 }
 
+static char *linked_name(Context *ctx, const Module *module, Token scope, Token name) {
+    name = join_name(ctx, scope, name, "::");
+    name = join_name(ctx, module->qualifier, name, "::");
+    Token package = {.text = module->package, .length = strlen(module->package)};
+    name = join_name(ctx, package, name, "::");
+    return copy_text(ctx, name.text, name.length);
+}
 Program *lower(Context *ctx, Ast *ast) {
     const char *saved = ctx->filename;
     Program *p = allocate(ctx, sizeof(*p));
     p->function_count = ast->function_count;
     p->functions = allocate(ctx, p->function_count * sizeof(*p->functions));
+    p->global_count = ast->static_count;
+    p->globals = allocate(ctx, p->global_count * sizeof(*p->globals));
+    for (Global *global = ast->globals; global; global = global->next) {
+        if (!global->is_static) continue;
+        IrGlobal *g = &p->globals[global->symbol];
+        g->name = linked_name(ctx, global->module, global->scope, global->name);
+        g->type = global->type; g->initial = global->integer;
+    }
     uint32_t index = 0;
     for (Function *fn = ast->functions; fn; fn = fn->next, ++index) {
         IrFunction *f = &p->functions[index];
         ctx->filename = f->source_path = fn->module->path;
-        Token name = join_name(ctx, fn->scope, fn->name, "::");
-        name = join_name(ctx, fn->module->qualifier, name, "::");
-        Token package = {.text = fn->module->package, .length = strlen(fn->module->package)};
-        name = join_name(ctx, package, name, "::");
-        f->name = copy_text(ctx, name.text, name.length);
+        f->name = linked_name(ctx, fn->module, fn->scope, fn->name);
         f->result = fn->result; f->parameter_count = fn->parameter_count; f->slot_count = fn->slot_count;
         f->slots = allocate(ctx, L_MAX_SLOTS * sizeof(*f->slots));
         f->slot_lengths = allocate(ctx, L_MAX_SLOTS * sizeof(*f->slot_lengths));
@@ -254,6 +268,10 @@ static Type slot_type(Context *ctx, const IrFunction *f, uint32_t r) {
     if (r >= f->slot_count) invalid(ctx, "slot index out of range");
     return f->slots[r];
 }
+static Type global_type(Context *ctx, const Program *p, uint32_t index) {
+    if (index >= p->global_count) invalid(ctx, "global index out of range");
+    return p->globals[index].type;
+}
 static void same(Context *ctx, Type a, Type b) {
     if (a != b) invalid(ctx, "operand type mismatch");
 }
@@ -263,7 +281,7 @@ static void access_mode(Context *ctx, const IrFunction *f, uint32_t slot, Instru
     if ((f->slot_lengths[slot] != 0) != (i.c == 1)) invalid(ctx, "slot shape does not match addressing mode");
     if (i.c) same(ctx, register_type(ctx, f, i.b), TY_INT);
 }
-static bool defines(Opcode op) { return op <= OP_LOAD || (op >= OP_ADD && op <= OP_GE) || op == OP_CALL; }
+static bool defines(Opcode op) { return op <= OP_LOAD || (op >= OP_ADD && op <= OP_GE) || op == OP_CALL || op == OP_GLOBAL_LOAD; }
 static unsigned successors(Context *ctx, const IrFunction *f, uint32_t pc, uint32_t next[L_MAX_CASES + 1]) {
     Instruction i = f->code[pc];
     unsigned count = 0;
@@ -328,6 +346,7 @@ static void dataflow(Context *ctx, const IrFunction *f, bool **seen_out) {
             use(ctx, bits, i.a);
             if (i.c) { use(ctx, bits, f->register_count + i.dst); use(ctx, bits, i.b); }
             break;
+        case OP_GLOBAL_STORE: use(ctx, bits, i.a); break;
         case OP_NEG: case OP_NOT: case OP_BRANCH: use(ctx, bits, i.a); break;
         case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_REM:
         case OP_EQ: case OP_NE: case OP_LT: case OP_LE: case OP_GT: case OP_GE:
@@ -351,6 +370,12 @@ void verify(Context *ctx, const Program *p) {
         invalid(ctx, "invalid function table");
     const IrFunction *entry = &p->functions[p->entry];
     if (entry->result != TY_INT || entry->parameter_count) invalid(ctx, "invalid entry signature");
+    if (p->global_count > L_MAX_GLOBALS) invalid(ctx, "too many globals");
+    for (uint32_t n = 0; n < p->global_count; ++n) {
+        const IrGlobal *g = &p->globals[n];
+        if (g->type != TY_INT && g->type != TY_BOOL) invalid(ctx, "invalid global type");
+        if (g->type == TY_BOOL && (uint32_t)g->initial > 1) invalid(ctx, "invalid bool global initializer");
+    }
     for (uint32_t n = 0; n < p->function_count; ++n) {
         const IrFunction *f = &p->functions[n];
         ctx->filename = f->source_path ? f->source_path : saved;
@@ -390,6 +415,10 @@ void verify(Context *ctx, const Program *p) {
             case OP_STORE:
                 access_mode(ctx, f, i.dst, i);
                 same(ctx, slot_type(ctx, f, i.dst), register_type(ctx, f, i.a)); break;
+            case OP_GLOBAL_LOAD:
+                same(ctx, register_type(ctx, f, i.dst), global_type(ctx, p, i.a)); break;
+            case OP_GLOBAL_STORE:
+                same(ctx, global_type(ctx, p, i.dst), register_type(ctx, f, i.a)); break;
             case OP_BOUNDS:
                 same(ctx, register_type(ctx, f, i.a), TY_INT);
                 if (!i.c || i.c > L_MAX_ARRAY) invalid(ctx, "invalid array bounds limit");

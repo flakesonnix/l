@@ -1,16 +1,16 @@
 #include "l.h"
 
-static int32_t constant_value(Context *, Constant *, Constant *);
+static int32_t constant_value(Context *, Global *, Global *);
 static int32_t checked_constant(Context *ctx, Token token, int64_t value) {
     if (value < INT32_MIN || value > INT32_MAX) token_fail(ctx, token, "invalid constant expression: integer overflow");
     return (int32_t)value;
 }
-static int32_t expression_value(Context *ctx, Expr *e, Constant *owner) {
+static int32_t expression_value(Context *ctx, Expr *e, Global *owner) {
     enter(ctx, e->token);
     int32_t value;
     switch (e->kind) {
     case EX_INT: case EX_BOOL: value = (int32_t)e->integer; break;
-    case EX_NAME: value = constant_value(ctx, e->constant, owner); break;
+    case EX_NAME: value = constant_value(ctx, e->global, owner); break;
     case EX_UNARY: {
         int32_t a = expression_value(ctx, e->left, owner);
         switch (e->op) {
@@ -50,16 +50,16 @@ static int32_t expression_value(Context *ctx, Expr *e, Constant *owner) {
     leave(ctx);
     return value;
 }
-static Token constant_name(Context *ctx, const Constant *constant) {
+static Token constant_name(Context *ctx, const Global *constant) {
     Token name = join_name(ctx, constant->scope, constant->name, "::");
     return join_name(ctx, constant->module->qualifier, name, "::");
 }
-static int32_t constant_value(Context *ctx, Constant *constant, Constant *parent) {
+static int32_t constant_value(Context *ctx, Global *constant, Global *parent) {
     if (constant->state == 2) return constant->integer;
     const char *saved = ctx->filename; ctx->filename = constant->module->path;
     if (constant->state == 1) {
-        Constant *path[L_MAX_DEPTH]; unsigned count = 0;
-        for (Constant *node = parent; node != constant; node = node->parent) path[count++] = node;
+        Global *path[L_MAX_DEPTH]; unsigned count = 0;
+        for (Global *node = parent; node != constant; node = node->parent) path[count++] = node;
         Token trace = constant_name(ctx, constant);
         while (count) trace = join_name(ctx, trace, constant_name(ctx, path[--count]), " -> ");
         trace = join_name(ctx, trace, constant_name(ctx, constant), " -> ");
@@ -73,5 +73,5 @@ static int32_t constant_value(Context *ctx, Constant *constant, Constant *parent
     return constant->integer;
 }
 void evaluate_constants(Context *ctx, Ast *ast) {
-    for (Constant *constant = ast->constants; constant; constant = constant->next) (void)constant_value(ctx, constant, NULL);
+    for (Global *constant = ast->globals; constant; constant = constant->next) (void)constant_value(ctx, constant, NULL);
 }

@@ -15,7 +15,7 @@ static int keyword(Token token) {
         {"return", TK_RETURN}, {"module", TK_MODULE},
         {"break", TK_BREAK}, {"continue", TK_CONTINUE},
         {"switch", TK_SWITCH}, {"case", TK_CASE}, {"default", TK_DEFAULT},
-        {"import", TK_IMPORT}, {"as", TK_AS}, {"pub", TK_PUB}, {"namespace", TK_NAMESPACE}
+        {"import", TK_IMPORT}, {"as", TK_AS}, {"pub", TK_PUB}, {"namespace", TK_NAMESPACE}, {"static", TK_STATIC}
     };
     for (size_t i = 0; i < sizeof(keywords) / sizeof(*keywords); ++i)
         if (strlen(keywords[i].name) == token.length &&

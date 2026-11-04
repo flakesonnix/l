@@ -33,17 +33,17 @@ static void bind(Semantic *s, Decl *decl) {
 static bool function_named(const Function *fn, const Module *module, Token path) {
     return fn->module == module && token_equal(fn->scope, parent_scope(path)) && token_equal(fn->name, leaf_name(path));
 }
-static bool constant_named(const Constant *constant, const Module *module, Token path) {
+static bool global_named(const Global *constant, const Module *module, Token path) {
     return constant->module == module && token_equal(constant->scope, parent_scope(path)) && token_equal(constant->name, leaf_name(path));
 }
-static Constant *find_constant(const Ast *ast, const Module *module, Token path) {
-    for (Constant *constant = ast->constants; constant; constant = constant->next)
-        if (constant_named(constant, module, path)) return constant;
+static Global *find_global(const Ast *ast, const Module *module, Token path) {
+    for (Global *constant = ast->globals; constant; constant = constant->next)
+        if (global_named(constant, module, path)) return constant;
     return NULL;
 }
 static bool symbol_named(const Ast *ast, const Module *module, Token path) {
     for (const Function *fn = ast->functions; fn; fn = fn->next) if (function_named(fn, module, path)) return true;
-    if (find_constant(ast, module, path)) return true;
+    if (find_global(ast, module, path)) return true;
     for (Namespace *ns = module->namespaces; ns; ns = ns->next) if (token_equal(ns->name, path)) return true;
     return false;
 }
@@ -108,20 +108,21 @@ static ResolvedName resolve_name(Semantic *s, Token name, bool callable) {
     token_fail(s->ctx, name, qualified ? "unknown qualified name; no unqualified fallback" :
                callable ? "unknown function" : "unknown local variable or constant");
 }
-static Constant *visible_constant(Semantic *s, ResolvedName name) {
-    Constant *constant = find_constant(s->ast, name.module, name.path);
+static Global *visible_global(Semantic *s, ResolvedName name) {
+    Global *constant = find_global(s->ast, name.module, name.path);
     if (constant && name.module != s->fn->module && !constant->exported)
-        token_fail(s->ctx, name.path, "inaccessible symbol: constant is private to its module");
+        token_fail(s->ctx, name.path, "inaccessible symbol: declaration is private to its module");
     return constant;
 }
-static Constant *resolve_constant(Semantic *s, Token name) {
-    Constant *constant = visible_constant(s, resolve_name(s, name, false));
+static Global *resolve_global(Semantic *s, Token name) {
+    Global *constant = visible_global(s, resolve_name(s, name, false));
     if (!constant) token_fail(s->ctx, name, "declaration is not a scalar constant");
     return constant;
 }
 static Function *resolve_call(Semantic *s, Token name, const Type *types, uint32_t count) {
     ResolvedName resolved = resolve_name(s, name, true);
-    if (visible_constant(s, resolved)) token_fail(s->ctx, name, "module constant is not callable");
+    Global *global = visible_global(s, resolved);
+    if (global) token_fail(s->ctx, name, global->is_static ? "static storage is not callable" : "module constant is not callable");
     return overload(s, resolved.module, resolved.path, types, count);
 }
 static Decl *resolve_index(Semantic *s, Expr *e) {
@@ -135,25 +136,27 @@ static Decl *resolve_index(Semantic *s, Expr *e) {
     e->type = b->decl->type;
     return b->decl;
 }
-static Decl *lvalue(Semantic *s, Expr *e) {
+static Type lvalue(Semantic *s, Expr *e) {
     if (e->kind != EX_NAME && e->kind != EX_INDEX)
         token_fail(s->ctx, e->token, "assignment requires a local variable or an array element");
     Binding *b;
     if (e->kind == EX_INDEX) {
         Decl *d = resolve_index(s, e);
         if (d->immutable) token_fail(s->ctx, e->token, "cannot modify const binding");
-        return d;
+        return d->type;
     } else {
         b = lookup(s, e->token);
         if (!b) {
-            (void)resolve_constant(s, e->token);
-            token_fail(s->ctx, e->token, "cannot modify module constant");
+            Global *global = resolve_global(s, e->token);
+            if (!global->is_static) token_fail(s->ctx, e->token, "cannot modify module constant");
+            e->kind = EX_GLOBAL; e->symbol = global->symbol; e->type = global->type; e->global = global;
+            return e->type;
         }
         if (b->decl->array) token_fail(s->ctx, e->token, "cannot assign to a whole array");
         e->symbol = b->decl->slot; e->type = b->decl->type;
     }
     if (b->decl->immutable) token_fail(s->ctx, e->token, "cannot modify const binding");
-    return b->decl;
+    return b->decl->type;
 }
 static Type analyze_expr(Semantic *s, Expr *e) {
     enter(s->ctx, e->token);
@@ -165,9 +168,12 @@ static Type analyze_expr(Semantic *s, Expr *e) {
     case EX_NAME: {
         Binding *b = lookup(s, e->token);
         if (!b) {
-            Constant *constant = resolve_constant(s, e->token);
-            e->type = constant->type; e->constant = constant;
-            if (!s->constant_expression) {
+            Global *constant = resolve_global(s, e->token);
+            e->type = constant->type; e->global = constant;
+            if (constant->is_static) {
+                if (s->constant_expression) token_fail(s->ctx, e->token, "mutable static storage is not a constant expression");
+                e->kind = EX_GLOBAL; e->symbol = constant->symbol;
+            } else if (!s->constant_expression) {
                 e->kind = e->type == TY_BOOL ? EX_BOOL : EX_INT;
                 e->integer = constant->integer;
             }
@@ -181,13 +187,13 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         (void)resolve_index(s, e); break;
     case EX_ASSIGN: {
         if (s->constant_expression) token_fail(s->ctx, e->token, "assignment is not a module constant expression");
-        Decl *d = lvalue(s, e->left);
-        require(s, e->token, analyze_expr(s, e->right), d->type);
-        e->type = d->type; break;
+        Type type = lvalue(s, e->left);
+        require(s, e->token, analyze_expr(s, e->right), type);
+        e->type = type; break;
     }
     case EX_POSTFIX:
         if (s->constant_expression) token_fail(s->ctx, e->token, "postfix update is not a module constant expression");
-        require(s, e->token, lvalue(s, e->left)->type, TY_INT); e->type = TY_INT; break;
+        require(s, e->token, lvalue(s, e->left), TY_INT); e->type = TY_INT; break;
     case EX_UNARY:
         e->type = e->op == '!' ? TY_BOOL : TY_INT;
         require(s, e->token, analyze_expr(s, e->left), e->type); break;
@@ -357,7 +363,7 @@ static void imports(Context *ctx, const Ast *ast, Module *module) {
             bool found = false, visible = false;
             for (Function *fn = ast->functions; fn; fn = fn->next)
                 if (function_named(fn, item->target, name->name)) { found = true; visible = visible || fn->exported; }
-            Constant *constant = find_constant(ast, item->target, name->name);
+            Global *constant = find_global(ast, item->target, name->name);
             if (constant) { found = true; visible = constant->exported; }
             if (!found) token_fail(ctx, name->name, "unknown selectively imported declaration");
             if (!visible) token_fail(ctx, name->name, "inaccessible symbol: selective import requires pub");
@@ -374,17 +380,19 @@ static void imports(Context *ctx, const Ast *ast, Module *module) {
 }
 void analyze(Context *ctx, Ast *ast) {
     const char *saved = ctx->filename;
-    for (Constant *constant = ast->constants; constant; constant = constant->next) {
+    uint32_t global_index = 0;
+    for (Global *constant = ast->globals; constant; constant = constant->next) {
         ctx->filename = constant->module->path;
         if (constant->type != TY_INT && constant->type != TY_BOOL)
-            token_fail(ctx, constant->name, "module constant type must be explicit int or bool");
+            token_fail(ctx, constant->name, "module constant/static type must be explicit int or bool");
+        if (constant->is_static) constant->symbol = global_index++;
         Token full = join_name(ctx, constant->scope, constant->name, "::");
-        for (Constant *other = ast->constants; other != constant; other = other->next)
-            if (constant_named(other, constant->module, full)) token_fail(ctx, constant->name, "duplicate module constant declaration");
+        for (Global *other = ast->globals; other != constant; other = other->next)
+            if (global_named(other, constant->module, full)) token_fail(ctx, constant->name, "duplicate module constant/static declaration");
         for (Function *fn = ast->functions; fn; fn = fn->next)
-            if (function_named(fn, constant->module, full)) token_fail(ctx, constant->name, "module constant conflicts with function declaration");
+            if (function_named(fn, constant->module, full)) token_fail(ctx, constant->name, "module constant/static storage conflicts with function declaration");
         for (Namespace *ns = constant->module->namespaces; ns; ns = ns->next)
-            if (token_equal(ns->name, full)) token_fail(ctx, constant->name, "module constant conflicts with namespace declaration");
+            if (token_equal(ns->name, full)) token_fail(ctx, constant->name, "module constant/static storage conflicts with namespace declaration");
     }
     for (Module *module = ast->modules; module; module = module->next) imports(ctx, ast, module);
     bool main_found = false;
@@ -408,7 +416,7 @@ void analyze(Context *ctx, Ast *ast) {
         }
     }
     if (!main_found) { ctx->filename = ast->entry->path; fail(ctx, 0, 0, "missing entry point int main()"); }
-    for (Constant *constant = ast->constants; constant; constant = constant->next) {
+    for (Global *constant = ast->globals; constant; constant = constant->next) {
         ctx->filename = constant->module->path;
         Function scope = {.module = constant->module, .scope = constant->scope};
         Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope, .reachable = true, .constant_expression = true};

@@ -155,6 +155,7 @@ status 42 source_compiler run "$root/examples/loop_control.l"
 status 42 source_compiler run "$root/examples/switch_demo.l"
 status 42 source_compiler run "$root/examples/modules.l"
 status 42 source_compiler run "$root/examples/constants.l"
+status 42 source_compiler run "$root/examples/static_demo.l"
 status 64 "$compiler"
 status 64 "$compiler" unknown ignored
 status 64 "$compiler" compile ignored

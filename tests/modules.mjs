@@ -426,6 +426,117 @@ try {
     program(project);
   }
 
+  // Static globals have compile-time initial values but shared mutable runtime cells.
+  const staticProgram = body => program({ 'app/main.l': `module app.main;${body}` });
+  const staticFiles = main => ({ 'app/main.l': `module app.main;${main}`,
+    'std/state.l': 'module std.state;const int start=40;static int hidden=start;pub static int count=start;'
+      + 'namespace flags{pub static bool active=true;}pub int next(){return hidden++;}pub int bump(){return count++;}' });
+  staticProgram('static int count=42;int main(){return count;}');
+  staticProgram('static int count=start;const int start=42;int main(){return count;}');
+  staticProgram('int next(){return count++;}static int count=40;int main(){return next()+next()-39;}');
+  staticProgram('static int count=42;int main(){int first=count++;int second=count--;if(count!=42)return 1;return first+second-43;}');
+  staticProgram('static int count=0;static int other=0;int main(){return (count=other=21)+count;}');
+  staticProgram('static int count=40;int f(int count){count++;return count;}int read(){return count;}int main(){int count=f(1);{int count=42;count++;}return read()+count;}');
+  staticProgram('static int count=42;int f(int count){count=0;return count;}int main(){f(count);return count;}');
+  staticProgram('static int count=20;int pair(int a,int b){return a+b;}int main(){return pair(count++,count++)+1;}');
+  staticProgram('static bool active=false;void flip(){active=!active;}int main(){flip();if(active){flip();if(!active)return 42;}return 1;}');
+  staticProgram('static int count=0;int main(){bool a=false&&((count=7)==7);bool b=true||((count=9)==9);return count+42;}');
+  staticProgram('static int index=0;int main(){int a[2];a[index++]=index;return a[0]+index+40;}');
+  staticProgram('static int count=1;int main(){switch(count++){case 1:count=count+40;break;default:return 1;}return count;}');
+  staticProgram('static int count=0;int main(){for(;count<6;count++){if(count==3)continue;}return count*7;}');
+  staticProgram('static int count=0;static bool active=true;int main(){while(active){count++;active=count<3;}return count*14;}');
+  staticProgram('static int calls=0;int visit(int n){calls++;if(n>0)visit(n-1);return calls;}int main(){return visit(5)*7;}');
+  staticProgram('static int count=40;namespace n{static int count=2;}int main(){return count+n::count;}');
+  staticProgram('namespace n{static int count=40;}namespace n{int next(){return count++;}}int main(){return n::next()+n::next()-39;}');
+  staticProgram('static int count=2;namespace n{const int count=40;}int main(){return count+n::count;}');
+  staticProgram('namespace n{namespace values{static int count=41;}namespace use{int f(){return values::count++;}}}int main(){n::use::f();return n::values::count;}');
+  staticProgram('static int value=-2147483648;int main(){if(value!=-2147483648)return 1;value=2147483647;if(value!=2147483647)return 1;return 42;}');
+  staticProgram('static bool active=true||1/0==0;static int count=40+2;int main(){if(active)return count;return 1;}');
+  program(staticFiles('import std.state;int main(){return std::state::next()+std::state::next()-39;}'));
+  program(staticFiles('import std.state as s;int main(){s::count=40;int first=s::bump();return first+s::count-39;}'));
+  program(staticFiles('import std.state::{count as n};int main(){n=41;n++;return n;}'));
+  program(staticFiles('import std.state::{flags::active as active,count};int main(){active=false;count=42;if(!active)return count;return 1;}'));
+  program(staticFiles('import std.state::{count};int main(){int count=42;return count;}'));
+  program({ 'app/main.l': 'module app.main;import std.a;import std.b;int main(){std::a::count=2;return std::a::count+std::b::count;}',
+    'std/a.l': 'module std.a;pub static int count=0;', 'std/b.l': 'module std.b;pub static int count=40;' });
+  const staticRelocation = staticFiles('import std.state;int main(){return std::state::next()+std::state::next()-39;}');
+  const staticOriginal = program(staticRelocation), staticConfig = config(); staticConfig.module_roots.reverse();
+  const staticMoved = fixture(staticRelocation, staticConfig), staticOutput = resolve(staticMoved.directory, 'moved.lbc');
+  source(staticMoved, 0, 'compile', ['-o', staticOutput], { cwd: '/' });
+  assert.deepEqual(readFileSync(resolve(staticOriginal.directory, 'program.lbc')), readFileSync(staticOutput));
+  const staticIR = source(staticOriginal, 0, 'inspect').stdout;
+  assert.match(staticIR, /LIR 1\.3; bytecode 1\.3/);
+  assert.match(staticIR, /global g\d+ stdlib::std::state::hidden: int initial=40/);
+  assert.match(staticIR, /global g\d+ stdlib::std::state::flags::active: bool initial=1/);
+  assert.match(staticIR, /global\.load/); assert.match(staticIR, /global\.store/);
+  for (const [body, message] of [
+    ['static int count;int main(){return 0;}', /constant initializer/],
+    ['static int =0;int main(){return 0;}', /static storage name/],
+    ['static int count=0 int main(){return 0;}', /after static declaration/],
+    ['static auto count=0;int main(){return 0;}', /explicit int or bool/],
+    ['static void count=0;int main(){return 0;}', /explicit int or bool/],
+    ['static bool active=1;int main(){return 0;}', /expected bool, got int/],
+    ['static int count=true;int main(){return 0;}', /expected int, got bool/],
+    ['static int count=0;static int count=1;int main(){return 0;}', /duplicate module/],
+    ['static int count=0;const int count=1;int main(){return 0;}', /duplicate module/],
+    ['const int count=0;static int count=1;int main(){return 0;}', /duplicate module/],
+    ['namespace n{static int count=0;}namespace n{static int count=1;}int main(){return 0;}', /duplicate module/],
+    ['static int count=0;int count(){return 0;}int main(){return 0;}', /conflicts with function/],
+    ['namespace n{}static int n=0;int main(){return 0;}', /conflicts with namespace/],
+    ['static bool active=true;int main(){return active++;}', /expected int, got bool/],
+    ['static int count=0;int main(){count=true;return 0;}', /expected int, got bool/],
+    ['static int count=0;int main(){return count();}', /static storage is not callable/],
+    ['static int count=0;static int other=count;int main(){return 0;}', /mutable static storage is not a constant expression/],
+    ['static int count=0;const int other=count;int main(){return 0;}', /mutable static storage is not a constant expression/],
+    ['static int count=count;int main(){return 0;}', /mutable static storage is not a constant expression/],
+    ['static bool active=false&&active;int main(){return 0;}', /mutable static storage is not a constant expression/],
+    ['static int count=f();int f(){return 42;}int main(){return 0;}', /function call is not/],
+    ['static int count=0;static int other=(count=42);int main(){return 0;}', /assignment is not/],
+    ['static int count=0;static int other=count++;int main(){return 0;}', /postfix update is not/],
+    ['static int count=0;static int other=count[0];int main(){return 0;}', /array access is not/],
+    ['static int count=2147483647+1;int main(){return 42;}', /invalid constant expression: integer overflow/],
+    ['static int count=1/0;int main(){return 42;}', /invalid constant expression: division by zero/],
+    ['static int count[2];int main(){return 0;}', /scalar constant initializer/],
+    ['static int f(){return 42;}int main(){return f();}', /scalar constant initializer/],
+    ['int count=42;int main(){return count;}', /after function name/],
+    ['int main(){static int count=0;return count;}', /expected expression/],
+  ]) rejected({ 'app/main.l': `module app.main;${body}` }, message);
+  for (const [body, message] of [
+    ['import std.state;int main(){return count;}', /unknown local variable or constant/],
+    ['import std.state;int main(){return std::state::hidden;}', /inaccessible symbol/],
+    ['import std.state;int main(){std::state::hidden=0;return 0;}', /inaccessible symbol/],
+    ['import std.state::{hidden};int main(){return 0;}', /requires pub/],
+    ['import std.state::{count};int main(){return count();}', /static storage is not callable/],
+    ['import std.state as s;static int s=0;int main(){return 0;}', /alias conflicts/],
+    ['import std.state as s;int main(){int s=0;return s::count;}', /local binding/],
+    ['import std.state as s;int main(){int s=0;s::count=42;return 0;}', /local binding/],
+    ['import std.state::{count};import std.state::{flags::active as count};int main(){return 0;}', /ambiguous selective/],
+    ['import std.state;static int initial=std::state::count;int main(){return 0;}', /mutable static storage is not a constant expression/],
+  ]) rejected(staticFiles(body), message);
+  rejected({ 'app/main.l': 'module app.main;import app.state;int main(){return app::state::count;}',
+    'app/state.l': 'module app.state;static int count=42;' }, /inaccessible symbol/);
+  rejected({ 'app/main.l': 'module app.main;import app.bridge;int main(){return app::bridge::count;}',
+    'app/bridge.l': 'module app.bridge;import std.state::{count};', 'std/state.l': 'module std.state;pub static int count=42;' }, /not a scalar constant/);
+  for (const [body, message] of [
+    ['static int count=2147483647;int main(){return count++;}', /integer overflow/],
+    ['static int count=-2147483648;int main(){return count--;}', /integer overflow/],
+    ['static int index=2;int f(){return 1/0;}int main(){int a[1];a[index++]=f();return 0;}', /array index out of bounds/],
+  ]) {
+    const f = fixture({ 'app/main.l': `module app.main;${body}` }), output = resolve(f.directory, 'trap.lbc');
+    assert.match(source(f, 70, 'run').stderr, message);
+    source(f, 0, 'compile', ['-o', output]); assert.match(command(70, ['run', output]).stderr, message);
+  }
+  const importedStaticFailure = fixture({ ...staticFiles('import std.state;int main(){return std::state::next();}'),
+    'std/state.l': 'module std.state;static int count=2147483647;pub int next(){return count++;}' });
+  assert.ok(source(importedStaticFailure, 70, 'run').stderr.includes('/std/state.l:'));
+  const staticLimit = Array.from({ length: 1024 }, (_, n) => `static int g${n}=42;`).join('');
+  staticProgram(`${staticLimit}int main(){return g1023;}`);
+  const separateLimits = fixture({ 'app/main.l': `module app.main;${constantLimit}${staticLimit}int main(){return g1023;}` });
+  source(separateLimits);
+  rejected({ 'app/main.l': `module app.main;${staticLimit}static int extra=0;int main(){return 42;}` }, /too many static globals/);
+  rejected({ 'app/main.l': `module app.main;import app.state;${staticLimit}int main(){return 42;}`,
+    'app/state.l': 'module app.state;static int other=0;' }, /too many static globals across modules/);
+
   // Strict manifest schema, truncations, escaping and manifest-relative roots.
   const minimal = JSON.stringify(config());
   for (let cut = 0; cut < minimal.length; ++cut) assert.match(source(fixture({}, minimal.slice(0, cut)), 65).stderr, /invalid module manifest/);

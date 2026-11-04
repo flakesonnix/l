@@ -250,16 +250,20 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
         }
         if (peek(p).kind == TK_MODULE || peek(p).kind == TK_IMPORT)
             token_fail(p->ctx, peek(p), "module and import declarations must precede other declarations");
-        if (take(p, TK_CONST)) {
-            if (ast->constant_count++ == L_MAX_CONSTANTS) token_fail(p->ctx, token, "too many module constants (maximum 1024)");
-            Constant *constant = allocate(p->ctx, sizeof(*constant));
+        bool is_static = take(p, TK_STATIC);
+        if (is_static || take(p, TK_CONST)) {
+            if (is_static) {
+                if (ast->static_count++ == L_MAX_GLOBALS) token_fail(p->ctx, token, "too many static globals (maximum 1024)");
+            } else if (ast->constant_count++ == L_MAX_CONSTANTS) token_fail(p->ctx, token, "too many module constants (maximum 1024)");
+            Global *constant = allocate(p->ctx, sizeof(*constant));
             constant->module = ast->entry; constant->scope = scope; constant->exported = exported;
+            constant->is_static = is_static;
             constant->type = parse_type(p);
-            constant->name = expect(p, TK_NAME, "expected module constant name");
-            expect(p, '=', "module constants require a scalar initializer");
+            constant->name = expect(p, TK_NAME, is_static ? "expected static storage name" : "expected module constant name");
+            expect(p, '=', is_static ? "static storage requires a scalar constant initializer" : "module constants require a scalar initializer");
             constant->value = expression(p, 1);
-            expect(p, ';', "expected ';' after module constant");
-            Constant **constants = &ast->constants;
+            expect(p, ';', is_static ? "expected ';' after static declaration" : "expected ';' after module constant");
+            Global **constants = &ast->globals;
             while (*constants) constants = &(*constants)->next;
             *constants = constant;
             continue;
@@ -320,6 +324,6 @@ Ast *parse(Context *ctx, Token *tokens, size_t count) {
     }
     declarations(&p, ast, (Token){.text = ""}, false);
     ast->entry->functions = ast->functions;
-    ast->entry->constants = ast->constants;
+    ast->entry->globals = ast->globals;
     return ast;
 }

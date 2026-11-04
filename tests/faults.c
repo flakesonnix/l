@@ -132,17 +132,17 @@ static void bad_stmt_lower(Context *ctx) {
 }
 static void bad_constant_kind(Context *ctx) {
     Ast *ast = frontend(ctx, "const int n=1;int main(){return n;}"); analyze(ctx, ast);
-    ast->constants->state = 0; ast->constants->value->kind = (ExprKind)99;
+    ast->globals->state = 0; ast->globals->value->kind = (ExprKind)99;
     evaluate_constants(ctx, ast);
 }
 static void bad_constant_unary(Context *ctx) {
     Ast *ast = frontend(ctx, "const int n=+1;int main(){return n;}"); analyze(ctx, ast);
-    ast->constants->state = 0; ast->constants->value->op = '?';
+    ast->globals->state = 0; ast->globals->value->op = '?';
     evaluate_constants(ctx, ast);
 }
 static void bad_constant_binary(Context *ctx) {
     Ast *ast = frontend(ctx, "const int n=1+1;int main(){return n;}"); analyze(ctx, ast);
-    ast->constants->state = 0; ast->constants->value->op = '?';
+    ast->globals->state = 0; ast->globals->value->op = '?';
     evaluate_constants(ctx, ast);
 }
 static void low_literal(Context *ctx) {

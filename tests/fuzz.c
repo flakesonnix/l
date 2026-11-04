@@ -69,6 +69,10 @@ static void semantic_case(int32_t expected, int status) {
     Program *loaded = roundtrip(ctx, p);
     run_expected(p, expected, status);
     run_expected(loaded, expected, status);
+    if (p->global_count) {
+        run_expected(p, expected, status);
+        run_expected(loaded, expected, status);
+    }
     dispose(ctx);
 }
 static void append(const char *format, ...) {
@@ -104,7 +108,9 @@ static void fuzz_bytecode(void) {
         "int pick(int n){switch(n){case 0:return 10;case 1:case 2:return 30;default:return 99;}}"
             "int main(){return pick(0)+pick(1)+pick(2)+pick(9)-127;}",
         "const int minimum=-2147483648;namespace values{pub const int half=21;const bool ready=half*2==42&&minimum<0;}"
-            "int main(){if(values::ready)return values::half*2;return 0;}"
+            "int main(){if(values::ready)return values::half*2;return 0;}",
+        "const int start=40;static int counter=start;static bool active=true;int next(){return counter++;}"
+            "int main(){if(active){active=false;return next()+next()-39;}return 0;}"
     };
     Seed seeds[sizeof(sources) / sizeof(*sources)];
     Context *ctx = context("fuzz-seed");
@@ -112,6 +118,7 @@ static void fuzz_bytecode(void) {
     for (size_t i = 0; i < sizeof(seeds) / sizeof(*seeds); ++i) {
         Program *p = compile(ctx, sources[i]);
         run_expected(p, 42, 0);
+        if (p->global_count) run_expected(p, 42, 0);
         write_bytecode(ctx, p, "build/fuzz-roundtrip.lbc");
         seeds[i].bytes = read_file(ctx, "build/fuzz-roundtrip.lbc", &seeds[i].size);
         if (seeds[i].size * 2 + 32 > MAX_INPUT) failed("seed exceeds the mutation buffer");
@@ -460,6 +467,46 @@ static void expression_cases(void) {
     }
     if (!successes || !traps) failed("expression model did not exercise values and traps");
 }
+/* Independent shared-state model, with repeated runs of each source/bytecode program. */
+static void static_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        int32_t counter = (int32_t)random_number(201) - 100;
+        bool flag = random_number(2) != 0;
+        int64_t expected = 0;
+        source_length = 0;
+        append("const int bias=17;static int count=%d+bias-bias;static bool flag=%s;"
+               "int bump(int delta){count=count+delta;flag=!flag;return count;}"
+               "int pair(int a,int b){return a*3+b;}int main(){int sum=0;", counter, flag ? "true" : "false");
+        unsigned operations = 8 + random_number(33);
+        for (unsigned n = 0; n < operations; ++n) {
+            int32_t value = (int32_t)random_number(201) - 100;
+            switch (random_number(8)) {
+            case 0:
+                append("sum=sum+bump(%d);", value); counter += value; flag = !flag; expected += counter; break;
+            case 1: append("sum=sum+count++;"); expected += counter++; break;
+            case 2: append("sum=sum+count--;"); expected += counter--; break;
+            case 3: append("count=%d;flag=!flag;", value); counter = value; flag = !flag; break;
+            case 4:
+                append("if(flag)sum=sum+bump(%d);else count=count+2;", value);
+                if (flag) { counter += value; flag = false; expected += counter; } else counter += 2;
+                break;
+            case 5:
+                append("sum=sum+bump(bump(%d)-count);", value); counter += value; expected += counter; break;
+            case 6:
+                append("sum=sum+pair(bump(%d),bump(%d));", value, -value);
+                expected += (int64_t)(counter + value) * 3 + counter; break;
+            case 7:
+                append("bool b%u=flag&&((count=count+%d)>=0);if(b%u)sum++;", n, value, n);
+                if (flag) { counter += value; if (counter >= 0) ++expected; }
+                break;
+            }
+        }
+        append("if(flag)sum=sum+bias;return sum+count;}");
+        expected += counter + (flag ? 17 : 0);
+        if (expected < INT32_MIN || expected > INT32_MAX) failed("static model result exceeds int range");
+        semantic_case((int32_t)expected, 0);
+    }
+}
 
 /* Enumerate (PC, defined-value set) states instead of using the verifier's meet algorithm. */
 enum { GRAPH_REGISTERS = 6, GRAPH_SLOTS = 2, GRAPH_CODE = 13, GRAPH_STATES = 1u << (GRAPH_REGISTERS + GRAPH_SLOTS) };
@@ -480,12 +527,13 @@ static bool graph_model(const IrFunction *f) {
             uses = 1u << i.a;
             if (i.c) uses |= (1u << (GRAPH_REGISTERS + i.dst)) | (1u << i.b);
             break;
+        case OP_GLOBAL_STORE: uses = 1u << i.a; break;
         case OP_ADD: uses = (1u << i.a) | (1u << i.b); break;
         case OP_BRANCH: case OP_SWITCH: case OP_RETURN: uses = 1u << i.a; break;
         default: break;
         }
         if ((bits & uses) != uses) return false;
-        if (i.op == OP_CONST || i.op == OP_LOAD || i.op == OP_ADD) {
+        if (i.op == OP_CONST || i.op == OP_LOAD || i.op == OP_ADD || i.op == OP_GLOBAL_LOAD) {
             reachable |= 1u << i.dst; bits |= 1u << i.dst;
         }
         if (i.op == OP_CLEAR || (i.op == OP_STORE && !i.c)) bits |= 1u << (GRAPH_REGISTERS + i.dst);
@@ -527,6 +575,7 @@ static void graph_cases(void) {
         Type slots[] = {TY_INT, TY_INT}, registers[] = {TY_BOOL, TY_INT, TY_INT, TY_INT, TY_INT, TY_INT};
         uint32_t lengths[] = {0, 1};
         SwitchEntry entries[6];
+        IrGlobal globals[] = {{"a", TY_INT, 0}, {"b", TY_INT, 42}};
         Instruction code[] = {
             ins(OP_CONST, 0, 1, 0, 0), ins(OP_CONST, 1, 42, 0, 0), ins(OP_JUMP, 0, 3, 0, 0),
             ins(OP_STORE, 0, 1, 0, 0), ins(OP_CLEAR, 1, 0, 0, 0), ins(OP_CONST, 2, 0, 0, 0),
@@ -534,6 +583,9 @@ static void graph_cases(void) {
             ins(OP_LOAD, 4, 1, 2, 1), ins(OP_ADD, 5, 3, 4, 0), ins(OP_JUMP, 0, 12, 0, 0),
             ins(OP_RETURN, 0, 5, 0, 0)
         };
+        if (random_number(2)) code[7] = ins(OP_GLOBAL_LOAD, 3, 0, 0, 0);
+        if (random_number(2)) code[8] = ins(OP_GLOBAL_STORE, 1, 1 + random_number(5), 0, 0);
+        if (random_number(2)) code[9] = ins(OP_GLOBAL_LOAD, 4, 1, 0, 0);
         IrFunction f = {.name = "main", .result = TY_INT, .slot_count = GRAPH_SLOTS, .register_count = GRAPH_REGISTERS,
             .code_count = GRAPH_CODE, .slots = slots, .registers = registers, .slot_lengths = lengths,
             .code = code, .switch_entries = entries};
@@ -550,7 +602,7 @@ static void graph_cases(void) {
             }
         }
         bool valid = graph_model(&f);
-        Program p = {1, 0, &f}; graph_case(&p, valid);
+        Program p = {.function_count = 1, .functions = &f, .global_count = 2, .globals = globals}; graph_case(&p, valid);
     }
     if (!valid_graphs || !invalid_graphs) failed("graph model did not exercise acceptance and rejection");
 }
@@ -567,6 +619,7 @@ int main(void) {
     switch_loop_cases();
     switch_limit_cases();
     expression_cases();
+    static_cases();
     graph_cases();
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
