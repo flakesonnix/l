@@ -282,6 +282,151 @@ try {
     'app/a.l': `module app.a;${Array.from({ length: 128 }, (_, n) => `int f${n}(){return 0;}`).join('')}`,
     'app/b.l': `module app.b;${Array.from({ length: 128 }, (_, n) => `int f${n}(){return 0;}`).join('')}` }, /too many functions across modules/);
 
+  // Nominal value structs copy through locals, argument vectors and return registers.
+  const structProgram = body => program({ 'app/main.l': `module app.main;${body}` });
+  const structFiles = main => ({ 'app/main.l': `module app.main;${main}`,
+    'std/pairs.l': 'module std.pairs;using Count=int;pub struct Pair{Count x;bool ready;};struct Secret{int x;};'
+      + 'pub Pair make(int x){return Pair{x,true};}pub Pair change(Pair p,int x){p.x=x;return p;}' });
+  structProgram('struct Pair{int x;bool ready;};int main(){Pair p=Pair{42,true};if(p.ready)return p.x;return 0;}');
+  structProgram('struct Pair{int x;bool ready;};int main(){Pair p=Pair{40,true};Pair q=p;p.x++;q.x=q.x+2;q.ready=false;if(p.x!=41||p.ready!=true)return 1;return q.x;}');
+  structProgram('struct Pair{int x;bool ready;};int main(){Pair p=Pair{41,false};int a=p.x++;int b=p.x--;p.ready=true;if(p.ready)return a+b-41;return 0;}');
+  structProgram('struct Pair{int x;bool ready;};Pair change(Pair p){p.x=p.x+2;p.ready=!p.ready;return p;}int main(){Pair p=Pair{40,false};Pair q=change(p);if(p.x!=40||p.ready)return 1;if(q.ready)return q.x;return 0;}');
+  structProgram('struct Pair{int x;bool ready;};void change(Pair p){p.x=0;p.ready=false;return;}int main(){Pair p=Pair{42,true};change(p);if(p.ready)return p.x;return 0;}');
+  structProgram('struct Pair{int x;bool ready;};Pair make(){return Pair{42,true};}int main(){if(make().ready)return make().x;return 0;}');
+  structProgram('struct Pair{int x;int y;};int main(){int n=20;Pair p=Pair{n++,n++};return p.x+p.y+1;}');
+  structProgram('struct Pair{int x;int y;};int add(int a,int b){return a+b;}int main(){Pair p=Pair{add(10,10),add(add(5,5),12),};return p.x+p.y;}');
+  structProgram('struct Pair{int x;bool ready;};Pair step(Pair p,int n){if(n==0)return p;p.x++;return step(p,n-1);}int main(){Pair p=Pair{40,true};Pair q=step(p,2);if(p.x!=40)return 1;return q.x;}');
+  structProgram('struct A{int x;};struct B{bool active;int y;int z;};B f(int n,A a,bool b,B p){a.x++;p.z=n+a.x+p.y;p.active=b;return p;}int main(){B q=f(20,A{19},true,B{false,2,0});if(q.active)return q.z;return 0;}');
+  structProgram('struct P{int x;};int main(){auto a=P{1};P b=P{2};P c=P{42};a=b=c;c.x=0;return a.x+b.x-42;}');
+  structProgram('struct P{int x;};P copy(const P p){return p;}int main(){const P a=P{42};P b=copy(a);b.x=0;return a.x;}');
+  structProgram('struct P{int x;};P f(bool active){if(active)return P{42};else return P{0};}int main(){return f(true).x;}');
+  structProgram('struct P{int x;};P f(int n){switch(n){case 0:return P{42};default:return P{0};}}int main(){return f(0).x;}');
+  structProgram('struct A{int x;};struct B{int x;};int f(A p){return p.x;}int f(B p){return p.x*2;}int main(){return f(A{20})+f(B{11});}');
+  structProgram('namespace n{struct P{int x;};}namespace n{P make(){return P{42};}}int main(){return n::make().x;}');
+  structProgram('P make(){return P{42};}struct P{int x;};int main(){return make().x;}');
+  structProgram('struct P{int x;int y;bool b;};int main(){P p=P{-2147483648,2147483647,true};P q=p;q.x=0;if(p.x!=-2147483648||p.y!=2147483647||!p.b)return 1;return 42;}');
+  structProgram('struct Pair{int Pair;};int main(){Pair Pair=Pair{42};return Pair.Pair;}');
+  program(structFiles('import std.pairs;int main(){std::pairs::Pair p=std::pairs::make(40);return std::pairs::change(p,42).x;}'));
+  program(structFiles('import std.pairs as p;int main(){p::Pair value=p::Pair{42,true};return value.x;}'));
+  program(structFiles('import std.pairs::{Pair as P,make,change};P f(P p){return change(p,42);}int main(){P p=make(1);return f(p).x;}'));
+  const structInspection = program(structFiles('import std.pairs;int main(){return std::pairs::make(42).x;}'));
+  const structIR = source(structInspection, 0, 'inspect').stdout;
+  assert.match(structIR, /struct t\d+ stdlib::std::pairs::Pair \(2 fields\)/);
+  assert.match(structIR, /field 1 ready: bool/); assert.match(structIR, /struct\.make/); assert.match(structIR, /field\.load/);
+  program({ 'app/main.l': 'module app.main;import std.a;import std.b;int main(){return std::a::P{20}.x+std::b::P{22}.x;}',
+    'std/a.l': 'module std.a;pub struct P{int x;};', 'std/b.l': 'module std.b;pub struct P{int x;};' });
+  for (const [body, message] of [
+    ['struct P{};int main(){return 42;}', /at least one scalar field/],
+    ['struct {int x;};int main(){return 42;}', /struct name/],
+    ['struct P int x;int main(){return 42;}', /after struct name/],
+    ['struct P{int;};int main(){return 42;}', /struct field name/],
+    ['struct P{int x};int main(){return 42;}', /after scalar struct field/],
+    ['struct P{int x; }int main(){return 42;}', /after struct declaration/],
+    ['struct P{int x=1;};int main(){return 42;}', /after scalar struct field/],
+    ['struct P{int x[2];};int main(){return 42;}', /after scalar struct field/],
+    ['struct P{int f();};int main(){return 42;}', /after scalar struct field/],
+    ['struct P{void x;};int main(){return 42;}', /fields must be scalar/],
+    ['struct P{auto x;};int main(){return 42;}', /fields must be scalar/],
+    ['struct P{P x;};int main(){return 42;}', /fields must be scalar/],
+    ['struct P{int x;bool x;};int main(){return 42;}', /duplicate struct field/],
+    ['struct P{int x;};struct P{int x;};int main(){return 42;}', /duplicate struct declaration/],
+    ['struct P{int x;};const int P=42;int main(){return 42;}', /struct conflicts with module constant/],
+    ['static int P=42;struct P{int x;};int main(){return 42;}', /struct conflicts with module constant/],
+    ['struct P{int x;};using P=int;int main(){return 42;}', /type alias conflicts with struct/],
+    ['struct P{int x;};int P(){return 42;}int main(){return 42;}', /struct conflicts with function/],
+    ['namespace P{}struct P{int x;};int main(){return 42;}', /struct conflicts with namespace/],
+    ['struct P{int x;};using Alias=P;int main(){return 42;}', /type alias target/],
+    ['struct P{int x;};int main(){P a[2];return 42;}', /array element type/],
+    ['struct P{int x;};static P p=P{42};int main(){return 42;}', /explicit int or bool/],
+    ['struct P{int x;};const P p=P{42};int main(){return 42;}', /explicit int or bool/],
+    ['struct P{int x;};int main(){P p;return 42;}', /require an initializer/],
+    ['struct P{int x;};int main(){P p=P{};return 42;}', /number of struct initializer fields/],
+    ['struct P{int x;};int main(){P p=P{1,2};return 42;}', /number of struct initializer fields/],
+    ['struct P{int x;};int main(){P p=P{true};return 42;}', /expected int, got bool/],
+    ['struct P{int x;};int main(){P p=P{42;return 42;}', /after struct literal/],
+    ['struct P{int x;};int main(){P p=P{42};return p.;}', /field name/],
+    ['struct P{int x;};int main(){P p=P{42};return p.missing;}', /unknown struct field/],
+    ['int main(){int n=42;return n.x;}', /requires a struct value/],
+    ['int main(){missing.x=42;return 42;}', /field mutation requires a local struct binding/],
+    ['struct P{int x;};P make(){return P{42};}int main(){make().x=0;return 42;}', /field mutation requires a local struct binding/],
+    ['struct P{int x;};int main(){const P p=P{42};p.x=0;return 42;}', /cannot modify const binding/],
+    ['struct P{int x;};P f(const P p){p.x++;return p;}int main(){return 42;}', /cannot modify const binding/],
+    ['struct P{int x;};int main(){P p=P{42};p.x=true;return 42;}', /expected int, got bool/],
+    ['struct P{bool b;};int main(){P p=P{true};return p.b++;}', /expected int, got bool/],
+    ['struct P{int x;};int main(){P p=P{42};return p++;}', /expected int, got struct/],
+    ['struct P{int x;};int main(){P p=P{42};return p==p;}', /equality requires matching scalar/],
+    ['struct P{int x;};int main(){P p=P{42};return p.x();}', /direct function calls/],
+    ['struct P{int x;};int main(){return P;}', /struct type is not a value/],
+    ['struct P{int x;};int main(){return P();}', /struct type is not callable/],
+    ['using Count=int;int main(){Count{42};return 42;}', /struct literal requires a struct type/],
+    ['int main(){(1+2){42};return 42;}', /struct literal requires a named struct type/],
+    ['struct P{int x;};const int n=P{42};int main(){return 42;}', /struct literal is not a constant expression/],
+    ['struct P{int x;};const int n=P{42}.x;int main(){return 42;}', /field access is not a constant expression/],
+    ['struct A{int x;};struct B{int x;};int main(){A a=B{42};return 42;}', /expected struct, got struct/],
+    ['struct A{int x;};struct B{int x;};int f(A a){return a.x;}int main(){return f(B{42});}', /no matching function overload/],
+    ['struct P{int x;};pub P make(){return P{42};}int main(){return 42;}', /public signature exposes a private struct/],
+    ['struct P{int x;};pub int read(P p){return p.x;}int main(){return 42;}', /public signature exposes a private struct/],
+    ['struct P{int x;};int main(){int P=0;P{42};return 42;}', /local binding/],
+  ]) rejected({ 'app/main.l': `module app.main;${body}` }, message);
+  for (const body of ['int main(){std::pairs::Secret p=std::pairs::Secret{42};return 42;}',
+    'int main(){return std::pairs::Secret{42}.x;}', 'int main(){return std::pairs::Secret;}', 'int main(){return std::pairs::Secret();}'])
+    rejected(structFiles(`import std.pairs;${body}`), /inaccessible symbol/);
+  rejected(structFiles('import std.pairs::{Secret};int main(){return 42;}'), /requires pub/);
+  rejected(structFiles('import std.pairs as P;struct P{int x;};int main(){return 42;}'), /alias conflicts/);
+  const structsLimit = Array.from({ length: 256 }, (_, n) => `struct S${n}{int x;};`).join('');
+  structProgram(`${structsLimit}int main(){return S255{42}.x;}`);
+  rejected({ 'app/main.l': `module app.main;${structsLimit}struct Extra{int x;};int main(){return 42;}` }, /too many structs/);
+  rejected({ 'app/main.l': `module app.main;import app.other;${structsLimit}int main(){return 42;}`,
+    'app/other.l': 'module app.other;struct Extra{int x;};' }, /too many structs across modules/);
+  const fieldsLimit = Array.from({ length: 64 }, (_, n) => `${n % 2 ? 'bool' : 'int'} f${n};`).join('');
+  const fieldValues = Array.from({ length: 64 }, (_, n) => n % 2 ? 'true' : '42').join(',');
+  structProgram(`struct P{${fieldsLimit}};int main(){P p=P{${fieldValues}};if(p.f63)return p.f62;return 0;}`);
+  rejected({ 'app/main.l': `module app.main;struct P{${fieldsLimit}int extra;};int main(){return 42;}` }, /too many struct fields/);
+  for (const [body, message] of [
+    ['struct P{int x;};int main(){P p=P{2147483647};return p.x++;}', /integer overflow/],
+    ['struct P{int x;};int main(){P p=P{-2147483648};return p.x--;}', /integer overflow/],
+  ]) {
+    const f = fixture({ 'app/main.l': `module app.main;${body}` }), output = resolve(f.directory, 'trap.lbc');
+    assert.match(source(f, 70, 'run').stderr, message);
+    source(f, 0, 'compile', ['-o', output]); assert.match(command(70, ['run', output]).stderr, message);
+  }
+  state = 0x53545243;
+  for (let test = 0; test < 32; ++test) {
+    const project = { 'std/records.l': 'module std.records;pub struct Packet{int x;bool ready;};',
+      'std/other.l': 'module std.other;pub struct Packet{int x;bool ready;};' }, nodes = [];
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.r${n}`, kind = (test + n) % 3;
+      let imports = kind === 0 ? 'import std.records;' : kind === 1 ? 'import std.records as types;' : 'import std.records::{Packet as Value};';
+      const type = kind === 0 ? 'std::records::Packet' : kind === 1 ? 'types::Packet' : 'Value';
+      const delta = random(41) - 20, parents = [];
+      let body = `p.x=p.x+(${delta});p.ready=!p.ready;`;
+      for (let p = 0; p < n; ++p) if (p >= n - 2 || random(3) === 0) {
+        parents.push(p);
+        const parent = nodes[p].name, form = (test + n + p) % 3;
+        if (!form) { imports += `import ${parent};`; body += `p=${parent.replaceAll('.', '::')}::work::run(p);`; }
+        else if (form === 1) { imports += `import ${parent} as m${p};`; body += `p=m${p}::work::run(p);`; }
+        else { imports += `import ${parent}::{work::run as f${p}};`; body += `p=f${p}(p);`; }
+      }
+      nodes.push({ name, delta, parents });
+      project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${imports}namespace work{pub ${type} run(${type} p){${body}return p;}}`;
+    }
+    function simulate(n, input) {
+      let value = { x: input.x + nodes[n].delta, ready: !input.ready };
+      for (const parent of nodes[n].parents) value = simulate(parent, value);
+      return value;
+    }
+    const original = { x: random(2001) - 1000, ready: random(2) !== 0 }, a = simulate(7, original), b = simulate(6, original);
+    const imports = ['import std.records::{Packet};', 'import std.other as other;', 'import app.r7 as top;', 'import app.r6 as next;'];
+    if (test % 2) imports.reverse();
+    project['app/main.l'] = `module app.main;${imports.join('')}int main(){Packet original=Packet{${original.x},${original.ready}};`
+      + `Packet a=top::work::run(original);Packet b=next::work::run(original);other::Packet o=other::Packet{13,true};`
+      + `if(original.x!=${original.x}||original.ready!=${original.ready}||o.x!=13||!o.ready)return 1;`
+      + `if(a.x!=${a.x}||a.ready!=${a.ready}||b.x!=${b.x}||b.ready!=${b.ready})return 1;return 42;}`;
+    const settings = config(); if (test % 2) settings.module_roots.reverse();
+    const f = program(project, 42, settings);
+    assert.equal(readFileSync(resolve(f.directory, 'program.lbc')).readUInt32LE(20), 2, 'shared struct identity must not be duplicated');
+  }
+
   // Transparent scalar type aliases share module/namespace lookup and disappear before IR.
   const aliasProgram = body => program({ 'app/main.l': `module app.main;${body}` });
   const aliasFiles = main => ({ 'app/main.l': `module app.main;${main}`,
@@ -740,7 +885,7 @@ try {
   source(staticMoved, 0, 'compile', ['-o', staticOutput], { cwd: '/' });
   assert.deepEqual(readFileSync(resolve(staticOriginal.directory, 'program.lbc')), readFileSync(staticOutput));
   const staticIR = source(staticOriginal, 0, 'inspect').stdout;
-  assert.match(staticIR, /LIR 1\.3; bytecode 1\.3/);
+  assert.match(staticIR, /LIR 1\.4; bytecode 1\.4/);
   assert.match(staticIR, /global g\d+ stdlib::std::state::hidden: int initial=40/);
   assert.match(staticIR, /global g\d+ stdlib::std::state::flags::active: bool initial=1/);
   assert.match(staticIR, /global\.load/); assert.match(staticIR, /global\.store/);
@@ -969,7 +1114,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 alias DAGs, 32 constant DAGs, 32 static DAGs in two import orders, ${constantModels} constant-expression models, ${shapeModels} integer shape models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 struct DAGs, 32 alias DAGs, 32 constant DAGs, 32 static DAGs in two import orders, ${constantModels} constant-expression models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

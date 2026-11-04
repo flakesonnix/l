@@ -101,6 +101,22 @@ static Expr *primary(Parser *p) {
                 expect(p, ')', "expected ')' after arguments");
             }
             e = call;
+        } else if (take(p, '{')) {
+            Expr *value = new_expr(p, EX_STRUCT, e->token); value->left = e;
+            ExprList **tail = &value->args;
+            if (!take(p, '}')) {
+                do {
+                    ExprList *arg = allocate(p->ctx, sizeof(*arg));
+                    arg->value = expression(p, 1); *tail = arg; tail = &arg->next;
+                    if (!take(p, ',')) break;
+                    if (peek(p).kind == '}') break;
+                } while (true);
+                expect(p, '}', "expected '}' after struct literal");
+            }
+            e = value;
+        } else if (take(p, '.')) {
+            Expr *field = new_expr(p, EX_FIELD, expect(p, TK_NAME, "expected field name after '.'"));
+            field->left = e; e = field;
         } else if (take(p, '[')) {
             Expr *index = new_expr(p, EX_INDEX, e->token);
             index->left = e; index->right = expression(p, 1);
@@ -251,6 +267,27 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
         }
         if (peek(p).kind == TK_MODULE || peek(p).kind == TK_IMPORT)
             token_fail(p->ctx, peek(p), "module and import declarations must precede other declarations");
+        if (take(p, TK_STRUCT)) {
+            if (ast->struct_count++ == L_MAX_STRUCTS) token_fail(p->ctx, token, "too many structs (maximum 256)");
+            Struct *record = allocate(p->ctx, sizeof(*record));
+            record->module = ast->entry; record->scope = scope; record->exported = exported;
+            record->name = expect(p, TK_NAME, "expected struct name");
+            expect(p, '{', "expected '{' after struct name");
+            Field **fields = &record->fields;
+            while (!take(p, '}')) {
+                if (record->field_count++ == L_MAX_FIELDS) token_fail(p->ctx, peek(p), "too many struct fields (maximum 64)");
+                Field *field = allocate(p->ctx, sizeof(*field));
+                field->type = parse_type(p, &field->type_name);
+                field->name = expect(p, TK_NAME, "expected struct field name");
+                expect(p, ';', "expected ';' after scalar struct field");
+                *fields = field; fields = &field->next;
+            }
+            expect(p, ';', "expected ';' after struct declaration");
+            Struct **records = &ast->structs;
+            while (*records) records = &(*records)->next;
+            *records = record;
+            continue;
+        }
         if (take(p, TK_USING)) {
             if (ast->alias_count++ == L_MAX_ALIASES) token_fail(p->ctx, token, "too many type aliases (maximum 1024)");
             TypeAlias *alias = allocate(p->ctx, sizeof(*alias));
@@ -340,5 +377,6 @@ Ast *parse(Context *ctx, Token *tokens, size_t count) {
     ast->entry->functions = ast->functions;
     ast->entry->globals = ast->globals;
     ast->entry->aliases = ast->aliases;
+    ast->entry->structs = ast->structs;
     return ast;
 }

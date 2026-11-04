@@ -65,6 +65,9 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
         r = reg(l, e->type); emit(l, e->token, OP_LOAD, r, e->symbol, 0, 0); return r;
     case EX_GLOBAL:
         r = reg(l, e->type); emit(l, e->token, OP_GLOBAL_LOAD, r, e->symbol, 0, 0); return r;
+    case EX_FIELD:
+        a = lower_expr(l, e->left); r = reg(l, e->type);
+        emit(l, e->token, OP_FIELD, r, a, e->symbol, 0); return r;
     case EX_INDEX: {
         uint32_t idx = lower_expr(l, e->right);
         emit(l, e->token, OP_BOUNDS, 0, idx, 0, e->length);
@@ -73,6 +76,10 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
         return r;
     }
     case EX_ASSIGN:
+        if (e->left->kind == EX_FIELD) {
+            r = lower_expr(l, e->right);
+            emit(l, e->token, OP_FIELD_STORE, e->left->left->symbol, r, e->left->symbol, 0); return r;
+        }
         if (e->left->kind == EX_INDEX) {
             /* Left-to-right: the index is evaluated and bounds-checked before the stored value. */
             uint32_t idx = lower_expr(l, e->left->right);
@@ -95,6 +102,9 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
         }
         a = lower_expr(l, e->left); b = constant(l, e->token, TY_INT, 1); r = reg(l, TY_INT);
         emit(l, e->token, e->op == TK_INC ? OP_ADD : OP_SUB, r, a, b, 0);
+        if (e->left->kind == EX_FIELD) {
+            emit(l, e->token, OP_FIELD_STORE, e->left->left->symbol, r, e->left->symbol, 0); return a;
+        }
         emit(l, e->token, e->left->kind == EX_GLOBAL ? OP_GLOBAL_STORE : OP_STORE, e->left->symbol, r, 0, 0); return a;
     case EX_UNARY:
         a = lower_expr(l, e->left);
@@ -119,7 +129,7 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
         }
         b = lower_expr(l, e->right); r = reg(l, e->type);
         emit(l, e->token, binary_op(e->op), r, a, b, 0); return r;
-    case EX_CALL: {
+    case EX_CALL: case EX_STRUCT: {
         /* Evaluate first: nested calls must not split an outer call's argument vector. */
         uint32_t values[L_MAX_SLOTS], count = 0;
         for (ExprList *arg = e->args; arg; arg = arg->next) values[count++] = lower_expr(l, arg->value);
@@ -129,7 +139,9 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
         if (count) memcpy(l->fn->arguments + start, values, count * sizeof(uint32_t));
         l->fn->argument_count += count;
         r = e->type == TY_VOID ? L_NONE : reg(l, e->type);
-        emit(l, e->token, OP_CALL, r, e->symbol, start, count); return r;
+        if (e->kind == EX_STRUCT) emit(l, e->token, OP_STRUCT, r, start, count, 0);
+        else emit(l, e->token, OP_CALL, r, e->symbol, start, count);
+        return r;
     }
     default: token_fail(l->ctx, e->token, "invalid AST expression during lowering");
     }
@@ -233,6 +245,18 @@ Program *lower(Context *ctx, Ast *ast) {
     Program *p = allocate(ctx, sizeof(*p));
     p->function_count = ast->function_count;
     p->functions = allocate(ctx, p->function_count * sizeof(*p->functions));
+    p->struct_count = ast->struct_count;
+    p->structs = allocate(ctx, p->struct_count * sizeof(*p->structs));
+    for (Struct *record = ast->structs; record; record = record->next) {
+        IrStruct *s = &p->structs[record->symbol];
+        s->name = linked_name(ctx, record->module, record->scope, record->name); s->field_count = record->field_count;
+        s->fields = allocate(ctx, s->field_count * sizeof(*s->fields));
+        uint32_t field_index = 0;
+        for (Field *field = record->fields; field; field = field->next, ++field_index) {
+            s->fields[field_index].name = copy_text(ctx, field->name.text, field->name.length);
+            s->fields[field_index].type = field->type;
+        }
+    }
     p->global_count = ast->static_count;
     p->globals = allocate(ctx, p->global_count * sizeof(*p->globals));
     for (Global *global = ast->globals; global; global = global->next) {
@@ -272,6 +296,17 @@ static Type global_type(Context *ctx, const Program *p, uint32_t index) {
     if (index >= p->global_count) invalid(ctx, "global index out of range");
     return p->globals[index].type;
 }
+static bool value_type(const Program *p, Type type) {
+    return type == TY_INT || type == TY_BOOL || (type >= TY_STRUCT && (uint32_t)(type - TY_STRUCT) < p->struct_count);
+}
+static const IrStruct *struct_type(Context *ctx, const Program *p, Type type) {
+    if (type < TY_STRUCT) invalid(ctx, "expected a struct type");
+    return &p->structs[type - TY_STRUCT]; /* Value type IDs have already been validated. */
+}
+static Type field_type(Context *ctx, const IrStruct *record, uint32_t index) {
+    if (index >= record->field_count) invalid(ctx, "field index out of range");
+    return record->fields[index].type;
+}
 static void same(Context *ctx, Type a, Type b) {
     if (a != b) invalid(ctx, "operand type mismatch");
 }
@@ -281,7 +316,9 @@ static void access_mode(Context *ctx, const IrFunction *f, uint32_t slot, Instru
     if ((f->slot_lengths[slot] != 0) != (i.c == 1)) invalid(ctx, "slot shape does not match addressing mode");
     if (i.c) same(ctx, register_type(ctx, f, i.b), TY_INT);
 }
-static bool defines(Opcode op) { return op <= OP_LOAD || (op >= OP_ADD && op <= OP_GE) || op == OP_CALL || op == OP_GLOBAL_LOAD; }
+static bool defines(Opcode op) {
+    return op <= OP_LOAD || (op >= OP_ADD && op <= OP_GE) || op == OP_CALL || op == OP_GLOBAL_LOAD || op == OP_STRUCT || op == OP_FIELD;
+}
 static unsigned successors(Context *ctx, const IrFunction *f, uint32_t pc, uint32_t next[L_MAX_CASES + 1]) {
     Instruction i = f->code[pc];
     unsigned count = 0;
@@ -347,6 +384,11 @@ static void dataflow(Context *ctx, const IrFunction *f, bool **seen_out) {
             if (i.c) { use(ctx, bits, f->register_count + i.dst); use(ctx, bits, i.b); }
             break;
         case OP_GLOBAL_STORE: use(ctx, bits, i.a); break;
+        case OP_FIELD_STORE: use(ctx, bits, f->register_count + i.dst); use(ctx, bits, i.a); break;
+        case OP_FIELD: use(ctx, bits, i.a); break;
+        case OP_STRUCT:
+            for (uint32_t j = 0; j < i.b; ++j) use(ctx, bits, f->arguments[i.a + j]);
+            break;
         case OP_NEG: case OP_NOT: case OP_BRANCH: use(ctx, bits, i.a); break;
         case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_REM:
         case OP_EQ: case OP_NE: case OP_LT: case OP_LE: case OP_GT: case OP_GE:
@@ -370,6 +412,16 @@ void verify(Context *ctx, const Program *p) {
         invalid(ctx, "invalid function table");
     const IrFunction *entry = &p->functions[p->entry];
     if (entry->result != TY_INT || entry->parameter_count) invalid(ctx, "invalid entry signature");
+    if (p->struct_count > L_MAX_STRUCTS) invalid(ctx, "too many structs");
+    for (uint32_t n = 0; n < p->struct_count; ++n) {
+        const IrStruct *s = &p->structs[n];
+        if (!s->field_count || s->field_count > L_MAX_FIELDS) invalid(ctx, "invalid struct field count");
+        for (uint32_t j = 0; j < s->field_count; ++j) {
+            if (s->fields[j].type != TY_INT && s->fields[j].type != TY_BOOL) invalid(ctx, "invalid scalar field type");
+            for (uint32_t k = 0; k < j; ++k)
+                if (!strcmp(s->fields[k].name, s->fields[j].name)) invalid(ctx, "duplicate struct field name");
+        }
+    }
     if (p->global_count > L_MAX_GLOBALS) invalid(ctx, "too many globals");
     for (uint32_t n = 0; n < p->global_count; ++n) {
         const IrGlobal *g = &p->globals[n];
@@ -379,23 +431,24 @@ void verify(Context *ctx, const Program *p) {
     for (uint32_t n = 0; n < p->function_count; ++n) {
         const IrFunction *f = &p->functions[n];
         ctx->filename = f->source_path ? f->source_path : saved;
-        if (f->result > TY_BOOL || f->parameter_count > f->slot_count || f->slot_count > L_MAX_SLOTS ||
+        if ((f->result != TY_VOID && !value_type(p, f->result)) || f->parameter_count > f->slot_count || f->slot_count > L_MAX_SLOTS ||
             f->register_count > L_MAX_REGISTERS || !f->code_count || f->code_count > L_MAX_CODE ||
             f->argument_count > L_MAX_ARGS || f->switch_count > L_MAX_CASES) invalid(ctx, "invalid function limits or result type");
         for (uint32_t j = 0; j < f->switch_count; ++j)
             if (f->switch_entries[j].target >= f->code_count) invalid(ctx, "switch target out of range");
         for (uint32_t j = 0; j < f->slot_count; ++j)
-            if (f->slots[j] != TY_INT && f->slots[j] != TY_BOOL) invalid(ctx, "invalid slot type");
+            if (!value_type(p, f->slots[j])) invalid(ctx, "invalid slot type");
         uint32_t elements = 0;
         for (uint32_t j = 0; j < f->slot_count; ++j) {
             if (f->slot_lengths[j] > L_MAX_ARRAY) invalid(ctx, "array length out of range");
+            if (f->slot_lengths[j] && f->slots[j] >= TY_STRUCT) invalid(ctx, "struct arrays are not supported");
             if (j < f->parameter_count && f->slot_lengths[j]) invalid(ctx, "array parameters are not supported");
             if (elements > L_MAX_SLOTS_ELEMENTS - f->slot_lengths[j])
                 invalid(ctx, "too many array elements");
             elements += f->slot_lengths[j];
         }
         for (uint32_t j = 0; j < f->register_count; ++j)
-            if (f->registers[j] != TY_INT && f->registers[j] != TY_BOOL) invalid(ctx, "invalid register type");
+            if (!value_type(p, f->registers[j])) invalid(ctx, "invalid register type");
         bool *defined = allocate(ctx, f->register_count * sizeof(*defined));
         for (uint32_t pc = 0; pc < f->code_count; ++pc) {
             Instruction i = f->code[pc];
@@ -407,8 +460,21 @@ void verify(Context *ctx, const Program *p) {
             }
             switch (i.op) {
             case OP_CONST:
+                if (f->registers[i.dst] >= TY_STRUCT) invalid(ctx, "struct value requires struct.make");
                 if (f->registers[i.dst] == TY_BOOL && i.a > 1) invalid(ctx, "invalid bool constant");
                 break;
+            case OP_STRUCT: {
+                const IrStruct *s = struct_type(ctx, p, register_type(ctx, f, i.dst));
+                if (i.b != s->field_count || i.a > f->argument_count || i.b > f->argument_count - i.a)
+                    invalid(ctx, "invalid struct initializer vector");
+                for (uint32_t j = 0; j < i.b; ++j)
+                    same(ctx, register_type(ctx, f, f->arguments[i.a + j]), s->fields[j].type);
+                break;
+            }
+            case OP_FIELD:
+                same(ctx, register_type(ctx, f, i.dst), field_type(ctx, struct_type(ctx, p, register_type(ctx, f, i.a)), i.b)); break;
+            case OP_FIELD_STORE:
+                same(ctx, register_type(ctx, f, i.a), field_type(ctx, struct_type(ctx, p, slot_type(ctx, f, i.dst)), i.b)); break;
             case OP_LOAD:
                 access_mode(ctx, f, i.a, i);
                 same(ctx, register_type(ctx, f, i.dst), slot_type(ctx, f, i.a)); break;
@@ -435,6 +501,7 @@ void verify(Context *ctx, const Program *p) {
                 same(ctx, register_type(ctx, f, i.a), TY_INT); same(ctx, register_type(ctx, f, i.b), TY_INT); break;
             case OP_EQ: case OP_NE:
                 same(ctx, register_type(ctx, f, i.dst), TY_BOOL);
+                if (register_type(ctx, f, i.a) >= TY_STRUCT) invalid(ctx, "struct equality is not supported");
                 same(ctx, register_type(ctx, f, i.a), register_type(ctx, f, i.b)); break;
             case OP_LT: case OP_LE: case OP_GT: case OP_GE:
                 same(ctx, register_type(ctx, f, i.dst), TY_BOOL);

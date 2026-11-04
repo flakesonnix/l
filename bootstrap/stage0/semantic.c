@@ -49,10 +49,19 @@ static TypeAlias *find_alias(const Ast *ast, const Module *module, Token path) {
         if (alias_named(alias, module, path)) return alias;
     return NULL;
 }
+static bool struct_named(const Struct *record, const Module *module, Token path) {
+    return record->module == module && token_equal(record->scope, parent_scope(path)) && token_equal(record->name, leaf_name(path));
+}
+static Struct *find_struct(const Ast *ast, const Module *module, Token path) {
+    for (Struct *record = ast->structs; record; record = record->next)
+        if (struct_named(record, module, path)) return record;
+    return NULL;
+}
 static bool symbol_named(const Ast *ast, const Module *module, Token path) {
     for (const Function *fn = ast->functions; fn; fn = fn->next) if (function_named(fn, module, path)) return true;
     if (find_global(ast, module, path)) return true;
     if (find_alias(ast, module, path)) return true;
+    if (find_struct(ast, module, path)) return true;
     for (Namespace *ns = module->namespaces; ns; ns = ns->next) if (token_equal(ns->name, path)) return true;
     return false;
 }
@@ -129,11 +138,25 @@ static TypeAlias *visible_alias(Semantic *s, ResolvedName name) {
         token_fail(s->ctx, name.path, "inaccessible symbol: type alias is private to its module");
     return alias;
 }
+static Struct *visible_struct(Semantic *s, ResolvedName name) {
+    Struct *record = find_struct(s->ast, name.module, name.path);
+    if (record && name.module != s->fn->module && !record->exported)
+        token_fail(s->ctx, name.path, "inaccessible symbol: struct is private to its module");
+    return record;
+}
+static Struct *struct_type(Semantic *s, Type type) {
+    Struct *record = s->ast->structs;
+    for (uint32_t n = TY_STRUCT; n < (uint32_t)type; ++n) record = record->next;
+    return record;
+}
 static Type resolve_alias(Context *, Ast *, TypeAlias *, TypeAlias *);
 static Type resolve_type(Semantic *s, Type type, Token name, TypeAlias *parent) {
     if (type != TY_NAMED) return type;
-    TypeAlias *alias = visible_alias(s, resolve_name(s, name, false));
-    if (!alias) token_fail(s->ctx, name, "declaration is not a type alias");
+    ResolvedName resolved = resolve_name(s, name, false);
+    Struct *record = visible_struct(s, resolved);
+    if (record) return (Type)(TY_STRUCT + record->symbol);
+    TypeAlias *alias = visible_alias(s, resolved);
+    if (!alias) token_fail(s->ctx, name, "declaration is not a type alias or struct");
     return resolve_alias(s->ctx, s->ast, alias, parent);
 }
 static Token alias_name(Context *ctx, const TypeAlias *alias) {
@@ -165,6 +188,7 @@ static Global *resolve_global(Semantic *s, Token name) {
     ResolvedName resolved = resolve_name(s, name, false);
     Global *constant = visible_global(s, resolved);
     if (!constant && visible_alias(s, resolved)) token_fail(s->ctx, name, "type alias is not a value");
+    if (!constant && visible_struct(s, resolved)) token_fail(s->ctx, name, "struct type is not a value");
     if (!constant) token_fail(s->ctx, name, "declaration is not a scalar constant");
     return constant;
 }
@@ -173,6 +197,7 @@ static Function *resolve_call(Semantic *s, Token name, const Type *types, uint32
     Global *global = visible_global(s, resolved);
     if (global) token_fail(s->ctx, name, global->is_static ? "static storage is not callable" : "module constant is not callable");
     if (visible_alias(s, resolved)) token_fail(s->ctx, name, "type alias is not callable");
+    if (visible_struct(s, resolved)) token_fail(s->ctx, name, "struct type is not callable; use a struct literal");
     return overload(s, resolved.module, resolved.path, types, count);
 }
 static Decl *resolve_index(Semantic *s, Expr *e) {
@@ -186,7 +211,24 @@ static Decl *resolve_index(Semantic *s, Expr *e) {
     e->type = b->decl->type;
     return b->decl;
 }
+static Type resolve_field(Semantic *s, Expr *e, Type type) {
+    if (type < TY_STRUCT) token_fail(s->ctx, e->token, "field access requires a struct value");
+    uint32_t index = 0;
+    for (Field *field = struct_type(s, type)->fields; field; field = field->next, ++index) {
+        if (!token_equal(field->name, e->token)) continue;
+        e->symbol = index; e->type = field->type; return e->type;
+    }
+    token_fail(s->ctx, e->token, "unknown struct field");
+}
 static Type lvalue(Semantic *s, Expr *e) {
+    if (e->kind == EX_FIELD) {
+        if (e->left->kind != EX_NAME) token_fail(s->ctx, e->token, "field mutation requires a local struct binding");
+        Binding *binding = lookup(s, e->left->token);
+        if (!binding) token_fail(s->ctx, e->token, "field mutation requires a local struct binding");
+        if (binding->decl->immutable) token_fail(s->ctx, e->token, "cannot modify const binding");
+        e->left->type = binding->decl->type; e->left->symbol = binding->decl->slot;
+        return resolve_field(s, e, binding->decl->type);
+    }
     if (e->kind != EX_NAME && e->kind != EX_INDEX)
         token_fail(s->ctx, e->token, "assignment requires a local variable or an array element");
     Binding *b;
@@ -215,6 +257,22 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         if (e->integer > INT32_MAX || e->integer < INT32_MIN) token_fail(s->ctx, e->token, "integer literal exceeds int range");
         e->type = TY_INT; break;
     case EX_BOOL: e->type = TY_BOOL; break;
+    case EX_STRUCT: {
+        if (s->constant_expression) token_fail(s->ctx, e->token, "struct literal is not a constant expression");
+        if (e->left->kind != EX_NAME) token_fail(s->ctx, e->token, "struct literal requires a named struct type");
+        e->type = resolve_type(s, TY_NAMED, e->left->token, NULL);
+        if (e->type < TY_STRUCT) token_fail(s->ctx, e->token, "struct literal requires a struct type");
+        Field *field = struct_type(s, e->type)->fields;
+        for (ExprList *arg = e->args; arg; arg = arg->next) {
+            if (!field) token_fail(s->ctx, e->token, "wrong number of struct initializer fields");
+            require(s, arg->value->token, analyze_expr(s, arg->value), field->type); field = field->next;
+        }
+        if (field) token_fail(s->ctx, e->token, "wrong number of struct initializer fields");
+        break;
+    }
+    case EX_FIELD:
+        if (s->constant_expression) token_fail(s->ctx, e->token, "field access is not a constant expression");
+        (void)resolve_field(s, e, analyze_expr(s, e->left)); break;
     case EX_NAME: {
         Binding *b = lookup(s, e->token);
         if (!b) {
@@ -253,7 +311,7 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         if (e->op == TK_AND || e->op == TK_OR) {
             require(s, e->token, a, TY_BOOL); require(s, e->token, b, TY_BOOL); e->type = TY_BOOL;
         } else if (e->op == TK_EQ || e->op == TK_NE) {
-            if (a == TY_VOID || a != b) token_fail(s->ctx, e->token, "equality requires matching non-void types");
+            if (a == TY_VOID || a >= TY_STRUCT || a != b) token_fail(s->ctx, e->token, "equality requires matching scalar types");
             e->type = TY_BOOL;
         } else {
             require(s, e->token, a, TY_INT); require(s, e->token, b, TY_INT);
@@ -431,6 +489,8 @@ static void imports(Context *ctx, const Ast *ast, Module *module) {
             if (constant) { found = true; visible = constant->exported; }
             TypeAlias *alias = find_alias(ast, item->target, name->name);
             if (alias) { found = true; visible = alias->exported; }
+            Struct *record = find_struct(ast, item->target, name->name);
+            if (record) { found = true; visible = record->exported; }
             if (!found) token_fail(ctx, name->name, "unknown selectively imported declaration");
             if (!visible) token_fail(ctx, name->name, "inaccessible symbol: selective import requires pub");
             for (Import *other = module->imports; other; other = other->next)
@@ -446,12 +506,26 @@ static void imports(Context *ctx, const Ast *ast, Module *module) {
 }
 void analyze(Context *ctx, Ast *ast) {
     const char *saved = ctx->filename;
+    uint32_t struct_index = 0;
+    for (Struct *record = ast->structs; record; record = record->next) {
+        ctx->filename = record->module->path; record->symbol = struct_index++;
+        if (!record->field_count) token_fail(ctx, record->name, "struct must have at least one scalar field");
+        Token full = join_name(ctx, record->scope, record->name, "::");
+        for (Struct *other = ast->structs; other != record; other = other->next)
+            if (struct_named(other, record->module, full)) token_fail(ctx, record->name, "duplicate struct declaration");
+        if (find_global(ast, record->module, full)) token_fail(ctx, record->name, "struct conflicts with module constant/static storage");
+        for (Function *fn = ast->functions; fn; fn = fn->next)
+            if (function_named(fn, record->module, full)) token_fail(ctx, record->name, "struct conflicts with function declaration");
+        for (Namespace *ns = record->module->namespaces; ns; ns = ns->next)
+            if (token_equal(ns->name, full)) token_fail(ctx, record->name, "struct conflicts with namespace declaration");
+    }
     for (TypeAlias *alias = ast->aliases; alias; alias = alias->next) {
         ctx->filename = alias->module->path;
         Token full = join_name(ctx, alias->scope, alias->name, "::");
         for (TypeAlias *other = ast->aliases; other != alias; other = other->next)
             if (alias_named(other, alias->module, full)) token_fail(ctx, alias->name, "duplicate type alias declaration");
         if (find_global(ast, alias->module, full)) token_fail(ctx, alias->name, "type alias conflicts with module constant/static storage");
+        if (find_struct(ast, alias->module, full)) token_fail(ctx, alias->name, "type alias conflicts with struct declaration");
         for (Function *fn = ast->functions; fn; fn = fn->next)
             if (function_named(fn, alias->module, full)) token_fail(ctx, alias->name, "type alias conflicts with function declaration");
         for (Namespace *ns = alias->module->namespaces; ns; ns = ns->next)
@@ -471,6 +545,17 @@ void analyze(Context *ctx, Ast *ast) {
     }
     for (Module *module = ast->modules; module; module = module->next) imports(ctx, ast, module);
     for (TypeAlias *alias = ast->aliases; alias; alias = alias->next) (void)resolve_alias(ctx, ast, alias, NULL);
+    for (Struct *record = ast->structs; record; record = record->next) {
+        ctx->filename = record->module->path;
+        Function scope = {.module = record->module, .scope = record->scope};
+        Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope};
+        for (Field *field = record->fields; field; field = field->next) {
+            field->type = resolve_type(&s, field->type, field->type_name, NULL);
+            if (field->type != TY_INT && field->type != TY_BOOL) token_fail(ctx, field->name, "struct fields must be scalar int or bool");
+            for (Field *other = record->fields; other != field; other = other->next)
+                if (token_equal(other->name, field->name)) token_fail(ctx, field->name, "duplicate struct field");
+        }
+    }
     for (Global *constant = ast->globals; constant; constant = constant->next) {
         ctx->filename = constant->module->path;
         Function scope = {.module = constant->module, .scope = constant->scope};
@@ -484,11 +569,15 @@ void analyze(Context *ctx, Ast *ast) {
         ctx->filename = fn->module->path;
         Semantic s = {.ctx = ctx, .ast = ast, .fn = fn};
         fn->result = resolve_type(&s, fn->result, fn->result_name, NULL);
+        if (fn->exported && fn->result >= TY_STRUCT && !struct_type(&s, fn->result)->exported)
+            token_fail(ctx, fn->name, "public signature exposes a private struct type");
         if (fn->result == TY_AUTO) token_fail(ctx, fn->name, "function return type must be explicit");
         Type parameters[L_MAX_SLOTS]; uint32_t count = 0;
         for (Decl *p = fn->parameters; p; p = p->next) {
             p->type = resolve_type(&s, p->type, p->type_name, NULL);
-            if (p->type == TY_VOID || p->type == TY_AUTO) token_fail(ctx, p->name, "parameter type must be int or bool");
+            if (fn->exported && p->type >= TY_STRUCT && !struct_type(&s, p->type)->exported)
+                token_fail(ctx, p->name, "public signature exposes a private struct type");
+            if (p->type == TY_VOID || p->type == TY_AUTO) token_fail(ctx, p->name, "parameter type must be int, bool or a struct");
             else parameters[count++] = p->type;
             Binding *binding = allocate(ctx, sizeof(*binding));
             *binding = (Binding){p, 0, s.bindings}; s.bindings = binding;

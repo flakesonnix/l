@@ -111,6 +111,7 @@ Ast *load_modules(Context *ctx, const ModuleConfig *config, const char *entry, c
     Function **tail = &ast->functions;
     Global **constants = &ast->globals;
     TypeAlias **aliases = &ast->aliases;
+    Struct **records = &ast->structs;
     for (unsigned n = 0; n < count; ++n) {
         ctx->filename = order[n]->path;
         for (Function *fn = order[n]->functions; fn;) {
@@ -130,10 +131,16 @@ Ast *load_modules(Context *ctx, const ModuleConfig *config, const char *entry, c
                 token_fail(ctx, alias->name, "too many type aliases across modules (maximum 1024)");
             TypeAlias *next = alias->next; *aliases = alias; aliases = &alias->next; alias = next;
         }
+        for (Struct *record = order[n]->structs; record;) {
+            if (ast->struct_count++ == L_MAX_STRUCTS)
+                token_fail(ctx, record->name, "too many structs across modules (maximum 256)");
+            Struct *next = record->next; *records = record; records = &record->next; record = next;
+        }
     }
     *tail = NULL;
     *constants = NULL;
     *aliases = NULL;
+    *records = NULL;
     ctx->filename = saved;
     return ast;
 }

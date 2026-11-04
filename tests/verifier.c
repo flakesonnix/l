@@ -8,10 +8,13 @@ typedef struct {
     IrFunction functions[2];
     Type slots[2][4], registers[2][8];
     Instruction code[2][12];
-    uint32_t arguments[4];
+    uint32_t arguments[L_MAX_ARGS];
     uint32_t slot_lengths[2][4];
     SwitchEntry entries[L_MAX_CASES];
     IrGlobal globals[L_MAX_GLOBALS];
+    IrStruct structs[L_MAX_STRUCTS];
+    IrField fields[2][L_MAX_FIELDS];
+    char field_names[L_MAX_FIELDS][8];
 } Fixture;
 
 static Instruction ins(Opcode op, uint32_t dst, uint32_t a, uint32_t b, uint32_t c) {
@@ -102,6 +105,130 @@ static void global_fixture(Fixture *x) {
     x->program.global_count = 1;
     x->globals[0] = (IrGlobal){"g", TY_INT, 42};
     x->code[0][0] = ins(OP_GLOBAL_LOAD, 0, 0, 0, 0);
+}
+static void struct_fixture(Fixture *x) {
+    reset(x);
+    x->program.struct_count = 2; x->program.structs = x->structs;
+    for (unsigned n = 0; n < 2; ++n) {
+        x->structs[n] = (IrStruct){n ? "Q" : "P", 2, x->fields[n]};
+        x->fields[n][0] = (IrField){"x", TY_INT}; x->fields[n][1] = (IrField){"b", TY_BOOL};
+    }
+    IrFunction *f = &x->functions[0];
+    x->slots[0][0] = TY_STRUCT;
+    f->register_count = 5; f->code_count = 7; f->argument_count = 2;
+    x->registers[0][0] = x->registers[0][4] = TY_INT; x->registers[0][1] = TY_BOOL;
+    x->registers[0][2] = x->registers[0][3] = TY_STRUCT;
+    x->arguments[0] = 0; x->arguments[1] = 1;
+    x->code[0][0] = ins(OP_CONST, 0, 42, 0, 0);
+    x->code[0][1] = ins(OP_CONST, 1, 1, 0, 0);
+    x->code[0][2] = ins(OP_STRUCT, 2, 0, 2, 0);
+    x->code[0][3] = ins(OP_STORE, 0, 2, 0, 0);
+    x->code[0][4] = ins(OP_LOAD, 3, 0, 0, 0);
+    x->code[0][5] = ins(OP_FIELD, 4, 3, 0, 0);
+    x->code[0][6] = ins(OP_RETURN, 0, 4, 0, 0);
+}
+enum {
+    S_VALID, S_STORE, S_CALL, S_MAX_STRUCTS, S_MAX_FIELDS,
+    S_LIMIT, S_EMPTY, S_FIELDS_LIMIT, S_FIELD_VOID, S_FIELD_STRUCT, S_FIELD_DUPLICATE,
+    S_RESULT_TYPE, S_SLOT_TYPE, S_REGISTER_TYPE, S_ARRAY, S_CONSTANT, S_EQUALITY,
+    S_MAKE_SCALAR, S_MAKE_ARITY, S_MAKE_OFFSET, S_MAKE_RANGE, S_MAKE_TYPE, S_MAKE_INDEX,
+    S_FIELD_SOURCE, S_FIELD_INDEX, S_FIELD_RESULT, S_FIELD_REGISTER,
+    S_STORE_SLOT, S_STORE_SCALAR, S_STORE_FIELD, S_STORE_TYPE, S_STORE_REGISTER,
+    S_STORE_UNINITIALIZED, S_STORE_UNDEFINED, S_FIELD_UNDEFINED, S_MAKE_UNDEFINED, S_DUPLICATE, S_NOMINAL,
+    S_COUNT
+};
+static void mutate_struct(Fixture *x, int which) {
+    IrFunction *f = &x->functions[0], *g = &x->functions[1];
+    switch (which) {
+    case S_VALID: break;
+    case S_STORE:
+        f->register_count = 6; x->registers[0][5] = TY_BOOL; f->code_count = 11;
+        x->code[0][4] = ins(OP_FIELD_STORE, 0, 1, 1, 0);
+        x->code[0][5] = ins(OP_LOAD, 3, 0, 0, 0);
+        x->code[0][6] = ins(OP_FIELD, 4, 3, 0, 0);
+        x->code[0][7] = ins(OP_FIELD, 5, 3, 1, 0);
+        x->code[0][8] = ins(OP_BRANCH, 0, 5, 9, 10);
+        x->code[0][9] = ins(OP_RETURN, 0, 4, 0, 0);
+        x->code[0][10] = ins(OP_TRAP, 0, 0, 0, 0); break;
+    case S_CALL:
+        f->argument_count = 3; x->arguments[2] = 2; f->code_count = 10; f->register_count = 7;
+        x->registers[0][5] = TY_INT; x->registers[0][6] = TY_BOOL; x->code[0][0].a = 41;
+        x->code[0][3] = ins(OP_CALL, 3, 1, 2, 1);
+        /* Read the aggregate return and ensure the call cannot alias its argument. */
+        x->code[0][4] = ins(OP_FIELD, 4, 3, 0, 0); x->code[0][5] = ins(OP_FIELD, 5, 2, 0, 0);
+        x->code[0][6] = ins(OP_EQ, 6, 5, 0, 0); x->code[0][7] = ins(OP_BRANCH, 0, 6, 8, 9);
+        x->code[0][8] = ins(OP_RETURN, 0, 4, 0, 0); x->code[0][9] = ins(OP_TRAP, 0, 0, 0, 0);
+        g->result = TY_STRUCT; g->parameter_count = g->slot_count = 1; x->slots[1][0] = TY_STRUCT;
+        g->register_count = 2; x->registers[1][0] = TY_INT; x->registers[1][1] = TY_STRUCT; g->code_count = 4;
+        x->code[1][0] = ins(OP_CONST, 0, 42, 0, 0); x->code[1][1] = ins(OP_FIELD_STORE, 0, 0, 0, 0);
+        x->code[1][2] = ins(OP_LOAD, 1, 0, 0, 0); x->code[1][3] = ins(OP_RETURN, 0, 1, 0, 0); break;
+    case S_MAX_STRUCTS:
+        x->program.struct_count = L_MAX_STRUCTS;
+        for (unsigned n = 2; n < L_MAX_STRUCTS; ++n) x->structs[n] = x->structs[0];
+        x->slots[0][0] = x->registers[0][2] = x->registers[0][3] = (Type)(TY_STRUCT + L_MAX_STRUCTS - 1); break;
+    case S_MAX_FIELDS:
+        x->structs[0].field_count = L_MAX_FIELDS; f->argument_count = L_MAX_FIELDS; x->code[0][2].b = L_MAX_FIELDS;
+        for (unsigned n = 0; n < L_MAX_FIELDS; ++n) {
+            snprintf(x->field_names[n], sizeof(x->field_names[n]), "f%u", n);
+            x->fields[0][n] = (IrField){x->field_names[n], n + 1 == L_MAX_FIELDS ? TY_BOOL : TY_INT};
+            x->arguments[n] = n + 1 == L_MAX_FIELDS ? 1 : 0;
+        }
+        x->code[0][5].b = L_MAX_FIELDS - 2; break;
+    case S_LIMIT: x->program.struct_count = L_MAX_STRUCTS + 1; break;
+    case S_EMPTY: x->structs[0].field_count = 0; break;
+    case S_FIELDS_LIMIT: x->structs[0].field_count = L_MAX_FIELDS + 1; break;
+    case S_FIELD_VOID: x->fields[0][0].type = TY_VOID; break;
+    case S_FIELD_STRUCT: x->fields[0][0].type = TY_STRUCT; break;
+    case S_FIELD_DUPLICATE: x->fields[0][1].name = "x"; break;
+    case S_RESULT_TYPE: g->result = (Type)(TY_STRUCT + 2); break;
+    case S_SLOT_TYPE: x->slots[0][0] = (Type)(TY_STRUCT + 2); break;
+    case S_REGISTER_TYPE: x->registers[0][2] = (Type)(TY_STRUCT + 2); break;
+    case S_ARRAY: x->slot_lengths[0][0] = 1; break;
+    case S_CONSTANT: x->code[0][2] = ins(OP_CONST, 2, 42, 0, 0); break;
+    case S_EQUALITY:
+        x->registers[0][4] = TY_BOOL; x->code[0][5] = ins(OP_EQ, 4, 2, 3, 0); x->code[0][6].a = 0; break;
+    case S_MAKE_SCALAR: x->registers[0][2] = TY_INT; break;
+    case S_MAKE_ARITY: x->code[0][2].b = 1; break;
+    case S_MAKE_OFFSET: x->code[0][2].a = L_NONE; break;
+    case S_MAKE_RANGE: x->code[0][2].a = 1; break;
+    case S_MAKE_TYPE: x->arguments[0] = 1; break;
+    case S_MAKE_INDEX: x->arguments[0] = L_NONE; break;
+    case S_FIELD_SOURCE: x->code[0][5].a = 0; break;
+    case S_FIELD_INDEX: x->code[0][5].b = 2; break;
+    case S_FIELD_RESULT: x->registers[0][4] = TY_BOOL; x->code[0][6].a = 0; break;
+    case S_FIELD_REGISTER: x->code[0][5].a = L_NONE; break;
+    case S_STORE_SLOT: case S_STORE_SCALAR: case S_STORE_FIELD: case S_STORE_TYPE: case S_STORE_REGISTER: case S_STORE_UNINITIALIZED:
+        x->code[0][3] = ins(OP_FIELD_STORE, which == S_STORE_SLOT ? L_NONE : which == S_STORE_SCALAR ? 1 : 0,
+            which == S_STORE_REGISTER ? L_NONE : which == S_STORE_TYPE ? 1 : 0, which == S_STORE_FIELD ? 2 : 0, 0);
+        break;
+    case S_STORE_UNDEFINED:
+        f->code_count = 8; x->code[0][4] = ins(OP_FIELD_STORE, 0, 4, 0, 0);
+        x->code[0][5] = ins(OP_LOAD, 3, 0, 0, 0); x->code[0][6] = ins(OP_FIELD, 4, 3, 0, 0);
+        x->code[0][7] = ins(OP_RETURN, 0, 4, 0, 0); break;
+    case S_FIELD_UNDEFINED:
+        x->code[0][2] = ins(OP_FIELD, 4, 2, 0, 0); x->code[0][3] = ins(OP_STRUCT, 2, 0, 2, 0);
+        x->code[0][4] = ins(OP_STORE, 0, 2, 0, 0); x->code[0][5] = ins(OP_LOAD, 3, 0, 0, 0); break;
+    case S_MAKE_UNDEFINED: x->arguments[0] = 4; break;
+    case S_DUPLICATE: x->code[0][3] = x->code[0][2]; break;
+    case S_NOMINAL: x->slots[0][0] = (Type)(TY_STRUCT + 1); break;
+    }
+}
+static void check_struct(int which) {
+    Context *ctx = calloc(1, sizeof(*ctx)); if (!ctx) exit(1);
+    ctx->filename = "struct-verifier-test";
+    if (!setjmp(ctx->failure)) {
+        Fixture x; struct_fixture(&x); mutate_struct(&x, which);
+        verify(ctx, &x.program);
+        write_bytecode(ctx, &x.program, "build/verifier-struct.lbc");
+        size_t size; unsigned char *bytes = read_file(ctx, "build/verifier-struct.lbc", &size);
+        Program *p = read_bytecode(ctx, bytes, size);
+        size_t allocated = ctx->allocated;
+        for (unsigned repeat = 0; repeat < 3; ++repeat)
+            if (execute_program(ctx, p) != 42 || ctx->allocated != allocated) exit(1);
+    }
+    int expected = which <= S_MAX_FIELDS ? 0 : 65;
+    if (ctx->status != expected) { fprintf(stderr, "struct verifier case %d: expected %d, got %d\n", which, expected, ctx->status); exit(1); }
+    cleanup(ctx); free(ctx);
 }
 
 static void mutate(Fixture *x, int which) {
@@ -417,7 +544,7 @@ static void global_bytes(void) {
     check_bytes(original, size, true);
     for (size_t n = 0; n < size; ++n) check_bytes(original, n, false);
     static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
-        {20, 0, 4}, {20, UINT32_MAX, 4}, {24, 0, 1}, {25, TY_AUTO, 1}
+        {24, 0, 4}, {24, UINT32_MAX, 4}, {28, 0, 1}, {29, TY_AUTO, 4}
     };
     for (size_t n = 0; n < sizeof(corruptions) / sizeof(*corruptions); ++n) {
         memcpy(bytes, original, size); store(bytes, corruptions[n].offset, corruptions[n].value, corruptions[n].width);
@@ -425,15 +552,36 @@ static void global_bytes(void) {
     }
     const uint32_t values[] = {0, 1, 2, UINT32_MAX};
     for (unsigned n = 0; n < 4; ++n) {
-        memcpy(bytes, original, size); store(bytes, 25, TY_BOOL, 1); store(bytes, 26, values[n], 4);
+        memcpy(bytes, original, size); store(bytes, 29, TY_BOOL, 4); store(bytes, 33, values[n], 4);
         check_bytes(bytes, size, n < 2);
     }
     cleanup(ctx); free(ctx); remove("build/verifier-globals.lbc");
 }
+static void struct_bytes(void) {
+    Context *ctx = calloc(1, sizeof(*ctx)); if (!ctx) exit(1);
+    ctx->filename = "struct-format-test"; if (setjmp(ctx->failure)) exit(1);
+    Fixture x; struct_fixture(&x); x.program.struct_count = 1;
+    write_bytecode(ctx, &x.program, "build/verifier-struct.lbc");
+    size_t size; unsigned char *original = read_file(ctx, "build/verifier-struct.lbc", &size), *bytes = allocate(ctx, size);
+    check_bytes(original, size, true);
+    for (size_t n = 0; n < size; ++n) check_bytes(original, n, false);
+    static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
+        {24, 0, 4}, {24, UINT32_MAX, 4}, {28, 0, 1}, {29, 0, 4}, {29, L_MAX_FIELDS + 1, 4},
+        {33, 0, 4}, {33, UINT32_MAX, 4}, {37, 0, 1}, {38, TY_VOID, 4}, {38, TY_STRUCT, 4}, {38, UINT32_MAX, 4},
+        {46, 'x', 1}, {47, TY_AUTO, 4}
+    };
+    for (size_t n = 0; n < sizeof(corruptions) / sizeof(*corruptions); ++n) {
+        memcpy(bytes, original, size); store(bytes, corruptions[n].offset, corruptions[n].value, corruptions[n].width);
+        check_bytes(bytes, size, false);
+    }
+    cleanup(ctx); free(ctx); remove("build/verifier-struct.lbc");
+}
 
 int main(void) {
     for (int which = 0; which < CASE_COUNT; ++which) check(which);
+    for (int which = 0; which < S_COUNT; ++which) check_struct(which);
     global_bytes();
+    struct_bytes();
     Context *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) return 1;
     ctx->filename = "roundtrip-test";
@@ -446,24 +594,24 @@ int main(void) {
     check_bytes(original, size, true);
     for (size_t length = 0; length < size; ++length) check_bytes(original, length, false);
     static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
-        {0, 0, 1}, {4, 2, 2}, {6, L_BC_MINOR + 1, 2}, {6, 0, 2}, {6, 1, 2}, {6, 2, 2}, {8, 0, 4}, {8, L_MAX_FUNCTIONS + 1, 4},
-        {12, 2, 4}, {16, L_MAX_GLOBALS + 1, 4}, {20, 0, 4}, {20, UINT32_MAX, 4}, {24, 0, 1},
-        {33, L_MAX_SLOTS + 1, 4}, {37, L_MAX_REGISTERS + 1, 4},
-        {41, L_MAX_CODE + 1, 4}, {45, L_MAX_ARGS + 1, 4}, {49, L_MAX_CASES + 1, 4},
-        {55, L_MAX_ARRAY + 1, 4}
+        {0, 0, 1}, {4, 2, 2}, {6, L_BC_MINOR + 1, 2}, {6, 0, 2}, {6, 1, 2}, {6, 2, 2}, {6, 3, 2}, {8, 0, 4}, {8, L_MAX_FUNCTIONS + 1, 4},
+        {12, 2, 4}, {16, L_MAX_GLOBALS + 1, 4}, {20, L_MAX_STRUCTS + 1, 4}, {24, 0, 4}, {24, UINT32_MAX, 4}, {28, 0, 1},
+        {40, L_MAX_SLOTS + 1, 4}, {44, L_MAX_REGISTERS + 1, 4},
+        {48, L_MAX_CODE + 1, 4}, {52, L_MAX_ARGS + 1, 4}, {56, L_MAX_CASES + 1, 4},
+        {68, L_MAX_ARRAY + 1, 4}
     };
     for (size_t j = 0; j < sizeof(corruptions) / sizeof(*corruptions); ++j) {
         memcpy(bytes, original, size);
         store(bytes, corruptions[j].offset, corruptions[j].value, corruptions[j].width);
         check_bytes(bytes, size, false);
     }
-    /* With no globals, slot types occupy bytes 53..54; lengths start at 55. */
+    /* With empty struct/global tables, slot types start at 60; lengths start at 68. */
     memcpy(bytes, original, size);
-    store(bytes, 55, L_MAX_ARRAY, 4); store(bytes, 59, 2, 4);
+    store(bytes, 68, L_MAX_ARRAY, 4); store(bytes, 72, 2, 4);
     check_bytes(bytes, size, false);
     memcpy(bytes, original, size); bytes[size] = 0;
     check_bytes(bytes, size + 1, false);
     free(bytes); cleanup(ctx); free(ctx); remove("build/verifier.lbc"); remove("build/verifier-case.lbc");
-    printf("verifier: %d IR cases plus truncation/format mutations passed\n", CASE_COUNT);
+    printf("verifier: %d IR cases plus truncation/format mutations passed\n", CASE_COUNT + S_COUNT);
     return 0;
 }

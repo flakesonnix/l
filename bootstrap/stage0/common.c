@@ -104,14 +104,15 @@ Token parent_scope(Token name) {
 }
 
 const char *type_name(Type type) {
+    if (type >= TY_STRUCT && type < TY_STRUCT + L_MAX_STRUCTS) return "struct";
     switch (type) {
     case TY_VOID: return "void";
     case TY_INT: return "int";
     case TY_BOOL: return "bool";
     case TY_AUTO: return "auto";
     case TY_NAMED: return "unresolved type";
+    default: return "invalid";
     }
-    return "invalid";
 }
 
 void enter(Context *ctx, Token token) {

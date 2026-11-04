@@ -16,6 +16,7 @@ make
 ./build/l run examples/static_demo.l --manifest examples/package.json
 ./build/l run examples/alias_demo.l --manifest examples/package.json
 ./build/l run examples/constant_shapes.l --manifest examples/package.json
+./build/l run examples/struct_demo.l --manifest examples/package.json
 make test                                      # Requires Node.js 22+
 make fuzz                                      # Deterministic mutation/model tests
 make sanitize
@@ -31,6 +32,8 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
 - Nested/reopened namespaces and statically resolved `int`/`bool` function overloads.
 - Transparent module/namespace scalar type aliases: `using Count = int;`, with
   forward references, imports, visibility checks and cycle diagnostics.
+- Nominal, nonempty scalar-field structs, positional literals, field reads/writes,
+  copying and by-value function parameters/returns. Fields are public by default.
 - Module/namespace `const int` and `const bool` declarations, compile-time checked
   initializers, forward references and normal import/visibility rules.
 - Module/namespace `static int` and `static bool` storage, with compile-time
@@ -83,17 +86,17 @@ instructions, call depth to 256 and managed working memory to 128 MiB.
 These are seed-profile limits, not general L language limits.
 
 Not implemented yet: other primitive types,
-strings/IO, structs/enums, pointers/slices, ownership/borrows, generics/concepts,
-dynamic values, GC, classes, effects, native/LLVM, self-hosting and build/package
+strings/IO, enums, nested/array-field structs, pointers/slices, ownership/borrows,
+generics/concepts, dynamic values, GC, classes, effects, native/LLVM, self-hosting and build/package
 management. The repository does not imply these subsystems have been implemented.
 
 ## Modules and manifests
 
 Module behavior follows [the normative module-system specification 0.1.1](spec/module-system-v0.1.1.md)
 for the currently implemented declaration and type subset. This does not add
-structs, classes, enums, aggregate globals, generic constraints or
-runtime overload resolution. Public signatures currently contain
-only public primitives.
+classes, enums, aggregate globals, generic constraints or runtime overload
+resolution. Public function signatures may contain public primitives and public
+struct types, but must not expose private struct types.
 
 Every source command requires an explicit `--manifest FILE.json`. No manifest,
 module directory, standard library or dependency is implicitly searched for.
@@ -130,8 +133,9 @@ identities. Reachable units are registered before dependency-cycle detection and
 processed in dependency order. Diagnostics include the complete cycle path.
 The seed permits 256 reachable modules, 1024 imports per module, 256 functions,
 1024 module constants, 1024 scalar static globals and 1024 type aliases across the
-linked program. Filesystem discovery/resolution, graph ordering and declaration
-lookup are separate compiler operations. The current filesystem implementation uses POSIX `realpath` and
+linked program, plus 256 structs with 1..64 scalar fields each. Filesystem
+discovery/resolution, graph ordering and declaration lookup are separate compiler
+operations. The current filesystem implementation uses POSIX `realpath` and
 `access`.
 
 ```c
@@ -145,8 +149,8 @@ int main() {
 ```
 
 Module imports expose qualified declarations only. Import aliases are module-local;
-selective imports bind public type aliases, constants, static globals, function
-names or overload groups.
+selective imports bind public structs, type aliases, constants, static globals,
+function names or overload groups.
 Redundant module imports warn; conflicting aliases/bindings fail. Lexical bindings,
 enclosing namespaces and module declarations precede selective imports in lookup. Failed
 qualified lookup never falls back to an unqualified name. Namespace reopening
@@ -155,7 +159,7 @@ and type aliases remain module-private.
 Wildcard imports, re-exports, import cycles and executable module initialization
 are rejected. Dependencies do not supply a hidden entry point: imported functions
 named `main` are ordinary functions. Bytecode requires no manifest. Artifact
-version **1.3** rejects older versions, including **1.2**; recompile from source.
+version **1.4** rejects older versions, including **1.3**; recompile from source.
 
 `compile -o` rejects an existing output that aliases the manifest or any source in
 the reachable module graph, including relative-path variants, symlinks and hard
@@ -197,7 +201,54 @@ Aliases cannot be called, used as values or used as casts.
 Local aliases, `using namespace`, generic aliases, aliases to `void`/`auto`, and
 array/function aliases are not supported. `using` is now a reserved keyword.
 Aliases disappear before IR lowering and add no runtime objects or bytecode
-metadata; IR/bytecode stays **1.3**. The existing exact-version policy is unchanged.
+metadata. The current IR/bytecode version is **1.4**; the exact-version policy is
+unchanged.
+
+### Value structs
+
+```c
+module app.records;
+
+pub struct Pair {
+    int x;
+    bool ready;
+};
+
+pub Pair increment(Pair value) {
+    value.x++;
+    return value;
+}
+
+int main() {
+    Pair original = Pair{41, true};
+    Pair changed = increment(original);
+    if (original.x != 41) return 1;
+    return changed.x;
+}
+```
+
+Structs are nominal types: distinct declarations remain different types even
+when their field layouts match. Declarations may be forward-referenced and use
+normal module/namespace/import lookup. Struct names are private unless `pub`;
+fields are public by default. Public functions cannot expose a private struct in
+their result or parameter types. Scalar aliases may be used for field types.
+
+`Type{...}` supplies exactly one correctly typed value per field in declaration
+order; trailing commas are accepted. Arguments evaluate left to right. Local
+bindings require explicit initialization; `auto` may infer a struct type.
+Assignment, parameter passing and returns copy every field. Mutating a callee's
+parameter or a returned copy never changes its caller's original value.
+
+`.field` reads work on bindings and temporary values. Field assignment and integer
+postfix updates require a mutable local/parameter root; `const` bindings protect
+all fields. Whole-value assignment also respects `const`. Struct equality and
+implicit conversions between nominal types are not supported.
+
+This slice supports 1..64 `int`/`bool` fields and at most 256 linked struct types.
+Empty structs, nested/array fields, field initializers, methods, inheritance,
+aggregate statics/constants, struct arrays and aliases to structs are deferred.
+Constructor inputs share the existing 2048-entry per-function argument-vector
+budget with calls. `struct` is now reserved.
 
 ### Compile-time constants
 
@@ -264,7 +315,7 @@ storage, calls, assignments, postfix updates and indexing are forbidden in these
 expressions, including in unevaluated operands. Labels use the shared switch's
 lexical scope, so a preceding case's local can shadow a module constant.
 Folding emits only existing slot lengths and case-table values; it adds no
-runtime evaluation or format changes. IR/bytecode remains **1.3**.
+runtime evaluation or additional format changes. Current IR/bytecode is **1.4**.
 
 ### Mutable static storage
 
@@ -303,14 +354,17 @@ and implicit mutable module variables are not supported by this seed.
 Manifest → source-module discovery/registration → import resolution → cycle
 detection/dependency ordering → namespace/visibility/name resolution/type checking
 → typed SSA register IR with explicit
-local storage slots and a scalar global-data table → verification → bytecode → VM.
+local storage slots, nominal struct metadata and a scalar global-data table →
+verification → bytecode → VM.
 The seed does not materialize separate HIR, Typed IR and MIR representations yet.
 The implemented subset has no ownership model yet.
 
-IR and bytecode are versioned independently, currently both **1.3**.
+IR and bytecode are versioned independently, currently both **1.4**.
 Bytecode 1.1 added a 32-bit length per slot (0 for scalars), `bounds_check` and
 `clear`; 1.2 added a per-function `switch` case-entry table and the `switch`/`trap`
-opcodes. Version 1.3 adds a global-data table and `global.load`/`global.store`.
+opcodes. Version 1.3 added a global-data table and `global.load`/`global.store`.
+Version 1.4 adds nominal struct metadata, 32-bit type IDs and the `struct.make`,
+`field.load` and `field.store` opcodes, with full-width by-value calls/returns.
 The loader accepts only the exact format version; recompile older
 artifacts from source. The verifier checks instruction types, jump targets, unique
 register definitions, dominance, slot initialization, array metadata, addressing
@@ -320,6 +374,10 @@ load/store register types. Global stores require dominating source definitions;
 global loads define SSA registers and need no local-slot initialization proof. Index
 register definitions must also dominate their uses; element accesses require an
 initialized array. Loaded bytecode is fully verified before execution.
+Struct metadata must have bounded, nonempty, uniquely named scalar fields.
+Verification checks nominal type IDs, constructor vectors, field bounds/types,
+source-register dominance and whole-value initialization before field stores.
+Aggregate registers are immutable values, not aliases into local storage.
 The `switch` operands are `a` = selector register, `b` = table offset, `c` = entry
 count and `dst` = fallback PC. A low-level `dst == L_NONE` traps on an unmatched
 value; source switches without `default` instead continue after the switch.
@@ -328,13 +386,25 @@ The VM additionally checks bounds at each element access, so manipulated bytecod
 cannot bypass safety by omitting a preceding `bounds_check`.
 `inspect` displays the IR, not an ABI-stable text representation.
 
-The 1.3 header is magic (4 bytes), major/minor (2 bytes each), function count,
-entry function index and global count (4 bytes each). Global entries precede
-functions: name length (4 bytes), name bytes, scalar type (1 byte), initial signed
-32-bit value (4 bytes). Integers use little-endian encoding; negative initializers
+The 1.4 header is magic (4 bytes), major/minor (2 bytes each), function count,
+entry function index, global count and struct count (4 bytes each). Struct entries
+come first: name length/name bytes, field count, then each field's name length,
+name bytes and scalar type ID. Lengths, counts and type IDs are 32-bit. Type IDs
+are 0 = `void`, 1 = `int`, 2 = `bool`, and 5+n = struct-table entry n; frontend
+placeholder IDs 3/4 are invalid artifacts. Function result, slot, register and
+global types also use 32-bit IDs. Global entries precede functions: name length
+(4 bytes), name bytes, scalar type ID (4 bytes), initial signed 32-bit value
+(4 bytes). Integers use little-endian encoding; negative initializers
 use their 32-bit bit patterns. `global.load` uses `dst` = destination register and
 `a` = global index; `global.store` uses `dst` = global index and `a` = value
 register. Constant-only programs have an empty global table.
+
+`struct.make` uses `dst` = aggregate register, `a` = initializer-vector offset and
+`b` = field count. `field.load` uses `dst` = scalar register, `a` = aggregate
+register and `b` = field index. `field.store` uses `dst` = initialized struct slot,
+`a` = scalar register and `b` = field index. Non-array `load`/`store` and
+calls/returns copy all cells of a struct value. Each field occupies one VM cell;
+this is a VM representation, not a native ABI or exposed reference layout.
 
 Artifacts contain no timestamps or absolute source paths. Identical source
 dependency closures and package identities produce identical bytecode after
@@ -361,6 +431,10 @@ checked against independently tracked primitive types. They cover visibility,
 shadowing, cycles, limits, overload identity, all supported type positions and
 byte-for-byte erasure against equivalent primitive-only source with matching
 instruction locations.
+Struct tests include 32 cross-package diamond import graphs (seed `0x53545243`)
+with independently modeled by-value transformations and shared nominal identity,
+128 generated copy/field/call models, aggregate trap/cleanup retries and malformed
+IR/bytecode metadata/vector/type mutations. Limits include type IDs above 255.
 Storage/dispatch tests reuse 423 integer-expression BigInt models in lengths and
 labels, checking folded metadata, errors, duplicates, visibility and shadowing.
 The fuzz suite adds 128 bounded constant-shape programs checked against separate

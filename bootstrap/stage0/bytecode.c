@@ -31,22 +31,32 @@ void write_bytecode(Context *ctx, const Program *p, const char *path) {
     put(file, L_BC_MAJOR, 2); put(file, L_BC_MINOR, 2);
     put(file, p->function_count, 4); put(file, p->entry, 4);
     put(file, p->global_count, 4);
+    put(file, p->struct_count, 4);
+    for (uint32_t n = 0; n < p->struct_count; ++n) {
+        const IrStruct *s = &p->structs[n];
+        uint32_t length = (uint32_t)strlen(s->name);
+        put(file, length, 4); fwrite(s->name, 1, length, file); put(file, s->field_count, 4);
+        for (uint32_t j = 0; j < s->field_count; ++j) {
+            length = (uint32_t)strlen(s->fields[j].name);
+            put(file, length, 4); fwrite(s->fields[j].name, 1, length, file); put(file, s->fields[j].type, 4);
+        }
+    }
     for (uint32_t n = 0; n < p->global_count; ++n) {
         const IrGlobal *g = &p->globals[n];
         uint32_t length = (uint32_t)strlen(g->name);
         put(file, length, 4); fwrite(g->name, 1, length, file);
-        put(file, g->type, 1); put(file, (uint32_t)g->initial, 4);
+        put(file, g->type, 4); put(file, (uint32_t)g->initial, 4);
     }
     for (uint32_t n = 0; n < p->function_count; ++n) {
         const IrFunction *f = &p->functions[n];
         uint32_t length = (uint32_t)strlen(f->name);
         put(file, length, 4); fwrite(f->name, 1, length, file);
-        put(file, f->result, 1); put(file, f->parameter_count, 4); put(file, f->slot_count, 4);
+        put(file, f->result, 4); put(file, f->parameter_count, 4); put(file, f->slot_count, 4);
         put(file, f->register_count, 4); put(file, f->code_count, 4); put(file, f->argument_count, 4);
         put(file, f->switch_count, 4);
-        for (uint32_t j = 0; j < f->slot_count; ++j) put(file, f->slots[j], 1);
+        for (uint32_t j = 0; j < f->slot_count; ++j) put(file, f->slots[j], 4);
         for (uint32_t j = 0; j < f->slot_count; ++j) put(file, f->slot_lengths[j], 4);
-        for (uint32_t j = 0; j < f->register_count; ++j) put(file, f->registers[j], 1);
+        for (uint32_t j = 0; j < f->register_count; ++j) put(file, f->registers[j], 4);
         for (uint32_t j = 0; j < f->argument_count; ++j) put(file, f->arguments[j], 4);
         for (uint32_t j = 0; j < f->switch_count; ++j) {
             put(file, (uint32_t)f->switch_entries[j].value, 4);
@@ -73,16 +83,28 @@ Program *read_bytecode(Context *ctx, const unsigned char *data, size_t size) {
     if (!p->function_count || p->function_count > L_MAX_FUNCTIONS) fail(ctx, 0, 0, "invalid bytecode function count");
     p->global_count = get(&r, 4);
     if (p->global_count > L_MAX_GLOBALS) fail(ctx, 0, 0, "bytecode global limit exceeded");
+    p->struct_count = get(&r, 4);
+    if (p->struct_count > L_MAX_STRUCTS) fail(ctx, 0, 0, "bytecode struct limit exceeded");
+    p->structs = allocate(ctx, p->struct_count * sizeof(*p->structs));
+    for (uint32_t n = 0; n < p->struct_count; ++n) {
+        IrStruct *s = &p->structs[n];
+        s->name = get_name(&r); s->field_count = get(&r, 4);
+        if (!s->field_count || s->field_count > L_MAX_FIELDS) fail(ctx, 0, 0, "invalid bytecode struct field count");
+        s->fields = allocate(ctx, s->field_count * sizeof(*s->fields));
+        for (uint32_t j = 0; j < s->field_count; ++j) {
+            s->fields[j].name = get_name(&r); s->fields[j].type = (Type)get(&r, 4);
+        }
+    }
     p->globals = allocate(ctx, p->global_count * sizeof(*p->globals));
     for (uint32_t n = 0; n < p->global_count; ++n) {
         IrGlobal *g = &p->globals[n];
-        g->name = get_name(&r); g->type = (Type)get(&r, 1); g->initial = get_signed(&r);
+        g->name = get_name(&r); g->type = (Type)get(&r, 4); g->initial = get_signed(&r);
     }
     p->functions = allocate(ctx, p->function_count * sizeof(*p->functions));
     for (uint32_t n = 0; n < p->function_count; ++n) {
         IrFunction *f = &p->functions[n];
         f->name = get_name(&r);
-        f->result = (Type)get(&r, 1); f->parameter_count = get(&r, 4); f->slot_count = get(&r, 4);
+        f->result = (Type)get(&r, 4); f->parameter_count = get(&r, 4); f->slot_count = get(&r, 4);
         f->register_count = get(&r, 4); f->code_count = get(&r, 4); f->argument_count = get(&r, 4);
         f->switch_count = get(&r, 4);
         if (f->slot_count > L_MAX_SLOTS || f->register_count > L_MAX_REGISTERS ||
@@ -93,7 +115,7 @@ Program *read_bytecode(Context *ctx, const unsigned char *data, size_t size) {
         f->arguments = allocate(ctx, f->argument_count * sizeof(*f->arguments));
         f->switch_entries = allocate(ctx, f->switch_count * sizeof(*f->switch_entries));
         f->code = allocate(ctx, f->code_count * sizeof(*f->code));
-        for (uint32_t j = 0; j < f->slot_count; ++j) f->slots[j] = (Type)get(&r, 1);
+        for (uint32_t j = 0; j < f->slot_count; ++j) f->slots[j] = (Type)get(&r, 4);
         f->slot_lengths = allocate(ctx, f->slot_count * sizeof(*f->slot_lengths));
         uint32_t elements = 0;
         for (uint32_t j = 0; j < f->slot_count; ++j) {
@@ -102,7 +124,7 @@ Program *read_bytecode(Context *ctx, const unsigned char *data, size_t size) {
             if (elements > L_MAX_SLOTS_ELEMENTS - f->slot_lengths[j]) fail(ctx, 0, 0, "bytecode exceeds the array element limit");
             elements += f->slot_lengths[j];
         }
-        for (uint32_t j = 0; j < f->register_count; ++j) f->registers[j] = (Type)get(&r, 1);
+        for (uint32_t j = 0; j < f->register_count; ++j) f->registers[j] = (Type)get(&r, 4);
         for (uint32_t j = 0; j < f->argument_count; ++j) f->arguments[j] = get(&r, 4);
         for (uint32_t j = 0; j < f->switch_count; ++j) {
             f->switch_entries[j].value = get_signed(&r);
@@ -119,21 +141,30 @@ Program *read_bytecode(Context *ctx, const unsigned char *data, size_t size) {
     return p;
 }
 
+static const char *ir_type_name(const Program *p, Type type) {
+    return type >= TY_STRUCT ? p->structs[type - TY_STRUCT].name : type_name(type);
+}
 void inspect(const Program *p, FILE *file) {
     static const char *const names[] = {
         "const", "load", "store", "add.checked", "sub.checked", "mul.checked", "div.checked", "rem.checked",
         "neg.checked", "not", "eq", "ne", "lt", "le", "gt", "ge", "jump", "branch", "call", "return",
-        "bounds_check", "clear", "switch", "trap", "global.load", "global.store"
+        "bounds_check", "clear", "switch", "trap", "global.load", "global.store", "struct.make", "field.load", "field.store"
     };
     fprintf(file, "LIR %u.%u; bytecode %u.%u; entry f%u\n", L_IR_MAJOR, L_IR_MINOR, L_BC_MAJOR, L_BC_MINOR, p->entry);
+    for (uint32_t n = 0; n < p->struct_count; ++n) {
+        const IrStruct *s = &p->structs[n];
+        fprintf(file, "struct t%u %s (%u fields)\n", TY_STRUCT + n, s->name, s->field_count);
+        for (uint32_t j = 0; j < s->field_count; ++j)
+            fprintf(file, "  field %u %s: %s\n", j, s->fields[j].name, type_name(s->fields[j].type));
+    }
     for (uint32_t n = 0; n < p->global_count; ++n)
         fprintf(file, "global g%u %s: %s initial=%d\n", n, p->globals[n].name, type_name(p->globals[n].type), p->globals[n].initial);
     for (uint32_t n = 0; n < p->function_count; ++n) {
         const IrFunction *f = &p->functions[n];
         fprintf(file, "f%u %s -> %s (%u parameters, %u slots, %u registers, %u switch cases)\n", n, f->name,
-                type_name(f->result), f->parameter_count, f->slot_count, f->register_count, f->switch_count);
+                ir_type_name(p, f->result), f->parameter_count, f->slot_count, f->register_count, f->switch_count);
         for (uint32_t j = 0; j < f->slot_count; ++j)
-            fprintf(file, "  slot s%u: %s length=%u (0=scalar)\n", j, type_name(f->slots[j]), f->slot_lengths[j]);
+            fprintf(file, "  slot s%u: %s length=%u (0=scalar)\n", j, ir_type_name(p, f->slots[j]), f->slot_lengths[j]);
         for (uint32_t j = 0; j < f->switch_count; ++j)
             fprintf(file, "  case %d -> pc %u\n", f->switch_entries[j].value, f->switch_entries[j].target);
         for (uint32_t j = 0; j < f->code_count; ++j) {

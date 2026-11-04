@@ -8,9 +8,9 @@
 #include <setjmp.h>
 
 #define L_IR_MAJOR 1
-#define L_IR_MINOR 3
+#define L_IR_MINOR 4
 #define L_BC_MAJOR 1
-#define L_BC_MINOR 3
+#define L_BC_MINOR 4
 #define L_NONE UINT32_MAX
 #define L_MAX_FUNCTIONS 256u
 #define L_MAX_MODULES 256u
@@ -18,6 +18,8 @@
 #define L_MAX_CONSTANTS 1024u
 #define L_MAX_GLOBALS 1024u
 #define L_MAX_ALIASES 1024u
+#define L_MAX_STRUCTS 256u
+#define L_MAX_FIELDS 64u
 #define L_MAX_REGISTERS 4096u
 #define L_MAX_SLOTS 1024u
 #define L_MAX_ARRAY 65535u
@@ -39,13 +41,13 @@ typedef struct {
 } Context;
 
 typedef struct { const char *text; size_t length; uint32_t line, column; int kind; int64_t integer; } Token;
-typedef enum { TY_VOID, TY_INT, TY_BOOL, TY_AUTO, TY_NAMED } Type;
+typedef enum { TY_VOID, TY_INT, TY_BOOL, TY_AUTO, TY_NAMED, TY_STRUCT } Type;
 enum {
     TK_EOF = 256, TK_NAME, TK_INTEGER, TK_INT, TK_BOOL, TK_VOID, TK_AUTO,
     TK_CONST, TK_TRUE, TK_FALSE, TK_IF, TK_ELSE, TK_WHILE, TK_FOR, TK_RETURN,
     TK_MODULE, TK_EQ, TK_NE, TK_LE, TK_GE, TK_AND, TK_OR, TK_INC, TK_DEC,
     TK_BREAK, TK_CONTINUE, TK_SWITCH, TK_CASE, TK_DEFAULT,
-    TK_IMPORT, TK_AS, TK_PUB, TK_NAMESPACE, TK_SCOPE, TK_STATIC, TK_USING
+    TK_IMPORT, TK_AS, TK_PUB, TK_NAMESPACE, TK_SCOPE, TK_STATIC, TK_USING, TK_STRUCT
 };
 
 typedef struct Expr Expr;
@@ -60,9 +62,11 @@ typedef struct ImportName ImportName;
 typedef struct Namespace Namespace;
 typedef struct Global Global;
 typedef struct TypeAlias TypeAlias;
+typedef struct Struct Struct;
+typedef struct Field Field;
 struct ExprList { Expr *value; ExprList *next; };
 struct SwitchCase { Token token; int32_t value; bool is_default; Expr *expr; Stmt *body; SwitchCase *next; };
-typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX, EX_GLOBAL } ExprKind;
+typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX, EX_GLOBAL, EX_STRUCT, EX_FIELD } ExprKind;
 struct Expr {
     ExprKind kind;
     Token token;
@@ -117,6 +121,15 @@ struct TypeAlias {
     unsigned state;
     TypeAlias *parent, *next;
 };
+struct Field { Token name, type_name; Type type; Field *next; };
+struct Struct {
+    Token name, scope;
+    Module *module;
+    bool exported;
+    uint32_t symbol, field_count;
+    Field *fields;
+    Struct *next;
+};
 struct ImportName { Token name, binding; ImportName *next; };
 struct Import { Token name, qualifier, alias; ImportName *names; Module *target; Import *next; };
 struct Namespace { Token name; Namespace *next; };
@@ -128,16 +141,18 @@ struct Module {
     Function *functions;
     Global *globals;
     TypeAlias *aliases;
+    Struct *structs;
     unsigned state;
     Module *next;
 };
 typedef struct {
     Function *functions;
-    uint32_t function_count, constant_count, static_count, alias_count;
+    uint32_t function_count, constant_count, static_count, alias_count, struct_count;
     Module *modules, *entry;
     Function *entrypoint;
     Global *globals;
     TypeAlias *aliases;
+    Struct *structs;
 } Ast;
 typedef struct ModuleRoot ModuleRoot;
 typedef struct PackageDependency PackageDependency;
@@ -149,7 +164,7 @@ typedef enum {
     OP_CONST, OP_LOAD, OP_STORE, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_REM,
     OP_NEG, OP_NOT, OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE,
     OP_JUMP, OP_BRANCH, OP_CALL, OP_RETURN, OP_BOUNDS, OP_CLEAR, OP_SWITCH, OP_TRAP,
-    OP_GLOBAL_LOAD, OP_GLOBAL_STORE, OP_COUNT
+    OP_GLOBAL_LOAD, OP_GLOBAL_STORE, OP_STRUCT, OP_FIELD, OP_FIELD_STORE, OP_COUNT
 } Opcode;
 typedef struct { Opcode op; uint32_t dst, a, b, c, line, column; } Instruction;
 typedef struct { int32_t value; uint32_t target; } SwitchEntry;
@@ -166,11 +181,15 @@ typedef struct {
     size_t register_capacity, code_capacity, argument_capacity, switch_capacity;
 } IrFunction;
 typedef struct { char *name; Type type; int32_t initial; } IrGlobal;
+typedef struct { char *name; Type type; } IrField;
+typedef struct { char *name; uint32_t field_count; IrField *fields; } IrStruct;
 typedef struct {
     uint32_t function_count, entry;
     IrFunction *functions;
     uint32_t global_count;
     IrGlobal *globals;
+    uint32_t struct_count;
+    IrStruct *structs;
 } Program;
 
 _Noreturn void fail(Context *, uint32_t, uint32_t, const char *, ...);

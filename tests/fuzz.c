@@ -15,6 +15,7 @@ static size_t inputs, accepted, rejected, programs, executions;
 static size_t graphs, valid_graphs, invalid_graphs;
 static size_t lifecycle_programs;
 static size_t shape_programs;
+static size_t struct_programs;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -112,7 +113,9 @@ static void fuzz_bytecode(void) {
         "const int minimum=-2147483648;namespace values{pub const int half=21;const bool ready=half*2==42&&minimum<0;}"
             "int main(){if(values::ready)return values::half*2;return 0;}",
         "const int start=40;static int counter=start;static bool active=true;int next(){return counter++;}"
-            "int main(){if(active){active=false;return next()+next()-39;}return 0;}"
+            "int main(){if(active){active=false;return next()+next()-39;}return 0;}",
+        "struct Pair{int x;bool ready;};Pair bump(Pair p){p.x++;return p;}"
+            "int main(){Pair p=Pair{41,true};Pair q=bump(p);if(p.x!=41||!q.ready)return 1;return q.x;}"
     };
     Seed seeds[sizeof(sources) / sizeof(*sources)];
     Context *ctx = context("fuzz-seed");
@@ -547,11 +550,12 @@ static void reuse_execution(Context *ctx, const Program *p, int status) {
 }
 static void static_lifecycle_case(size_t test, const char *trap) {
     source_length = 0;
-    append("static int count=41;static bool ready=true;"
+    append("struct Pair{int x;bool ready;};Pair step(Pair p){p.x++;return p;}"
+           "static int count=41;static bool ready=true;"
            "int descend(int n){count++;if(n>0)return descend(n-1);return count;}"
-           "int fail(){count=42;ready=false;%s}"
+           "int fail(){Pair p=step(Pair{count,ready});count=p.x;ready=false;%s}"
            "int main(){if(count!=41||!ready)return 1;return fail();}"
-           "int recover(){if(count!=41||!ready)return 1;count=99;ready=false;return 42;}", trap);
+           "int recover(){if(count!=41||!ready)return 1;Pair p=step(Pair{count,ready});count=99;ready=false;return p.x;}", trap);
     ++programs; ++lifecycle_programs;
     fprintf(stderr, "static lifecycle case %zu:\nmodule test;\n%s\n", test, source);
     Context *owner = context("static-lifecycle-source");
@@ -600,6 +604,67 @@ static void static_lifecycle_cases(void) {
         "for(int n=0;n<2000000;n++){count++;}return count;"
     };
     for (size_t test = 0; test < sizeof(traps) / sizeof(*traps); ++test) static_lifecycle_case(test, traps[test]);
+}
+
+typedef struct { int32_t x, y; bool active; } StructModel;
+static StructModel struct_change(StructModel p, int32_t delta) {
+    p.x += delta; p.y -= delta; p.active = !p.active; return p;
+}
+static int32_t struct_score(StructModel p) { return p.active ? p.x * 3 + p.y : p.x - p.y * 2; }
+static void struct_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        StructModel p = {(int32_t)random_number(201) - 100, (int32_t)random_number(201) - 100, random_number(2) != 0};
+        StructModel q = {(int32_t)random_number(201) - 100, (int32_t)random_number(201) - 100, random_number(2) != 0};
+        int64_t expected = 0;
+        source_length = 0;
+        append("struct Pair{int x;bool active;int y;};"
+               "Pair change(Pair p,int delta){p.x=p.x+delta;p.y=p.y-delta;p.active=!p.active;return p;}"
+               "int score(Pair p){if(p.active)return p.x*3+p.y;return p.x-p.y*2;}"
+               "Pair choose(Pair a,Pair b,bool first){if(first)return a;return b;}"
+               "int combine(Pair a,int bias,Pair b){return score(a)+bias+score(b);}"
+               "Pair walk(Pair p,int n){if(n==0)return p;return walk(change(p,1),n-1);}"
+               "int main(){Pair p=Pair{%d,%s,%d};Pair q=Pair{%d,%s,%d};int sum=0;",
+               p.x, p.active ? "true" : "false", p.y, q.x, q.active ? "true" : "false", q.y);
+        for (unsigned op = 0; op < 24; ++op) {
+            int32_t delta = (int32_t)random_number(41) - 20;
+            switch (random_number(10)) {
+            case 0:
+                append("q=change(p,%d);sum=sum+score(q);", delta); q = struct_change(p, delta); expected += struct_score(q); break;
+            case 1:
+                append("q=p;q.x++;p.y--;sum=sum+score(p)+score(q);"); q = p; ++q.x; --p.y;
+                expected += struct_score(p) + struct_score(q); break;
+            case 2:
+                append("p=q;q=change(q,%d);sum=sum+p.x;", delta); p = q; q = struct_change(q, delta); expected += p.x; break;
+            case 3:
+                append("p=Pair{q.x++,!q.active,q.y--};sum=sum+score(p)+score(q);");
+                p = (StructModel){q.x++, q.y--, !q.active}; expected += struct_score(p) + struct_score(q); break;
+            case 4: {
+                append("sum=sum+combine(p,p.x++,change(p,%d));", delta);
+                StructModel first = p; int32_t bias = p.x++;
+                expected += struct_score(first) + bias + struct_score(struct_change(p, delta)); break;
+            }
+            case 5:
+                append("p=choose(p,q,p.active);sum=sum+p.x;"); if (!p.active) p = q; expected += p.x; break;
+            case 6:
+                append("{const Pair c=change(p,%d);sum=sum+score(c);}", delta); expected += struct_score(struct_change(p, delta)); break;
+            case 7: {
+                unsigned depth = random_number(4);
+                append("p=walk(p,%u);sum=sum+score(p);", depth);
+                for (unsigned j = 0; j < depth; ++j) p = struct_change(p, 1);
+                expected += struct_score(p); break;
+            }
+            case 8:
+                append("if(p.active&&((q.x=q.x+(%d))>0))sum++;", delta);
+                if (p.active) { q.x += delta; if (q.x > 0) ++expected; } break;
+            case 9:
+                append("{Pair r=(p=q);q.x++;sum=sum+r.x+p.x+q.x;}");
+                p = q; ++q.x; expected += p.x * 2 + q.x; break;
+            }
+        }
+        append("return sum+score(p)+score(q);}"); expected += struct_score(p) + struct_score(q);
+        if (expected < INT32_MIN || expected > INT32_MAX) failed("struct model result exceeds int range");
+        ++struct_programs; semantic_case((int32_t)expected, 0);
+    }
 }
 
 /* Enumerate (PC, defined-value set) states instead of using the verifier's meet algorithm. */
@@ -717,6 +782,7 @@ int main(void) {
     static_lifecycle_cases();
     graph_cases();
     shape_cases();
+    struct_cases();
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
@@ -724,5 +790,6 @@ int main(void) {
            graphs, valid_graphs, invalid_graphs);
     printf("fuzz: %zu static lifecycle programs preserved initializers across traps, cleanup and retries\n", lifecycle_programs);
     printf("fuzz: %zu constant-shape programs matched independent lengths, dispatch and bounds models\n", shape_programs);
+    printf("fuzz: %zu struct programs matched independent copy, field and call models\n", struct_programs);
     return 0;
 }
