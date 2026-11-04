@@ -17,6 +17,7 @@ make
 ./build/l run examples/alias_demo.l --manifest examples/package.json
 ./build/l run examples/constant_shapes.l --manifest examples/package.json
 ./build/l run examples/struct_demo.l --manifest examples/package.json
+./build/l run examples/enum_demo.l --manifest examples/package.json
 make test                                      # Requires Node.js 22+
 make fuzz                                      # Deterministic mutation/model tests
 make sanitize
@@ -29,14 +30,16 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
 - Mandatory `module a.b;`, one file per module, explicitly configured source roots.
 - Module imports, aliases, selective imports, private-by-default functions and
   explicit `pub` exports; qualification uses `::`, not `.`.
-- Nested/reopened namespaces and statically resolved `int`/`bool` function overloads.
+- Nested/reopened namespaces and statically resolved function overloads.
 - Transparent module/namespace scalar type aliases: `using Count = int;`, with
   forward references, imports, visibility checks and cycle diagnostics.
 - Nominal, nonempty scalar-field structs, positional literals, field reads/writes,
   copying and by-value function parameters/returns. Fields are public by default.
-- Module/namespace `const int` and `const bool` declarations, compile-time checked
+- Scoped nominal enums, checked explicit/implicit values, enum constants/statics,
+  struct fields, value parameters/returns, equality and same-enum switches.
+- Module/namespace `const` declarations with `int`, `bool` or enum types, compile-time checked
   initializers, forward references and normal import/visibility rules.
-- Module/namespace `static int` and `static bool` storage, with compile-time
+- Module/namespace `static` storage with `int`, `bool` or enum types, with compile-time
   initializers and shared runtime values across calls, recursion and imports.
 - `int` (exactly 32 bits), `bool`, `void` functions, local inference with `auto`.
 - Initialized local variables, `const`, lexical scopes and shadowing.
@@ -44,14 +47,14 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
   assignment with runtime bounds checks; lengths may be compile-time expressions.
 - Direct calls, forward function references, recursion and value parameters.
 - Blocks, `if`/`else`, `while`, `for`, `return`, empty statements.
-- C-style `switch` over `int` with `case`/`default` labels, empty-case chaining
+- C-style `switch` over `int` or an enum with `case`/`default` labels, empty-case chaining
   and fallthrough; unmatched selectors without `default` continue past the switch.
 - `break` and `continue` targeting the innermost loop or switch (`continue`
   binds to the innermost loop only).
 - `=`, postfix `++`/`--`, unary `+`/`-`/`!`, `+ - * / %`, comparisons,
   short-circuit `&&`/`||` and C operator precedence.
 
-No implicit conversions between `int` and `bool`. Conditions must be `bool`.
+No implicit conversions between `int`, `bool` or nominal enums. Conditions must be `bool`.
 Scalar local declarations require initializers; parameters and function returns
 require explicit types. Entry point: module-scope `int main()` in the entry file.
 Non-`void` functions must structurally return on all paths; a loop alone is not
@@ -62,7 +65,7 @@ a `while` condition; in a `for` loop it executes the step expression first; insi
 a `switch` it targets the enclosing loop. Both statements require a semicolon and
 are compilation errors without a matching enclosing construct (`break` needs a
 loop or switch, `continue` needs a loop). Unreachable source is still type-checked.
-Case labels are checked compile-time `int` expressions; duplicate folded case
+Case labels are checked compile-time expressions of the selector's type; duplicate folded case
 values and duplicate `default` labels are compilation errors. Cases share
 one switch scope; use explicit blocks for separate case scopes. Dispatch that
 skips a scalar or array initializer cannot read an uninitialized scalar or access
@@ -86,7 +89,7 @@ instructions, call depth to 256 and managed working memory to 128 MiB.
 These are seed-profile limits, not general L language limits.
 
 Not implemented yet: other primitive types,
-strings/IO, enums, nested/array-field structs, pointers/slices, ownership/borrows,
+strings/IO, nested/array-field structs, pointers/slices, ownership/borrows,
 generics/concepts, dynamic values, GC, classes, effects, native/LLVM, self-hosting and build/package
 management. The repository does not imply these subsystems have been implemented.
 
@@ -94,9 +97,10 @@ management. The repository does not imply these subsystems have been implemented
 
 Module behavior follows [the normative module-system specification 0.1.1](spec/module-system-v0.1.1.md)
 for the currently implemented declaration and type subset. This does not add
-classes, enums, aggregate globals, generic constraints or runtime overload
+classes, aggregate globals, generic constraints or runtime overload
 resolution. Public function signatures may contain public primitives and public
-struct types, but must not expose private struct types.
+struct/enum types, but must not expose private nominal types. Public constants,
+statics and struct fields must also expose only publicly accessible types.
 
 Every source command requires an explicit `--manifest FILE.json`. No manifest,
 module directory, standard library or dependency is implicitly searched for.
@@ -133,7 +137,8 @@ identities. Reachable units are registered before dependency-cycle detection and
 processed in dependency order. Diagnostics include the complete cycle path.
 The seed permits 256 reachable modules, 1024 imports per module, 256 functions,
 1024 module constants, 1024 scalar static globals and 1024 type aliases across the
-linked program, plus 256 structs with 1..64 scalar fields each. Filesystem
+linked program, plus 256 structs with 1..64 scalar fields each and 256 enums with
+1..1024 members each. Enum members do not consume module-constant slots. Filesystem
 discovery/resolution, graph ordering and declaration lookup are separate compiler
 operations. The current filesystem implementation uses POSIX `realpath` and
 `access`.
@@ -149,7 +154,7 @@ int main() {
 ```
 
 Module imports expose qualified declarations only. Import aliases are module-local;
-selective imports bind public structs, type aliases, constants, static globals,
+selective imports bind public structs, enums/members, type aliases, constants, static globals,
 function names or overload groups.
 Redundant module imports warn; conflicting aliases/bindings fail. Lexical bindings,
 enclosing namespaces and module declarations precede selective imports in lookup. Failed
@@ -159,7 +164,7 @@ and type aliases remain module-private.
 Wildcard imports, re-exports, import cycles and executable module initialization
 are rejected. Dependencies do not supply a hidden entry point: imported functions
 named `main` are ordinary functions. Bytecode requires no manifest. Artifact
-version **1.4** rejects older versions, including **1.3**; recompile from source.
+version **1.5** rejects older versions, including **1.4**; recompile from source.
 
 `compile -o` rejects an existing output that aliases the manifest or any source in
 the reachable module graph, including relative-path variants, symlinks and hard
@@ -201,7 +206,7 @@ Aliases cannot be called, used as values or used as casts.
 Local aliases, `using namespace`, generic aliases, aliases to `void`/`auto`, and
 array/function aliases are not supported. `using` is now a reserved keyword.
 Aliases disappear before IR lowering and add no runtime objects or bytecode
-metadata. The current IR/bytecode version is **1.4**; the exact-version policy is
+metadata. The current IR/bytecode version is **1.5**; the exact-version policy is
 unchanged.
 
 ### Value structs
@@ -244,11 +249,60 @@ postfix updates require a mutable local/parameter root; `const` bindings protect
 all fields. Whole-value assignment also respects `const`. Struct equality and
 implicit conversions between nominal types are not supported.
 
-This slice supports 1..64 `int`/`bool` fields and at most 256 linked struct types.
+This slice supports 1..64 `int`/`bool`/enum fields and at most 256 linked struct types.
 Empty structs, nested/array fields, field initializers, methods, inheritance,
 aggregate statics/constants, struct arrays and aliases to structs are deferred.
 Constructor inputs share the existing 2048-entry per-function argument-vector
 budget with calls. `struct` is now reserved.
+
+### Scoped nominal enums
+
+```c
+module app.tokens;
+
+pub enum Kind {
+    Identifier,
+    Number = 7,
+    End,
+};
+
+const Kind initial = Kind::Identifier;
+static Kind current = initial;
+
+int main() {
+    current = Kind::Number;
+    switch (current) {
+        case Kind::Number: return 42;
+        default: return 0;
+    }
+}
+```
+
+Enum declarations are module/namespace scoped, nonempty and private unless `pub`.
+Members are scoped under their enum, with the enum's visibility; bare member
+names are not injected into the surrounding scope. Ordinary imports, module
+aliases and selective type imports work, including renamed types:
+`import app.tokens::{Kind as K};` permits `K::Number`. Members can also be
+selectively imported with the existing qualified-import syntax.
+
+The first implicit value is zero; later implicit values increment the preceding
+value with signed 32-bit overflow checking. Explicit values are checked integer
+constant expressions and may reference forward module constants. Trailing commas
+and duplicate values are allowed; duplicate member names are not. All initializer
+expressions are checked even in unused enums. Values need not be contiguous.
+
+Each enum declaration is a distinct nominal type, including identical layouts in
+different modules. Enum values support initialized locals, `auto`, `const`, scalar
+module constants/statics, struct fields, copying, parameters/returns, overloads,
+same-enum `==`/`!=` and switches. Case labels must be constants of exactly the
+selector's enum type. Duplicate folded labels are rejected, including aliases
+with equal values. Switches retain ordinary fallthrough/default behavior; enum
+membership does not imply exhaustiveness or remove the structural return check.
+
+There are no implicit integer conversions, casts, enum arithmetic/order/update
+operators, enum arrays or aliases to enums in this slice. Public signatures,
+constants/statics and public struct fields cannot expose a private enum type.
+The seed permits 256 linked enums with 1..1024 members each. `enum` is reserved.
 
 ### Compile-time constants
 
@@ -264,7 +318,7 @@ namespace numbers {
 ```
 
 Module constants require explicit `int`/`bool` types (or transparent aliases to
-them) and scalar initializers.
+them) or enum types, and scalar initializers.
 Their initializer syntax permits literals, constant references, and the supported
 unary/binary operators. Function calls, assignments, postfix updates and indexing
 are rejected, including in unevaluated operands. All operands are name/type
@@ -315,7 +369,7 @@ storage, calls, assignments, postfix updates and indexing are forbidden in these
 expressions, including in unevaluated operands. Labels use the shared switch's
 lexical scope, so a preceding case's local can shadow a module constant.
 Folding emits only existing slot lengths and case-table values; it adds no
-runtime evaluation or additional format changes. Current IR/bytecode is **1.4**.
+runtime evaluation or additional format changes. Current IR/bytecode is **1.5**.
 
 ### Mutable static storage
 
@@ -332,7 +386,7 @@ pub int next() {
 ```
 
 `static` declarations are scalar, module/namespace-scoped bindings with explicit
-`int`/`bool` types (or transparent aliases) and required compile-time initializers.
+`int`/`bool` types (or transparent aliases) or enum types, and required compile-time initializers.
 Initializers follow the constant-expression rules above: literals, constant
 references and checked pure operators only. They cannot read mutable static storage, call functions, assign,
 update or index anything, even in unevaluated operands. Unused declarations are
@@ -343,7 +397,7 @@ Each VM execution initializes its own static cells once before the entry call.
 Cells are shared by all functions, recursive calls, namespaces and importing
 modules in that execution. Separate executions of the same `Program` start fresh;
 executing it does not mutate the IR initializer table. Runtime assignment and
-postfix updates preserve left-to-right evaluation and checked-overflow behavior.
+integer postfix updates preserve left-to-right evaluation and checked-overflow behavior.
 `pub` permits cross-module reads and writes; private cells remain module-private.
 Aliases/selective imports refer to the same cell, not copies. Locals/parameters
 may shadow static names. Function-local statics, static functions, global arrays
@@ -354,17 +408,19 @@ and implicit mutable module variables are not supported by this seed.
 Manifest → source-module discovery/registration → import resolution → cycle
 detection/dependency ordering → namespace/visibility/name resolution/type checking
 → typed SSA register IR with explicit
-local storage slots, nominal struct metadata and a scalar global-data table →
+local storage slots, nominal struct/enum metadata and a scalar global-data table →
 verification → bytecode → VM.
 The seed does not materialize separate HIR, Typed IR and MIR representations yet.
 The implemented subset has no ownership model yet.
 
-IR and bytecode are versioned independently, currently both **1.4**.
+IR and bytecode are versioned independently, currently both **1.5**.
 Bytecode 1.1 added a 32-bit length per slot (0 for scalars), `bounds_check` and
 `clear`; 1.2 added a per-function `switch` case-entry table and the `switch`/`trap`
 opcodes. Version 1.3 added a global-data table and `global.load`/`global.store`.
-Version 1.4 adds nominal struct metadata, 32-bit type IDs and the `struct.make`,
+Version 1.4 added nominal struct metadata, 32-bit type IDs and the `struct.make`,
 `field.load` and `field.store` opcodes, with full-width by-value calls/returns.
+Version 1.5 adds nominal enum metadata, permits enum-typed scalar storage and
+fields, and extends equality and switches to enum types without adding opcodes.
 The loader accepts only the exact format version; recompile older
 artifacts from source. The verifier checks instruction types, jump targets, unique
 register definitions, dominance, slot initialization, array metadata, addressing
@@ -378,6 +434,11 @@ Struct metadata must have bounded, nonempty, uniquely named scalar fields.
 Verification checks nominal type IDs, constructor vectors, field bounds/types,
 source-register dominance and whole-value initialization before field stores.
 Aggregate registers are immutable values, not aliases into local storage.
+Enum metadata has bounded, nonempty, uniquely named members; duplicate values
+are valid. Enum IDs must reference a declared type. Enum constants, global
+initializers and switch-table values must belong to that type's declared value
+set. Typed loads/stores, constructors, fields, calls/returns and equality preserve
+nominal identity; arithmetic and integer/enum conversions remain invalid.
 The `switch` operands are `a` = selector register, `b` = table offset, `c` = entry
 count and `dst` = fallback PC. A low-level `dst == L_NONE` traps on an unmatched
 value; source switches without `default` instead continue after the switch.
@@ -386,13 +447,17 @@ The VM additionally checks bounds at each element access, so manipulated bytecod
 cannot bypass safety by omitting a preceding `bounds_check`.
 `inspect` displays the IR, not an ABI-stable text representation.
 
-The 1.4 header is magic (4 bytes), major/minor (2 bytes each), function count,
-entry function index, global count and struct count (4 bytes each). Struct entries
+The 1.5 header is magic (4 bytes), major/minor (2 bytes each), function count,
+entry function index, global count, struct count and enum count (4 bytes each).
+Global, struct and enum counts start at byte offsets 16, 20 and 24. Struct entries
 come first: name length/name bytes, field count, then each field's name length,
 name bytes and scalar type ID. Lengths, counts and type IDs are 32-bit. Type IDs
-are 0 = `void`, 1 = `int`, 2 = `bool`, and 5+n = struct-table entry n; frontend
-placeholder IDs 3/4 are invalid artifacts. Function result, slot, register and
-global types also use 32-bit IDs. Global entries precede functions: name length
+are 0 = `void`, 1 = `int`, 2 = `bool`, 5+n = struct-table entry n, and 261+n =
+enum-table entry n (each nominal table permits indices 0..255). Frontend
+placeholder IDs 3/4 and undeclared IDs are invalid artifacts. Function result,
+slot, register and global types also use 32-bit IDs. Enum entries follow structs:
+name length/name bytes, member count, then each member's name length/name bytes
+and signed 32-bit value. Global entries follow enums and precede functions: name length
 (4 bytes), name bytes, scalar type ID (4 bytes), initial signed 32-bit value
 (4 bytes). Integers use little-endian encoding; negative initializers
 use their 32-bit bit patterns. `global.load` uses `dst` = destination register and
@@ -404,7 +469,8 @@ register. Constant-only programs have an empty global table.
 register and `b` = field index. `field.store` uses `dst` = initialized struct slot,
 `a` = scalar register and `b` = field index. Non-array `load`/`store` and
 calls/returns copy all cells of a struct value. Each field occupies one VM cell;
-this is a VM representation, not a native ABI or exposed reference layout.
+enum values also occupy one cell. This is a VM representation, not a native ABI
+or exposed reference layout.
 
 Artifacts contain no timestamps or absolute source paths. Identical source
 dependency closures and package identities produce identical bytecode after
@@ -435,6 +501,11 @@ Struct tests include 32 cross-package diamond import graphs (seed `0x53545243`)
 with independently modeled by-value transformations and shared nominal identity,
 128 generated copy/field/call models, aggregate trap/cleanup retries and malformed
 IR/bytecode metadata/vector/type mutations. Limits include type IDs above 255.
+Enum tests add 32 cross-package diamond graphs (seed `0x454e554d`), checked
+against independent nominal-value/state models, and 128 generated value,
+duplicate-value dispatch, field/copy/call and shared-state models. Malformed
+IR/bytecode cases cover metadata, type ranges, membership, conversions,
+constructors, fields, globals, switches and exact-version rejection.
 Storage/dispatch tests reuse 423 integer-expression BigInt models in lengths and
 labels, checking folded metadata, errors, duplicates, visibility and shadowing.
 The fuzz suite adds 128 bounded constant-shape programs checked against separate
@@ -450,8 +521,9 @@ The fuzz suite adds 128 independent shared-state models, runs each source and
 bytecode program twice, and tests global-store dominance in generated verifier
 graphs. Arbitrary bytecode mutants and potentially cyclic verifier graphs are
 still verified, not executed.
-Ten additional static-lifecycle programs check arithmetic/bounds traps and the
-call-depth/instruction budgets after mutating integer and boolean cells. Source
+Eleven additional static-lifecycle programs check arithmetic/bounds traps,
+enum-controlled dispatch and the call-depth/instruction budgets after mutating
+integer, boolean and enum cells. Source
 and deserialized IR alternate trapped and successful executions using the same
 execution context, with caller cleanup after traps. Every retry starts fresh,
 successful executions release their memory, and neither initializer metadata nor

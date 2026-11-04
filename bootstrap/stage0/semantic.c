@@ -39,6 +39,9 @@ static bool global_named(const Global *constant, const Module *module, Token pat
 static Global *find_global(const Ast *ast, const Module *module, Token path) {
     for (Global *constant = ast->globals; constant; constant = constant->next)
         if (global_named(constant, module, path)) return constant;
+    for (Enum *enumeration = ast->enums; enumeration; enumeration = enumeration->next)
+        for (Global *member = enumeration->members; member; member = member->next)
+            if (global_named(member, module, path)) return member;
     return NULL;
 }
 static bool alias_named(const TypeAlias *alias, const Module *module, Token path) {
@@ -57,11 +60,21 @@ static Struct *find_struct(const Ast *ast, const Module *module, Token path) {
         if (struct_named(record, module, path)) return record;
     return NULL;
 }
+static bool enum_named(const Enum *enumeration, const Module *module, Token path) {
+    return enumeration->module == module && token_equal(enumeration->scope, parent_scope(path)) &&
+        token_equal(enumeration->name, leaf_name(path));
+}
+static Enum *find_enum(const Ast *ast, const Module *module, Token path) {
+    for (Enum *enumeration = ast->enums; enumeration; enumeration = enumeration->next)
+        if (enum_named(enumeration, module, path)) return enumeration;
+    return NULL;
+}
 static bool symbol_named(const Ast *ast, const Module *module, Token path) {
     for (const Function *fn = ast->functions; fn; fn = fn->next) if (function_named(fn, module, path)) return true;
     if (find_global(ast, module, path)) return true;
     if (find_alias(ast, module, path)) return true;
     if (find_struct(ast, module, path)) return true;
+    if (find_enum(ast, module, path)) return true;
     for (Namespace *ns = module->namespaces; ns; ns = ns->next) if (token_equal(ns->name, path)) return true;
     return false;
 }
@@ -104,11 +117,14 @@ static ResolvedName resolve_name(Semantic *s, Token name, bool callable) {
         if (!scope.length) break;
         scope = parent_scope(scope);
     }
-    if (!qualified) {
-        for (Import *item = module->imports; item; item = item->next)
-            for (ImportName *binding = item->names; binding; binding = binding->next)
-                if (token_equal(binding->binding, name)) return (ResolvedName){item->target, binding->name};
-    } else {
+    for (Import *item = module->imports; item; item = item->next)
+        for (ImportName *binding = item->names; binding; binding = binding->next)
+            if (token_equal(binding->binding, first)) {
+                if (!qualified) return (ResolvedName){item->target, binding->name};
+                Token rest = name; rest.text += first.length + 2; rest.length -= first.length + 2;
+                return (ResolvedName){item->target, join_name(s->ctx, binding->name, rest, "::")};
+            }
+    if (qualified) {
         Import *best = NULL;
         for (Import *item = module->imports; item; item = item->next) {
             if (item->alias.length && token_equal(item->alias, first)) {
@@ -149,14 +165,31 @@ static Struct *struct_type(Semantic *s, Type type) {
     for (uint32_t n = TY_STRUCT; n < (uint32_t)type; ++n) record = record->next;
     return record;
 }
+static Enum *visible_enum(Semantic *s, ResolvedName name) {
+    Enum *enumeration = find_enum(s->ast, name.module, name.path);
+    if (enumeration && name.module != s->fn->module && !enumeration->exported)
+        token_fail(s->ctx, name.path, "inaccessible symbol: enum is private to its module");
+    return enumeration;
+}
+static void public_type(Semantic *s, Token name, Type type) {
+    if (IS_STRUCT(type) && !struct_type(s, type)->exported)
+        token_fail(s->ctx, name, "public signature exposes a private struct type");
+    if (IS_ENUM(type)) {
+        Enum *enumeration = s->ast->enums;
+        for (uint32_t n = TY_ENUM; n < (uint32_t)type; ++n) enumeration = enumeration->next;
+        if (!enumeration->exported) token_fail(s->ctx, name, "public interface exposes a private enum type");
+    }
+}
 static Type resolve_alias(Context *, Ast *, TypeAlias *, TypeAlias *);
 static Type resolve_type(Semantic *s, Type type, Token name, TypeAlias *parent) {
     if (type != TY_NAMED) return type;
     ResolvedName resolved = resolve_name(s, name, false);
     Struct *record = visible_struct(s, resolved);
     if (record) return (Type)(TY_STRUCT + record->symbol);
+    Enum *enumeration = visible_enum(s, resolved);
+    if (enumeration) return (Type)(TY_ENUM + enumeration->symbol);
     TypeAlias *alias = visible_alias(s, resolved);
-    if (!alias) token_fail(s->ctx, name, "declaration is not a type alias or struct");
+    if (!alias) token_fail(s->ctx, name, "declaration is not a type alias, struct or enum");
     return resolve_alias(s->ctx, s->ast, alias, parent);
 }
 static Token alias_name(Context *ctx, const TypeAlias *alias) {
@@ -189,6 +222,7 @@ static Global *resolve_global(Semantic *s, Token name) {
     Global *constant = visible_global(s, resolved);
     if (!constant && visible_alias(s, resolved)) token_fail(s->ctx, name, "type alias is not a value");
     if (!constant && visible_struct(s, resolved)) token_fail(s->ctx, name, "struct type is not a value");
+    if (!constant && visible_enum(s, resolved)) token_fail(s->ctx, name, "enum type is not a value; select a member");
     if (!constant) token_fail(s->ctx, name, "declaration is not a scalar constant");
     return constant;
 }
@@ -198,6 +232,7 @@ static Function *resolve_call(Semantic *s, Token name, const Type *types, uint32
     if (global) token_fail(s->ctx, name, global->is_static ? "static storage is not callable" : "module constant is not callable");
     if (visible_alias(s, resolved)) token_fail(s->ctx, name, "type alias is not callable");
     if (visible_struct(s, resolved)) token_fail(s->ctx, name, "struct type is not callable; use a struct literal");
+    if (visible_enum(s, resolved)) token_fail(s->ctx, name, "enum type is not callable");
     return overload(s, resolved.module, resolved.path, types, count);
 }
 static Decl *resolve_index(Semantic *s, Expr *e) {
@@ -212,7 +247,7 @@ static Decl *resolve_index(Semantic *s, Expr *e) {
     return b->decl;
 }
 static Type resolve_field(Semantic *s, Expr *e, Type type) {
-    if (type < TY_STRUCT) token_fail(s->ctx, e->token, "field access requires a struct value");
+    if (!IS_STRUCT(type)) token_fail(s->ctx, e->token, "field access requires a struct value");
     uint32_t index = 0;
     for (Field *field = struct_type(s, type)->fields; field; field = field->next, ++index) {
         if (!token_equal(field->name, e->token)) continue;
@@ -261,7 +296,7 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         if (s->constant_expression) token_fail(s->ctx, e->token, "struct literal is not a constant expression");
         if (e->left->kind != EX_NAME) token_fail(s->ctx, e->token, "struct literal requires a named struct type");
         e->type = resolve_type(s, TY_NAMED, e->left->token, NULL);
-        if (e->type < TY_STRUCT) token_fail(s->ctx, e->token, "struct literal requires a struct type");
+        if (!IS_STRUCT(e->type)) token_fail(s->ctx, e->token, "struct literal requires a struct type");
         Field *field = struct_type(s, e->type)->fields;
         for (ExprList *arg = e->args; arg; arg = arg->next) {
             if (!field) token_fail(s->ctx, e->token, "wrong number of struct initializer fields");
@@ -311,7 +346,7 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         if (e->op == TK_AND || e->op == TK_OR) {
             require(s, e->token, a, TY_BOOL); require(s, e->token, b, TY_BOOL); e->type = TY_BOOL;
         } else if (e->op == TK_EQ || e->op == TK_NE) {
-            if (a == TY_VOID || a >= TY_STRUCT || a != b) token_fail(s->ctx, e->token, "equality requires matching scalar types");
+            if (a == TY_VOID || IS_STRUCT(a) || a != b) token_fail(s->ctx, e->token, "equality requires matching scalar types");
             e->type = TY_BOOL;
         } else {
             require(s, e->token, a, TY_INT); require(s, e->token, b, TY_INT);
@@ -337,10 +372,10 @@ static Type analyze_expr(Semantic *s, Expr *e) {
     leave(s->ctx);
     return e->type;
 }
-static int32_t integer_constant(Semantic *s, Expr *expr) {
+static int32_t typed_constant(Semantic *s, Expr *expr, Type type) {
     bool saved = s->constant_expression;
     s->constant_expression = true;
-    require(s, expr->token, analyze_expr(s, expr), TY_INT);
+    require(s, expr->token, analyze_expr(s, expr), type);
     s->constant_expression = saved;
     return evaluate_constant_expression(s->ctx, expr);
 }
@@ -377,7 +412,7 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
         if (d->length) {
             if (d->type != TY_INT && d->type != TY_BOOL)
                 token_fail(s->ctx, d->name, "array element type must be int or bool");
-            int32_t length = integer_constant(s, d->length);
+            int32_t length = typed_constant(s, d->length, TY_INT);
             if (length < 1 || (uint32_t)length > L_MAX_ARRAY)
                 token_fail(s->ctx, d->length->token, "array length must be between 1 and 65535");
             d->array = (uint32_t)length;
@@ -431,7 +466,8 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
         }
         break;
     case ST_SWITCH: {
-        require(s, stmt->expr->token, analyze_expr(s, stmt->expr), TY_INT);
+        Type selector = analyze_expr(s, stmt->expr);
+        if (selector != TY_INT && !IS_ENUM(selector)) token_fail(s->ctx, stmt->expr->token, "switch selector must be int or enum");
         Binding *saved = s->bindings;
         ++s->depth;
         Enclosing sw = { false, 0, s->enclosing };
@@ -446,7 +482,7 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
                 if (has_default) token_fail(s->ctx, label->token, "duplicate default label");
                 has_default = true;
             } else {
-                label->value = integer_constant(s, label->expr);
+                label->value = typed_constant(s, label->expr, selector);
                 for (SwitchCase *other = stmt->cases; other != label; other = other->next)
                     if (!other->is_default && other->value == label->value)
                         token_fail(s->ctx, label->token, "duplicate case value");
@@ -491,6 +527,8 @@ static void imports(Context *ctx, const Ast *ast, Module *module) {
             if (alias) { found = true; visible = alias->exported; }
             Struct *record = find_struct(ast, item->target, name->name);
             if (record) { found = true; visible = record->exported; }
+            Enum *enumeration = find_enum(ast, item->target, name->name);
+            if (enumeration) { found = true; visible = enumeration->exported; }
             if (!found) token_fail(ctx, name->name, "unknown selectively imported declaration");
             if (!visible) token_fail(ctx, name->name, "inaccessible symbol: selective import requires pub");
             for (Import *other = module->imports; other; other = other->next)
@@ -506,6 +544,26 @@ static void imports(Context *ctx, const Ast *ast, Module *module) {
 }
 void analyze(Context *ctx, Ast *ast) {
     const char *saved = ctx->filename;
+    uint32_t enum_index = 0;
+    for (Enum *enumeration = ast->enums; enumeration; enumeration = enumeration->next) {
+        ctx->filename = enumeration->module->path; enumeration->symbol = enum_index++;
+        if (!enumeration->member_count) token_fail(ctx, enumeration->name, "enum must have at least one member");
+        Token full = join_name(ctx, enumeration->scope, enumeration->name, "::");
+        for (Enum *other = ast->enums; other != enumeration; other = other->next)
+            if (enum_named(other, enumeration->module, full)) token_fail(ctx, enumeration->name, "duplicate enum declaration");
+        if (find_global(ast, enumeration->module, full)) token_fail(ctx, enumeration->name, "enum conflicts with module constant/static storage");
+        if (find_struct(ast, enumeration->module, full)) token_fail(ctx, enumeration->name, "enum conflicts with struct declaration");
+        if (find_alias(ast, enumeration->module, full)) token_fail(ctx, enumeration->name, "enum conflicts with type alias declaration");
+        for (Function *fn = ast->functions; fn; fn = fn->next)
+            if (function_named(fn, enumeration->module, full)) token_fail(ctx, enumeration->name, "enum conflicts with function declaration");
+        for (Namespace *ns = enumeration->module->namespaces; ns; ns = ns->next)
+            if (token_equal(ns->name, full)) token_fail(ctx, enumeration->name, "enum conflicts with namespace declaration");
+        for (Global *member = enumeration->members; member; member = member->next) {
+            member->type = (Type)(TY_ENUM + enumeration->symbol);
+            for (Global *other = enumeration->members; other != member; other = other->next)
+                if (token_equal(other->name, member->name)) token_fail(ctx, member->name, "duplicate enum member name");
+        }
+    }
     uint32_t struct_index = 0;
     for (Struct *record = ast->structs; record; record = record->next) {
         ctx->filename = record->module->path; record->symbol = struct_index++;
@@ -551,7 +609,8 @@ void analyze(Context *ctx, Ast *ast) {
         Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope};
         for (Field *field = record->fields; field; field = field->next) {
             field->type = resolve_type(&s, field->type, field->type_name, NULL);
-            if (field->type != TY_INT && field->type != TY_BOOL) token_fail(ctx, field->name, "struct fields must be scalar int or bool");
+            if (field->type != TY_INT && field->type != TY_BOOL && !IS_ENUM(field->type)) token_fail(ctx, field->name, "struct fields must be scalar int or bool or enum");
+            if (record->exported) public_type(&s, field->name, field->type);
             for (Field *other = record->fields; other != field; other = other->next)
                 if (token_equal(other->name, field->name)) token_fail(ctx, field->name, "duplicate struct field");
         }
@@ -561,23 +620,22 @@ void analyze(Context *ctx, Ast *ast) {
         Function scope = {.module = constant->module, .scope = constant->scope};
         Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope};
         constant->type = resolve_type(&s, constant->type, constant->type_name, NULL);
-        if (constant->type != TY_INT && constant->type != TY_BOOL)
-            token_fail(ctx, constant->name, "module constant/static type must be explicit int or bool");
+        if (constant->type != TY_INT && constant->type != TY_BOOL && !IS_ENUM(constant->type))
+            token_fail(ctx, constant->name, "module constant/static type must be explicit int or bool or enum");
+        if (constant->exported) public_type(&s, constant->name, constant->type);
     }
     bool main_found = false;
     for (Function *fn = ast->functions; fn; fn = fn->next) {
         ctx->filename = fn->module->path;
         Semantic s = {.ctx = ctx, .ast = ast, .fn = fn};
         fn->result = resolve_type(&s, fn->result, fn->result_name, NULL);
-        if (fn->exported && fn->result >= TY_STRUCT && !struct_type(&s, fn->result)->exported)
-            token_fail(ctx, fn->name, "public signature exposes a private struct type");
+        if (fn->exported) public_type(&s, fn->name, fn->result);
         if (fn->result == TY_AUTO) token_fail(ctx, fn->name, "function return type must be explicit");
         Type parameters[L_MAX_SLOTS]; uint32_t count = 0;
         for (Decl *p = fn->parameters; p; p = p->next) {
             p->type = resolve_type(&s, p->type, p->type_name, NULL);
-            if (fn->exported && p->type >= TY_STRUCT && !struct_type(&s, p->type)->exported)
-                token_fail(ctx, p->name, "public signature exposes a private struct type");
-            if (p->type == TY_VOID || p->type == TY_AUTO) token_fail(ctx, p->name, "parameter type must be int, bool or a struct");
+            if (fn->exported) public_type(&s, p->name, p->type);
+            if (p->type == TY_VOID || p->type == TY_AUTO) token_fail(ctx, p->name, "parameter type must be int, bool, enum or struct");
             else parameters[count++] = p->type;
             Binding *binding = allocate(ctx, sizeof(*binding));
             *binding = (Binding){p, 0, s.bindings}; s.bindings = binding;
@@ -595,6 +653,28 @@ void analyze(Context *ctx, Ast *ast) {
         }
     }
     if (!main_found) { ctx->filename = ast->entry->path; fail(ctx, 0, 0, "missing entry point int main()"); }
+    for (Enum *enumeration = ast->enums; enumeration; enumeration = enumeration->next) {
+        ctx->filename = enumeration->module->path;
+        Function scope = {.module = enumeration->module, .scope = enumeration->scope};
+        Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope, .constant_expression = true};
+        Global *previous = NULL;
+        for (Global *member = enumeration->members; member; member = member->next) {
+            if (member->value) require(&s, member->name, analyze_expr(&s, member->value), TY_INT);
+            else {
+                /* Internal increment only: user expressions cannot perform enum arithmetic. */
+                Expr *value = allocate(ctx, sizeof(*value)); value->token = member->name; value->kind = EX_INT;
+                if (previous) {
+                    value->kind = EX_BINARY; value->op = '+';
+                    value->left = allocate(ctx, sizeof(*value->left));
+                    *value->left = (Expr){.kind = EX_NAME, .token = member->name, .global = previous};
+                    value->right = allocate(ctx, sizeof(*value->right));
+                    *value->right = (Expr){.kind = EX_INT, .token = member->name, .integer = 1};
+                }
+                member->value = value;
+            }
+            previous = member;
+        }
+    }
     for (Global *constant = ast->globals; constant; constant = constant->next) {
         ctx->filename = constant->module->path;
         Function scope = {.module = constant->module, .scope = constant->scope};

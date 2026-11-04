@@ -282,6 +282,152 @@ try {
     'app/a.l': `module app.a;${Array.from({ length: 128 }, (_, n) => `int f${n}(){return 0;}`).join('')}`,
     'app/b.l': `module app.b;${Array.from({ length: 128 }, (_, n) => `int f${n}(){return 0;}`).join('')}` }, /too many functions across modules/);
 
+  // Scoped enum members retain nominal types through constants, storage and calls.
+  const enumProgram = body => program({ 'app/main.l': `module app.main;${body}` });
+  const enumFiles = main => ({ 'app/main.l': `module app.main;${main}`,
+    'std/kinds.l': 'module std.kinds;namespace tokens{pub enum Kind{Id,Number=7,End,Alias=7,};}'
+      + 'enum Secret{Hidden};pub const tokens::Kind first=tokens::Kind::Id;pub static tokens::Kind current=first;'
+      + 'pub tokens::Kind swap(tokens::Kind k){tokens::Kind old=current;current=k;return old;}' });
+  enumProgram('enum K{A,B=7,C,Same=7};int main(){K k=K::B;if(k==K::Same&&k!=K::C)return 42;return 0;}');
+  enumProgram('enum K{A,B};const K c=K::B;static K state=c;K change(K k){K old=state;state=k;return old;}int main(){if(change(K::A)!=K::B||state!=K::A)return 1;return 42;}');
+  enumProgram('enum K{A,B};struct P{K kind;int x;};P change(P p){p.kind=K::B;return p;}int main(){P p=P{K::A,42};P q=change(p);if(p.kind!=K::A||q.kind!=K::B)return 1;p.kind=q.kind;return p.x;}');
+  enumProgram('enum K{A,B};K id(K k){return k;}int main(){auto a=K::A;const K b=K::B;a=id(b);if(a==b)return 42;return 0;}');
+  enumProgram('enum K{A,B,C};const K label=K::B;int score(K k){switch(k){case K::A:return 1;case label:return 42;default:return 0;}}int main(){return score(K::B);}');
+  enumProgram('enum K{A,B,C};int main(){int n=0;switch(K::B){case K::A:n=1;case K::B:n=n+40;case K::C:n=n+2;break;default:n=0;}return n;}');
+  enumProgram('enum K{A=0,B=7,C=-5,D,Lo=-2147483648,Hi=2147483647,Same=7,Reset=0,Next};const int v=40+2;enum Q{X=v,Y};int main(){if(K::B!=K::Same||K::Next==K::Reset||K::D==K::C||Q::X==Q::Y)return 1;return 42;}');
+  enumProgram('const int forward=later*2;enum K{A=forward,B,C=-forward};const int later=21;const K choice=K::B;const bool ok=choice==K::B;int main(){if(ok)return 42;return 0;}');
+  enumProgram('namespace n{enum K{A=base,B};const int base=7;K get(){return K::B;}}int main(){if(n::get()==n::K::B)return 42;return 0;}');
+  enumProgram('K id(K k){return k;}enum K{K};int main(){if(id(K::K)==K::K)return 42;return 0;}');
+  enumProgram('enum A{X};enum B{X};int f(A a){return 20;}int f(B b){return 22;}int main(){return f(A::X)+f(B::X);}');
+  enumProgram('enum K{A,B};void f(K k){k=K::B;return;}int main(){K k=K::A;f(k);if(k==K::A)return 42;return 0;}');
+  enumProgram('pub enum K{A,B};pub struct P{K k;};pub const K c=K::A;pub static K s=K::B;pub K id(K k){return k;}int main(){P p=P{id(c)};if(p.k!=s)return 42;return 0;}');
+  enumProgram('enum A{X};pub enum B{X};pub B id(B k){return k;}int main(){if(id(B::X)==B::X)return 42;return 0;}');
+  enumProgram('enum K{A};namespace n{enum K{A};K id(K k){return k;}}int main(){if(n::id(n::K::A)==n::K::A)return 42;return 0;}');
+  for (const [imports, type, member] of [
+    ['import std.kinds;', 'std::kinds::tokens::Kind', 'std::kinds::tokens::Kind::Number'],
+    ['import std.kinds as k;', 'k::tokens::Kind', 'k::tokens::Kind::Number'],
+    ['import std.kinds::{tokens::Kind};', 'Kind', 'Kind::Number'],
+    ['import std.kinds::{tokens::Kind as K};', 'K', 'K::Number'],
+    ['import std.kinds::{tokens::Kind as K,tokens::Kind::Number as number};', 'K', 'number'],
+  ]) program(enumFiles(`${imports}int main(){${type} value=${member};if(value==${type}::Alias)return 42;return 0;}`));
+  const enumInspection = program(enumFiles('import std.kinds as k;pub struct P{k::tokens::Kind kind;};int main(){P p=P{k::tokens::Kind::Number};if(k::swap(p.kind)==k::first&&k::current==p.kind)return 42;return 0;}'));
+  const enumIR = source(enumInspection, 0, 'inspect').stdout;
+  assert.match(enumIR, /enum t261 stdlib::std::kinds::tokens::Kind \(4 members\)/);
+  assert.match(enumIR, /member Number = 7/); assert.match(enumIR, /field 0 kind: stdlib::std::kinds::tokens::Kind/);
+  assert.match(enumIR, /global g0 .*current: stdlib::std::kinds::tokens::Kind initial=0/);
+  assert.equal(readFileSync(resolve(enumInspection.directory, 'program.lbc')).readUInt32LE(24), 2);
+  for (const [body, message] of [
+    ['enum K{};int main(){return 42;}', /at least one member/],
+    ['enum {A};int main(){return 42;}', /enum name/],
+    ['enum K A;int main(){return 42;}', /after enum name/],
+    ['enum K{1};int main(){return 42;}', /enum member name/],
+    ['enum K{A B};int main(){return 42;}', /after enum members/],
+    ['enum K{A}int main(){return 42;}', /after enum declaration/],
+    ['enum K{A,A};int main(){return 42;}', /duplicate enum member name/],
+    ['enum K{A};enum K{B};int main(){return 42;}', /duplicate enum declaration/],
+    ['enum K{A};const int K=0;int main(){return 42;}', /enum conflicts with module constant/],
+    ['enum K{A};static int K=0;int main(){return 42;}', /enum conflicts with module constant/],
+    ['enum K{A};struct K{int x;};int main(){return 42;}', /enum conflicts with struct/],
+    ['enum K{A};using K=int;int main(){return 42;}', /enum conflicts with type alias/],
+    ['enum K{A};int K(){return 0;}int main(){return 42;}', /enum conflicts with function/],
+    ['namespace K{}enum K{A};int main(){return 42;}', /enum conflicts with namespace/],
+    ['enum K{A=2147483647,B};int main(){return 42;}', /integer overflow/],
+    ['enum K{A=2147483647+1};int main(){return 42;}', /integer overflow/],
+    ['enum K{A=-2147483648-1};int main(){return 42;}', /integer overflow/],
+    ['enum K{A=1/0};int main(){return 42;}', /division by zero/],
+    ['enum K{A=true};int main(){return 42;}', /expected int, got bool/],
+    ['enum K{A=K::B,B=0};int main(){return 42;}', /expected int, got enum/],
+    ['enum K{A=mutable};static int mutable=0;int main(){return 42;}', /mutable static/],
+    ['enum K{A=f()};int f(){return 0;}int main(){return 42;}', /function call/],
+    ['enum K{A};using Alias=K;int main(){return 42;}', /type alias target/],
+    ['enum K{A};int main(){K a[2];return 42;}', /array element type/],
+    ['enum K{A};int main(){K k=0;return 42;}', /expected enum, got int/],
+    ['enum K{A};int main(){int k=K::A;return 42;}', /expected int, got enum/],
+    ['enum K{A};const K k=0;int main(){return 42;}', /expected enum, got int/],
+    ['enum K{A};static K k=0;int main(){return 42;}', /expected enum, got int/],
+    ['enum K{A};int main(){K k=K::A;k++;return 42;}', /expected int, got enum/],
+    ['enum K{A};int main(){K k=K::A;k=k+1;return 42;}', /expected int, got enum/],
+    ['enum K{A};int main(){return -K::A;}', /expected int, got enum/],
+    ['enum K{A};int main(){if(K::A< K::A)return 42;return 0;}', /expected int, got enum/],
+    ['enum K{A};int main(){if(K::A==0)return 42;return 0;}', /matching scalar types/],
+    ['enum K{A};enum Q{A};int main(){if(K::A==Q::A)return 42;return 0;}', /matching scalar types/],
+    ['enum K{A};enum Q{A};int main(){K k=Q::A;return 42;}', /expected enum, got enum/],
+    ['enum K{A};int main(){K::A=K::A;return 42;}', /cannot modify module constant/],
+    ['enum K{A};int main(){const K k=K::A;k=K::A;return 42;}', /cannot modify const/],
+    ['enum K{A};struct P{K k;};int main(){const P p=P{K::A};p.k=K::A;return 42;}', /cannot modify const/],
+    ['enum K{A};int main(){return K;}', /enum type is not a value/],
+    ['enum K{A};int main(){return K();}', /enum type is not callable/],
+    ['enum K{A};int main(){return K{0};}', /requires a struct type/],
+    ['enum K{A};int main(){K k=K::A;return k.x;}', /requires a struct value/],
+    ['enum K{A};int main(){return K::missing;}', /not a scalar constant/],
+    ['enum K{A};int main(){return A;}', /unknown local/],
+    ['enum K{A};int main(){int K=0;auto k=K::A;return 42;}', /local binding/],
+    ['enum K{A};int main(){int a[K::A];return 42;}', /expected int, got enum/],
+    ['enum K{A};int main(){switch(K::A){case 0:return 42;default:return 0;}}', /expected enum, got int/],
+    ['enum K{A};int main(){switch(0){case K::A:return 42;default:return 0;}}', /expected int, got enum/],
+    ['enum K{A};enum Q{A};int main(){switch(K::A){case Q::A:return 42;default:return 0;}}', /expected enum, got enum/],
+    ['enum K{A=7,B=7};int main(){switch(K::A){case K::A:return 42;case K::B:return 0;}}', /duplicate case value/],
+    ['enum K{A};static K k=K::A;int main(){switch(K::A){case k:return 42;default:return 0;}}', /mutable static/],
+    ['enum K{A};int main(){const K k=K::A;switch(K::A){case k:return 42;default:return 0;}}', /local binding is not a compile-time/],
+    ['enum K{A};pub K f(){return K::A;}int main(){return 42;}', /public interface exposes a private enum/],
+    ['enum K{A};pub int f(K k){return 42;}int main(){return 42;}', /public interface exposes a private enum/],
+    ['enum K{A};pub const K k=K::A;int main(){return 42;}', /public interface exposes a private enum/],
+    ['enum K{A};pub static K k=K::A;int main(){return 42;}', /public interface exposes a private enum/],
+    ['enum K{A};pub struct P{K k;};int main(){return 42;}', /public interface exposes a private enum/],
+  ]) rejected({ 'app/main.l': `module app.main;${body}` }, message);
+  for (const body of ['int main(){k::Secret v=k::Secret::Hidden;return 42;}', 'int main(){return k::Secret;}',
+    'int main(){return k::Secret();}', 'int main(){return k::Secret::Hidden;}'])
+    rejected(enumFiles(`import std.kinds as k;${body}`), /inaccessible symbol/);
+  rejected(enumFiles('import std.kinds::{Secret};int main(){return 42;}'), /requires pub/);
+  rejected(enumFiles('import std.kinds::{Secret::Hidden};int main(){return 42;}'), /requires pub/);
+  rejected(enumFiles('import std.kinds::{tokens::Kind as K};namespace n{enum K{Other};K f(){return K::Number;}}int main(){return 42;}'), /not a scalar constant/);
+  const enumsLimit = Array.from({ length: 256 }, (_, n) => `enum E${n}{A,B};`).join('');
+  enumProgram(`${enumsLimit}int main(){E255 k=E255::B;if(k!=E255::A)return 42;return 0;}`);
+  rejected({ 'app/main.l': `module app.main;${enumsLimit}enum Extra{A};int main(){return 42;}` }, /too many enums/);
+  rejected({ 'app/main.l': `module app.main;import app.other;${enumsLimit}int main(){return 42;}`,
+    'app/other.l': 'module app.other;enum Extra{A};' }, /too many enums across modules/);
+  const membersLimit = Array.from({ length: 1024 }, (_, n) => `M${n}`).join(',');
+  enumProgram(`enum K{${membersLimit}};int main(){switch(K::M1023){case K::M1023:return 42;default:return 0;}}`);
+  rejected({ 'app/main.l': `module app.main;enum K{${membersLimit},Extra};int main(){return 42;}` }, /too many enum members/);
+  state = 0x454e554d;
+  for (let test = 0; test < 32; ++test) {
+    const names = ['A', 'B', 'C', 'D'], nodes = [];
+    const project = { 'std/types.l': 'module std.types;pub enum Kind{A=-7,B,C=2147483647,D=-2147483648,Alias=-7};'
+      + 'pub static Kind current=Kind::A;pub static int hits=0;',
+    'std/other.l': 'module std.other;pub enum Kind{A=-7,B,C=2147483647,D=-2147483648};' };
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.e${n}`, map = names.map(() => random(4)), parents = [];
+      let imports = 'import std.types as t;', body = 'switch(k){';
+      for (let k = 0; k < 4; ++k) body += `case t::Kind::${names[k]}:k=t::Kind::${names[map[k]]};break;`;
+      body += '}t::current=k;t::hits++;';
+      for (let p = 0; p < n; ++p) if (p >= n - 2 || random(3) === 0) {
+        parents.push(p);
+        const parent = nodes[p].name, form = (test + n + p) % 3;
+        if (!form) { imports += `import ${parent};`; body += `k=${parent.replaceAll('.', '::')}::work::run(k);`; }
+        else if (form === 1) { imports += `import ${parent} as m${p};`; body += `k=m${p}::work::run(k);`; }
+        else { imports += `import ${parent}::{work::run as f${p}};`; body += `k=f${p}(k);`; }
+      }
+      nodes.push({ name, map, parents });
+      project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${imports}namespace work{pub t::Kind run(t::Kind k){${body}return k;}}`;
+    }
+    let current = 0, hits = 0;
+    function simulate(n, input) {
+      let k = nodes[n].map[input]; current = k; ++hits;
+      for (const parent of nodes[n].parents) k = simulate(parent, k);
+      return k;
+    }
+    const initial = random(4), a = simulate(7, initial), b = simulate(6, initial);
+    const imports = ['import std.types::{Kind as K,current,hits};', 'import std.other as other;', 'import app.e7 as top;', 'import app.e6 as next;'];
+    if (test % 2) imports.reverse();
+    project['app/main.l'] = `module app.main;${imports.join('')}int f(K k){return 20;}int f(other::Kind k){return 22;}`
+      + `int main(){K original=K::${names[initial]};K a=top::work::run(original);K b=next::work::run(original);`
+      + `if(original!=K::${names[initial]}||a!=K::${names[a]}||b!=K::${names[b]}||hits!=${hits}||current!=K::${names[current]})return 1;`
+      + 'return f(K::Alias)+f(other::Kind::A);}';
+    const settings = config(); if (test % 2) settings.module_roots.reverse();
+    const f = program(project, 42, settings);
+    assert.equal(readFileSync(resolve(f.directory, 'program.lbc')).readUInt32LE(24), 2, 'shared enum identity must not be duplicated');
+  }
+
   // Nominal value structs copy through locals, argument vectors and return registers.
   const structProgram = body => program({ 'app/main.l': `module app.main;${body}` });
   const structFiles = main => ({ 'app/main.l': `module app.main;${main}`,
@@ -885,7 +1031,7 @@ try {
   source(staticMoved, 0, 'compile', ['-o', staticOutput], { cwd: '/' });
   assert.deepEqual(readFileSync(resolve(staticOriginal.directory, 'program.lbc')), readFileSync(staticOutput));
   const staticIR = source(staticOriginal, 0, 'inspect').stdout;
-  assert.match(staticIR, /LIR 1\.4; bytecode 1\.4/);
+  assert.match(staticIR, /LIR 1\.5; bytecode 1\.5/);
   assert.match(staticIR, /global g\d+ stdlib::std::state::hidden: int initial=40/);
   assert.match(staticIR, /global g\d+ stdlib::std::state::flags::active: bool initial=1/);
   assert.match(staticIR, /global\.load/); assert.match(staticIR, /global\.store/);
@@ -1114,7 +1260,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 struct DAGs, 32 alias DAGs, 32 constant DAGs, 32 static DAGs in two import orders, ${constantModels} constant-expression models, ${shapeModels} integer shape models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 enum DAGs, 32 struct DAGs, 32 alias DAGs, 32 constant DAGs, 32 static DAGs in two import orders, ${constantModels} constant-expression models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

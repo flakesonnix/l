@@ -267,6 +267,33 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
         }
         if (peek(p).kind == TK_MODULE || peek(p).kind == TK_IMPORT)
             token_fail(p->ctx, peek(p), "module and import declarations must precede other declarations");
+        if (take(p, TK_ENUM)) {
+            if (ast->enum_count++ == L_MAX_ENUMS) token_fail(p->ctx, token, "too many enums (maximum 256)");
+            Enum *enumeration = allocate(p->ctx, sizeof(*enumeration));
+            enumeration->module = ast->entry; enumeration->scope = scope; enumeration->exported = exported;
+            enumeration->name = expect(p, TK_NAME, "expected enum name");
+            expect(p, '{', "expected '{' after enum name");
+            Global **members = &enumeration->members;
+            if (!take(p, '}')) {
+                do {
+                    if (enumeration->member_count++ == L_MAX_MEMBERS) token_fail(p->ctx, peek(p), "too many enum members (maximum 1024)");
+                    Global *member = allocate(p->ctx, sizeof(*member));
+                    member->name = expect(p, TK_NAME, "expected enum member name");
+                    member->module = ast->entry; member->exported = exported;
+                    member->scope = join_name(p->ctx, scope, enumeration->name, "::");
+                    if (take(p, '=')) member->value = expression(p, 1);
+                    *members = member; members = &member->next;
+                    if (!take(p, ',')) break;
+                    if (peek(p).kind == '}') break;
+                } while (true);
+                expect(p, '}', "expected '}' after enum members");
+            }
+            expect(p, ';', "expected ';' after enum declaration");
+            Enum **enums = &ast->enums;
+            while (*enums) enums = &(*enums)->next;
+            *enums = enumeration;
+            continue;
+        }
         if (take(p, TK_STRUCT)) {
             if (ast->struct_count++ == L_MAX_STRUCTS) token_fail(p->ctx, token, "too many structs (maximum 256)");
             Struct *record = allocate(p->ctx, sizeof(*record));
@@ -378,5 +405,6 @@ Ast *parse(Context *ctx, Token *tokens, size_t count) {
     ast->entry->globals = ast->globals;
     ast->entry->aliases = ast->aliases;
     ast->entry->structs = ast->structs;
+    ast->entry->enums = ast->enums;
     return ast;
 }

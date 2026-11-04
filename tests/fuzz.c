@@ -16,6 +16,7 @@ static size_t graphs, valid_graphs, invalid_graphs;
 static size_t lifecycle_programs;
 static size_t shape_programs;
 static size_t struct_programs;
+static size_t enum_programs;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -115,7 +116,10 @@ static void fuzz_bytecode(void) {
         "const int start=40;static int counter=start;static bool active=true;int next(){return counter++;}"
             "int main(){if(active){active=false;return next()+next()-39;}return 0;}",
         "struct Pair{int x;bool ready;};Pair bump(Pair p){p.x++;return p;}"
-            "int main(){Pair p=Pair{41,true};Pair q=bump(p);if(p.x!=41||!q.ready)return 1;return q.x;}"
+            "int main(){Pair p=Pair{41,true};Pair q=bump(p);if(p.x!=41||!q.ready)return 1;return q.x;}",
+        "enum K{A=-7,B=2147483647,C=-2147483648,Alias=-7};const K first=K::A;static K state=first;"
+            "struct P{K kind;};K swap(K k){K old=state;state=k;return old;}"
+            "int main(){P p=P{swap(K::C)};if(state!=K::C)return 1;switch(p.kind){case K::Alias:return 42;default:return 0;}}"
     };
     Seed seeds[sizeof(sources) / sizeof(*sources)];
     Context *ctx = context("fuzz-seed");
@@ -550,12 +554,14 @@ static void reuse_execution(Context *ctx, const Program *p, int status) {
 }
 static void static_lifecycle_case(size_t test, const char *trap) {
     source_length = 0;
-    append("struct Pair{int x;bool ready;};Pair step(Pair p){p.x++;return p;}"
-           "static int count=41;static bool ready=true;"
+    append("enum Phase{Start=-7,Done=2147483647};struct Pair{int x;bool ready;Phase phase;};"
+           "Pair step(Pair p){p.x++;p.phase=Phase::Done;return p;}"
+           "static int count=41;static bool ready=true;static Phase phase=Phase::Start;"
            "int descend(int n){count++;if(n>0)return descend(n-1);return count;}"
-           "int fail(){Pair p=step(Pair{count,ready});count=p.x;ready=false;%s}"
-           "int main(){if(count!=41||!ready)return 1;return fail();}"
-           "int recover(){if(count!=41||!ready)return 1;Pair p=step(Pair{count,ready});count=99;ready=false;return p.x;}", trap);
+           "int fail(){Pair p=step(Pair{count,ready,phase});count=p.x;phase=p.phase;ready=false;%s}"
+           "int main(){if(count!=41||!ready||phase!=Phase::Start)return 1;return fail();}"
+           "int recover(){if(count!=41||!ready||phase!=Phase::Start)return 1;Pair p=step(Pair{count,ready,phase});"
+           "count=99;phase=p.phase;ready=false;return p.x;}", trap);
     ++programs; ++lifecycle_programs;
     fprintf(stderr, "static lifecycle case %zu:\nmodule test;\n%s\n", test, source);
     Context *owner = context("static-lifecycle-source");
@@ -569,8 +575,8 @@ static void static_lifecycle_case(size_t test, const char *trap) {
         for (uint32_t j = 0; j < p->function_count; ++j)
             if (!strcmp(p->functions[j].name, "test::recover")) recovery.entry = j;
         verify(owner, &recovery);
-        if (p->global_count != 2) failed("static lifecycle program has the wrong cell count");
-        IrGlobal initial[2]; memcpy(initial, p->globals, sizeof(initial));
+        if (p->global_count != 3) failed("static lifecycle program has the wrong cell count");
+        IrGlobal initial[3]; memcpy(initial, p->globals, sizeof(initial));
         write_bytecode(owner, p, "build/fuzz-roundtrip.lbc");
         size_t before_size;
         const unsigned char *before = read_file(owner, "build/fuzz-roundtrip.lbc", &before_size);
@@ -601,7 +607,8 @@ static void static_lifecycle_cases(void) {
         "int data[1];return data[count];",
         "int data[1];data[count]=1;return 0;",
         "return descend(256);",
-        "for(int n=0;n<2000000;n++){count++;}return count;"
+        "for(int n=0;n<2000000;n++){count++;}return count;",
+        "switch(phase){case Phase::Start:return 0;default:return 1/(count-42);}"
     };
     for (size_t test = 0; test < sizeof(traps) / sizeof(*traps); ++test) static_lifecycle_case(test, traps[test]);
 }
@@ -664,6 +671,70 @@ static void struct_cases(void) {
         append("return sum+score(p)+score(q);}"); expected += struct_score(p) + struct_score(q);
         if (expected < INT32_MIN || expected > INT32_MAX) failed("struct model result exceeds int range");
         ++struct_programs; semantic_case((int32_t)expected, 0);
+    }
+}
+
+static unsigned enum_index(const int32_t values[8], int32_t value) {
+    for (unsigned n = 0; n < 8; ++n) if (values[n] == value) return n;
+    failed("enum model contains an undeclared value");
+}
+static void enum_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        int32_t base = (int32_t)random_number(41) - 20;
+        int32_t values[8] = {base, base + 1, (int32_t)random_number(31) - 15, base, INT32_MAX, INT32_MIN, INT32_MIN + 1, 0};
+        int32_t weights[8];
+        for (unsigned n = 0; n < 8; ++n) weights[n] = (int32_t)random_number(101) - 50;
+        unsigned pi = random_number(8), qi = random_number(8), initial = random_number(8);
+        int32_t p = values[pi], q = values[qi], state = values[initial];
+        int64_t expected = 0;
+        source_length = 0;
+        append("enum K{M0=base,M1,M2=%d,M3=base,M4=2147483647,M5=-2147483648,M6,M7=0};const int base=%d;"
+               "const K first=K::M%u;static K state=first;struct P{K kind;};"
+               "K swap(K k){K old=state;state=k;return old;}int score(K k){switch(k){", values[2], base, initial);
+        for (unsigned n = 0; n < 8; ++n)
+            if (enum_index(values, values[n]) == n) append("case K::M%u:return %d;", n, weights[n]);
+        append("default:return -99;}}K rotate(K k){switch(k){");
+        for (unsigned n = 0; n < 8; ++n)
+            if (enum_index(values, values[n]) == n) append("case K::M%u:return K::M%u;", n, (n + 1) % 8);
+        append("default:return K::M0;}}P change(P p){p.kind=rotate(p.kind);return p;}"
+               "int main(){P p=P{K::M%u};P q=P{K::M%u};int sum=0;", pi, qi);
+        for (unsigned op = 0; op < 24; ++op) {
+            unsigned selected = random_number(8);
+            switch (random_number(8)) {
+            case 0:
+                append("q=change(p);sum=sum+score(p.kind)+score(q.kind);");
+                q = values[(enum_index(values, p) + 1) % 8];
+                expected += weights[enum_index(values, p)] + weights[enum_index(values, q)]; break;
+            case 1:
+                append("p.kind=K::M%u;sum=sum+score(p.kind);", selected); p = values[selected];
+                expected += weights[enum_index(values, p)]; break;
+            case 2: {
+                append("sum=sum+score(swap(p.kind))+score(state);");
+                int32_t old = state; state = p;
+                expected += weights[enum_index(values, old)] + weights[enum_index(values, state)]; break;
+            }
+            case 3:
+                append("if(p.kind==q.kind){q.kind=rotate(q.kind);sum++;}else p=q;");
+                if (p == q) { q = values[(enum_index(values, q) + 1) % 8]; ++expected; } else p = q;
+                break;
+            case 4:
+                append("if(p.kind!=K::M%u&&swap(q.kind)==K::M%u)sum=sum+2;", selected, selected);
+                if (p != values[selected]) { int32_t old = state; state = q; if (old == values[selected]) expected += 2; }
+                break;
+            case 5:
+                append("{const K k=q.kind;p.kind=k;q=change(q);sum=sum+score(k);}");
+                p = q; q = values[(enum_index(values, q) + 1) % 8]; expected += weights[enum_index(values, p)]; break;
+            case 6:
+                append("{P copy=p;p.kind=rotate(p.kind);sum=sum+score(copy.kind);}");
+                expected += weights[enum_index(values, p)]; p = values[(enum_index(values, p) + 1) % 8]; break;
+            case 7:
+                append("p.kind=swap(q.kind);q.kind=K::M%u;sum=sum+score(p.kind);", selected);
+                p = state; state = q; q = values[selected]; expected += weights[enum_index(values, p)]; break;
+            }
+        }
+        append("return sum+score(state)+score(p.kind)+score(q.kind);}");
+        expected += weights[enum_index(values, state)] + weights[enum_index(values, p)] + weights[enum_index(values, q)];
+        ++enum_programs; semantic_case((int32_t)expected, 0);
     }
 }
 
@@ -783,6 +854,7 @@ int main(void) {
     graph_cases();
     shape_cases();
     struct_cases();
+    enum_cases();
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
@@ -791,5 +863,6 @@ int main(void) {
     printf("fuzz: %zu static lifecycle programs preserved initializers across traps, cleanup and retries\n", lifecycle_programs);
     printf("fuzz: %zu constant-shape programs matched independent lengths, dispatch and bounds models\n", shape_programs);
     printf("fuzz: %zu struct programs matched independent copy, field and call models\n", struct_programs);
+    printf("fuzz: %zu enum programs matched independent value, dispatch and state models\n", enum_programs);
     return 0;
 }

@@ -8,9 +8,9 @@
 #include <setjmp.h>
 
 #define L_IR_MAJOR 1
-#define L_IR_MINOR 4
+#define L_IR_MINOR 5
 #define L_BC_MAJOR 1
-#define L_BC_MINOR 4
+#define L_BC_MINOR 5
 #define L_NONE UINT32_MAX
 #define L_MAX_FUNCTIONS 256u
 #define L_MAX_MODULES 256u
@@ -20,6 +20,8 @@
 #define L_MAX_ALIASES 1024u
 #define L_MAX_STRUCTS 256u
 #define L_MAX_FIELDS 64u
+#define L_MAX_ENUMS 256u
+#define L_MAX_MEMBERS 1024u
 #define L_MAX_REGISTERS 4096u
 #define L_MAX_SLOTS 1024u
 #define L_MAX_ARRAY 65535u
@@ -41,13 +43,15 @@ typedef struct {
 } Context;
 
 typedef struct { const char *text; size_t length; uint32_t line, column; int kind; int64_t integer; } Token;
-typedef enum { TY_VOID, TY_INT, TY_BOOL, TY_AUTO, TY_NAMED, TY_STRUCT } Type;
+typedef enum { TY_VOID, TY_INT, TY_BOOL, TY_AUTO, TY_NAMED, TY_STRUCT, TY_ENUM = TY_STRUCT + L_MAX_STRUCTS } Type;
+#define IS_STRUCT(t) ((uint32_t)(t) - TY_STRUCT < L_MAX_STRUCTS)
+#define IS_ENUM(t) ((uint32_t)(t) - TY_ENUM < L_MAX_ENUMS)
 enum {
     TK_EOF = 256, TK_NAME, TK_INTEGER, TK_INT, TK_BOOL, TK_VOID, TK_AUTO,
     TK_CONST, TK_TRUE, TK_FALSE, TK_IF, TK_ELSE, TK_WHILE, TK_FOR, TK_RETURN,
     TK_MODULE, TK_EQ, TK_NE, TK_LE, TK_GE, TK_AND, TK_OR, TK_INC, TK_DEC,
     TK_BREAK, TK_CONTINUE, TK_SWITCH, TK_CASE, TK_DEFAULT,
-    TK_IMPORT, TK_AS, TK_PUB, TK_NAMESPACE, TK_SCOPE, TK_STATIC, TK_USING, TK_STRUCT
+    TK_IMPORT, TK_AS, TK_PUB, TK_NAMESPACE, TK_SCOPE, TK_STATIC, TK_USING, TK_STRUCT, TK_ENUM
 };
 
 typedef struct Expr Expr;
@@ -64,6 +68,7 @@ typedef struct Global Global;
 typedef struct TypeAlias TypeAlias;
 typedef struct Struct Struct;
 typedef struct Field Field;
+typedef struct Enum Enum;
 struct ExprList { Expr *value; ExprList *next; };
 struct SwitchCase { Token token; int32_t value; bool is_default; Expr *expr; Stmt *body; SwitchCase *next; };
 typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX, EX_GLOBAL, EX_STRUCT, EX_FIELD } ExprKind;
@@ -130,6 +135,15 @@ struct Struct {
     Field *fields;
     Struct *next;
 };
+/* Enum members reuse checked, immutable module constants, with an enum scope. */
+struct Enum {
+    Token name, scope;
+    Module *module;
+    bool exported;
+    uint32_t symbol, member_count;
+    Global *members;
+    Enum *next;
+};
 struct ImportName { Token name, binding; ImportName *next; };
 struct Import { Token name, qualifier, alias; ImportName *names; Module *target; Import *next; };
 struct Namespace { Token name; Namespace *next; };
@@ -142,17 +156,19 @@ struct Module {
     Global *globals;
     TypeAlias *aliases;
     Struct *structs;
+    Enum *enums;
     unsigned state;
     Module *next;
 };
 typedef struct {
     Function *functions;
-    uint32_t function_count, constant_count, static_count, alias_count, struct_count;
+    uint32_t function_count, constant_count, static_count, alias_count, struct_count, enum_count;
     Module *modules, *entry;
     Function *entrypoint;
     Global *globals;
     TypeAlias *aliases;
     Struct *structs;
+    Enum *enums;
 } Ast;
 typedef struct ModuleRoot ModuleRoot;
 typedef struct PackageDependency PackageDependency;
@@ -183,6 +199,8 @@ typedef struct {
 typedef struct { char *name; Type type; int32_t initial; } IrGlobal;
 typedef struct { char *name; Type type; } IrField;
 typedef struct { char *name; uint32_t field_count; IrField *fields; } IrStruct;
+typedef struct { char *name; int32_t value; } IrMember;
+typedef struct { char *name; uint32_t member_count; IrMember *members; } IrEnum;
 typedef struct {
     uint32_t function_count, entry;
     IrFunction *functions;
@@ -190,6 +208,8 @@ typedef struct {
     IrGlobal *globals;
     uint32_t struct_count;
     IrStruct *structs;
+    uint32_t enum_count;
+    IrEnum *enums;
 } Program;
 
 _Noreturn void fail(Context *, uint32_t, uint32_t, const char *, ...);

@@ -32,6 +32,7 @@ void write_bytecode(Context *ctx, const Program *p, const char *path) {
     put(file, p->function_count, 4); put(file, p->entry, 4);
     put(file, p->global_count, 4);
     put(file, p->struct_count, 4);
+    put(file, p->enum_count, 4);
     for (uint32_t n = 0; n < p->struct_count; ++n) {
         const IrStruct *s = &p->structs[n];
         uint32_t length = (uint32_t)strlen(s->name);
@@ -39,6 +40,15 @@ void write_bytecode(Context *ctx, const Program *p, const char *path) {
         for (uint32_t j = 0; j < s->field_count; ++j) {
             length = (uint32_t)strlen(s->fields[j].name);
             put(file, length, 4); fwrite(s->fields[j].name, 1, length, file); put(file, s->fields[j].type, 4);
+        }
+    }
+    for (uint32_t n = 0; n < p->enum_count; ++n) {
+        const IrEnum *e = &p->enums[n];
+        uint32_t length = (uint32_t)strlen(e->name);
+        put(file, length, 4); fwrite(e->name, 1, length, file); put(file, e->member_count, 4);
+        for (uint32_t j = 0; j < e->member_count; ++j) {
+            length = (uint32_t)strlen(e->members[j].name);
+            put(file, length, 4); fwrite(e->members[j].name, 1, length, file); put(file, (uint32_t)e->members[j].value, 4);
         }
     }
     for (uint32_t n = 0; n < p->global_count; ++n) {
@@ -85,6 +95,8 @@ Program *read_bytecode(Context *ctx, const unsigned char *data, size_t size) {
     if (p->global_count > L_MAX_GLOBALS) fail(ctx, 0, 0, "bytecode global limit exceeded");
     p->struct_count = get(&r, 4);
     if (p->struct_count > L_MAX_STRUCTS) fail(ctx, 0, 0, "bytecode struct limit exceeded");
+    p->enum_count = get(&r, 4);
+    if (p->enum_count > L_MAX_ENUMS) fail(ctx, 0, 0, "bytecode enum limit exceeded");
     p->structs = allocate(ctx, p->struct_count * sizeof(*p->structs));
     for (uint32_t n = 0; n < p->struct_count; ++n) {
         IrStruct *s = &p->structs[n];
@@ -93,6 +105,16 @@ Program *read_bytecode(Context *ctx, const unsigned char *data, size_t size) {
         s->fields = allocate(ctx, s->field_count * sizeof(*s->fields));
         for (uint32_t j = 0; j < s->field_count; ++j) {
             s->fields[j].name = get_name(&r); s->fields[j].type = (Type)get(&r, 4);
+        }
+    }
+    p->enums = allocate(ctx, p->enum_count * sizeof(*p->enums));
+    for (uint32_t n = 0; n < p->enum_count; ++n) {
+        IrEnum *e = &p->enums[n];
+        e->name = get_name(&r); e->member_count = get(&r, 4);
+        if (!e->member_count || e->member_count > L_MAX_MEMBERS) fail(ctx, 0, 0, "invalid bytecode enum member count");
+        e->members = allocate(ctx, e->member_count * sizeof(*e->members));
+        for (uint32_t j = 0; j < e->member_count; ++j) {
+            e->members[j].name = get_name(&r); e->members[j].value = get_signed(&r);
         }
     }
     p->globals = allocate(ctx, p->global_count * sizeof(*p->globals));
@@ -142,7 +164,8 @@ Program *read_bytecode(Context *ctx, const unsigned char *data, size_t size) {
 }
 
 static const char *ir_type_name(const Program *p, Type type) {
-    return type >= TY_STRUCT ? p->structs[type - TY_STRUCT].name : type_name(type);
+    if (IS_ENUM(type)) return p->enums[type - TY_ENUM].name;
+    return IS_STRUCT(type) ? p->structs[type - TY_STRUCT].name : type_name(type);
 }
 void inspect(const Program *p, FILE *file) {
     static const char *const names[] = {
@@ -151,14 +174,20 @@ void inspect(const Program *p, FILE *file) {
         "bounds_check", "clear", "switch", "trap", "global.load", "global.store", "struct.make", "field.load", "field.store"
     };
     fprintf(file, "LIR %u.%u; bytecode %u.%u; entry f%u\n", L_IR_MAJOR, L_IR_MINOR, L_BC_MAJOR, L_BC_MINOR, p->entry);
+    for (uint32_t n = 0; n < p->enum_count; ++n) {
+        const IrEnum *e = &p->enums[n];
+        fprintf(file, "enum t%u %s (%u members)\n", TY_ENUM + n, e->name, e->member_count);
+        for (uint32_t j = 0; j < e->member_count; ++j)
+            fprintf(file, "  member %s = %d\n", e->members[j].name, e->members[j].value);
+    }
     for (uint32_t n = 0; n < p->struct_count; ++n) {
         const IrStruct *s = &p->structs[n];
         fprintf(file, "struct t%u %s (%u fields)\n", TY_STRUCT + n, s->name, s->field_count);
         for (uint32_t j = 0; j < s->field_count; ++j)
-            fprintf(file, "  field %u %s: %s\n", j, s->fields[j].name, type_name(s->fields[j].type));
+            fprintf(file, "  field %u %s: %s\n", j, s->fields[j].name, ir_type_name(p, s->fields[j].type));
     }
     for (uint32_t n = 0; n < p->global_count; ++n)
-        fprintf(file, "global g%u %s: %s initial=%d\n", n, p->globals[n].name, type_name(p->globals[n].type), p->globals[n].initial);
+        fprintf(file, "global g%u %s: %s initial=%d\n", n, p->globals[n].name, ir_type_name(p, p->globals[n].type), p->globals[n].initial);
     for (uint32_t n = 0; n < p->function_count; ++n) {
         const IrFunction *f = &p->functions[n];
         fprintf(file, "f%u %s -> %s (%u parameters, %u slots, %u registers, %u switch cases)\n", n, f->name,

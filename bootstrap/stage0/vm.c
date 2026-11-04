@@ -13,7 +13,7 @@ static int32_t checked(Vm *vm, Instruction i, int64_t value) {
     return (int32_t)value;
 }
 static uint32_t width(const Program *p, Type type) {
-    return type >= TY_STRUCT ? p->structs[type - TY_STRUCT].field_count : 1;
+    return IS_STRUCT(type) ? p->structs[type - TY_STRUCT].field_count : 1;
 }
 static void run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, Instruction callsite, int32_t *result) {
     if (depth >= L_MAX_DEPTH) trap(vm, callsite, "call depth limit exceeded (256)");

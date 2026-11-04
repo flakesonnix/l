@@ -245,6 +245,19 @@ Program *lower(Context *ctx, Ast *ast) {
     Program *p = allocate(ctx, sizeof(*p));
     p->function_count = ast->function_count;
     p->functions = allocate(ctx, p->function_count * sizeof(*p->functions));
+    p->enum_count = ast->enum_count;
+    p->enums = allocate(ctx, p->enum_count * sizeof(*p->enums));
+    for (Enum *enumeration = ast->enums; enumeration; enumeration = enumeration->next) {
+        IrEnum *e = &p->enums[enumeration->symbol];
+        e->name = linked_name(ctx, enumeration->module, enumeration->scope, enumeration->name);
+        e->member_count = enumeration->member_count;
+        e->members = allocate(ctx, e->member_count * sizeof(*e->members));
+        uint32_t index = 0;
+        for (Global *member = enumeration->members; member; member = member->next, ++index) {
+            e->members[index].name = copy_text(ctx, member->name.text, member->name.length);
+            e->members[index].value = member->integer;
+        }
+    }
     p->struct_count = ast->struct_count;
     p->structs = allocate(ctx, p->struct_count * sizeof(*p->structs));
     for (Struct *record = ast->structs; record; record = record->next) {
@@ -296,11 +309,21 @@ static Type global_type(Context *ctx, const Program *p, uint32_t index) {
     if (index >= p->global_count) invalid(ctx, "global index out of range");
     return p->globals[index].type;
 }
+static bool scalar_type(const Program *p, Type type) {
+    return type == TY_INT || type == TY_BOOL || (IS_ENUM(type) && (uint32_t)(type - TY_ENUM) < p->enum_count);
+}
 static bool value_type(const Program *p, Type type) {
-    return type == TY_INT || type == TY_BOOL || (type >= TY_STRUCT && (uint32_t)(type - TY_STRUCT) < p->struct_count);
+    return scalar_type(p, type) || (IS_STRUCT(type) && (uint32_t)(type - TY_STRUCT) < p->struct_count);
+}
+static void enum_value(Context *ctx, const Program *p, Type type, uint32_t value) {
+    if (!IS_ENUM(type)) return;
+    const IrEnum *e = &p->enums[type - TY_ENUM]; /* Type IDs and metadata have already been validated. */
+    for (uint32_t j = 0; j < e->member_count; ++j)
+        if ((uint32_t)e->members[j].value == value) return;
+    invalid(ctx, "value is not a declared enum member");
 }
 static const IrStruct *struct_type(Context *ctx, const Program *p, Type type) {
-    if (type < TY_STRUCT) invalid(ctx, "expected a struct type");
+    if (!IS_STRUCT(type)) invalid(ctx, "expected a struct type");
     return &p->structs[type - TY_STRUCT]; /* Value type IDs have already been validated. */
 }
 static Type field_type(Context *ctx, const IrStruct *record, uint32_t index) {
@@ -412,12 +435,20 @@ void verify(Context *ctx, const Program *p) {
         invalid(ctx, "invalid function table");
     const IrFunction *entry = &p->functions[p->entry];
     if (entry->result != TY_INT || entry->parameter_count) invalid(ctx, "invalid entry signature");
+    if (p->enum_count > L_MAX_ENUMS) invalid(ctx, "too many enums");
+    for (uint32_t n = 0; n < p->enum_count; ++n) {
+        const IrEnum *e = &p->enums[n];
+        if (!e->member_count || e->member_count > L_MAX_MEMBERS) invalid(ctx, "invalid enum member count");
+        for (uint32_t j = 0; j < e->member_count; ++j)
+            for (uint32_t k = 0; k < j; ++k)
+                if (!strcmp(e->members[k].name, e->members[j].name)) invalid(ctx, "duplicate enum member name");
+    }
     if (p->struct_count > L_MAX_STRUCTS) invalid(ctx, "too many structs");
     for (uint32_t n = 0; n < p->struct_count; ++n) {
         const IrStruct *s = &p->structs[n];
         if (!s->field_count || s->field_count > L_MAX_FIELDS) invalid(ctx, "invalid struct field count");
         for (uint32_t j = 0; j < s->field_count; ++j) {
-            if (s->fields[j].type != TY_INT && s->fields[j].type != TY_BOOL) invalid(ctx, "invalid scalar field type");
+            if (!scalar_type(p, s->fields[j].type)) invalid(ctx, "invalid scalar field type");
             for (uint32_t k = 0; k < j; ++k)
                 if (!strcmp(s->fields[k].name, s->fields[j].name)) invalid(ctx, "duplicate struct field name");
         }
@@ -425,8 +456,9 @@ void verify(Context *ctx, const Program *p) {
     if (p->global_count > L_MAX_GLOBALS) invalid(ctx, "too many globals");
     for (uint32_t n = 0; n < p->global_count; ++n) {
         const IrGlobal *g = &p->globals[n];
-        if (g->type != TY_INT && g->type != TY_BOOL) invalid(ctx, "invalid global type");
+        if (!scalar_type(p, g->type)) invalid(ctx, "invalid global type");
         if (g->type == TY_BOOL && (uint32_t)g->initial > 1) invalid(ctx, "invalid bool global initializer");
+        enum_value(ctx, p, g->type, (uint32_t)g->initial);
     }
     for (uint32_t n = 0; n < p->function_count; ++n) {
         const IrFunction *f = &p->functions[n];
@@ -441,7 +473,7 @@ void verify(Context *ctx, const Program *p) {
         uint32_t elements = 0;
         for (uint32_t j = 0; j < f->slot_count; ++j) {
             if (f->slot_lengths[j] > L_MAX_ARRAY) invalid(ctx, "array length out of range");
-            if (f->slot_lengths[j] && f->slots[j] >= TY_STRUCT) invalid(ctx, "struct arrays are not supported");
+            if (f->slot_lengths[j] && f->slots[j] != TY_INT && f->slots[j] != TY_BOOL) invalid(ctx, "struct/enum arrays are not supported");
             if (j < f->parameter_count && f->slot_lengths[j]) invalid(ctx, "array parameters are not supported");
             if (elements > L_MAX_SLOTS_ELEMENTS - f->slot_lengths[j])
                 invalid(ctx, "too many array elements");
@@ -460,8 +492,9 @@ void verify(Context *ctx, const Program *p) {
             }
             switch (i.op) {
             case OP_CONST:
-                if (f->registers[i.dst] >= TY_STRUCT) invalid(ctx, "struct value requires struct.make");
+                if (IS_STRUCT(f->registers[i.dst])) invalid(ctx, "struct value requires struct.make");
                 if (f->registers[i.dst] == TY_BOOL && i.a > 1) invalid(ctx, "invalid bool constant");
+                enum_value(ctx, p, f->registers[i.dst], i.a);
                 break;
             case OP_STRUCT: {
                 const IrStruct *s = struct_type(ctx, p, register_type(ctx, f, i.dst));
@@ -501,7 +534,7 @@ void verify(Context *ctx, const Program *p) {
                 same(ctx, register_type(ctx, f, i.a), TY_INT); same(ctx, register_type(ctx, f, i.b), TY_INT); break;
             case OP_EQ: case OP_NE:
                 same(ctx, register_type(ctx, f, i.dst), TY_BOOL);
-                if (register_type(ctx, f, i.a) >= TY_STRUCT) invalid(ctx, "struct equality is not supported");
+                if (IS_STRUCT(register_type(ctx, f, i.a))) invalid(ctx, "struct equality is not supported");
                 same(ctx, register_type(ctx, f, i.a), register_type(ctx, f, i.b)); break;
             case OP_LT: case OP_LE: case OP_GT: case OP_GE:
                 same(ctx, register_type(ctx, f, i.dst), TY_BOOL);
@@ -525,10 +558,12 @@ void verify(Context *ctx, const Program *p) {
                 } else same(ctx, register_type(ctx, f, i.a), f->result);
                 break;
             case OP_SWITCH: {
-                same(ctx, register_type(ctx, f, i.a), TY_INT);
+                Type selector = register_type(ctx, f, i.a);
+                if (selector != TY_INT && !IS_ENUM(selector)) invalid(ctx, "switch selector must be int or enum");
                 if (i.b > f->switch_count || i.c > f->switch_count - i.b) invalid(ctx, "invalid switch case vector");
                 if (i.dst != L_NONE && i.dst >= f->code_count) invalid(ctx, "switch default target out of range");
                 for (uint32_t j = i.b; j < i.b + i.c; ++j) {
+                    enum_value(ctx, p, selector, (uint32_t)f->switch_entries[j].value);
                     for (uint32_t k = i.b; k < j; ++k)
                         if (f->switch_entries[k].value == f->switch_entries[j].value)
                             invalid(ctx, "duplicate switch case value");

@@ -15,6 +15,9 @@ typedef struct {
     IrStruct structs[L_MAX_STRUCTS];
     IrField fields[2][L_MAX_FIELDS];
     char field_names[L_MAX_FIELDS][8];
+    IrEnum enums[L_MAX_ENUMS];
+    IrMember members[L_MAX_MEMBERS];
+    char member_names[L_MAX_MEMBERS][12];
 } Fixture;
 
 static Instruction ins(Opcode op, uint32_t dst, uint32_t a, uint32_t b, uint32_t c) {
@@ -525,13 +528,136 @@ static void check_bytes(const unsigned char *bytes, size_t size, bool valid) {
     ctx->filename = "bytecode-test";
     if (!setjmp(ctx->failure)) {
         Program *p = read_bytecode(ctx, bytes, size);
-        if (execute_program(ctx, p) != 42) exit(1);
+        if (valid && execute_program(ctx, p) != 42) exit(1);
     }
     if ((ctx->status == 0) != valid) { fprintf(stderr, "unexpected bytecode result at length %zu\n", size); exit(1); }
     cleanup(ctx); free(ctx);
 }
 static void store(unsigned char *bytes, size_t offset, uint32_t value, unsigned width) {
     for (unsigned j = 0; j < width; ++j) bytes[offset + j] = (unsigned char)(value >> (8 * j));
+}
+static void enum_fixture(Fixture *x) {
+    reset(x);
+    x->program.enum_count = 2; x->program.enums = x->enums;
+    x->enums[0] = (IrEnum){"E", 5, x->members}; x->enums[1] = (IrEnum){"F", 5, x->members};
+    x->members[0] = (IrMember){"A", -7}; x->members[1] = (IrMember){"B", 0};
+    x->members[2] = (IrMember){"C", INT32_MIN}; x->members[3] = (IrMember){"D", INT32_MAX};
+    x->members[4] = (IrMember){"Alias", -7};
+    x->program.struct_count = 1; x->program.structs = x->structs;
+    x->structs[0] = (IrStruct){"P", 1, x->fields[0]}; x->fields[0][0] = (IrField){"kind", TY_ENUM};
+    x->program.global_count = 1; x->globals[0] = (IrGlobal){"g", TY_ENUM, -7};
+    IrFunction *f = &x->functions[0];
+    f->slot_count = 1; x->slots[0][0] = TY_ENUM;
+    f->register_count = 4; x->registers[0][0] = x->registers[0][1] = TY_ENUM;
+    x->registers[0][2] = TY_BOOL; x->registers[0][3] = TY_INT;
+    f->code_count = 8;
+    x->code[0][0] = ins(OP_GLOBAL_LOAD, 0, 0, 0, 0);
+    x->code[0][1] = ins(OP_STORE, 0, 0, 0, 0);
+    x->code[0][2] = ins(OP_CONST, 1, (uint32_t)-7, 0, 0);
+    x->code[0][3] = ins(OP_EQ, 2, 0, 1, 0);
+    x->code[0][4] = ins(OP_BRANCH, 0, 2, 5, 7);
+    x->code[0][5] = ins(OP_CONST, 3, 42, 0, 0);
+    x->code[0][6] = ins(OP_RETURN, 0, 3, 0, 0);
+    x->code[0][7] = ins(OP_TRAP, 0, 0, 0, 0);
+}
+enum {
+    E_VALID, E_SWITCH, E_CALL, E_MIN, E_MAX, E_ZERO, E_MAX_ENUMS, E_MAX_MEMBERS,
+    E_LIMIT, E_EMPTY, E_MEMBERS_LIMIT, E_MEMBER_DUPLICATE,
+    E_RESULT_ID, E_SLOT_ID, E_REGISTER_ID, E_GLOBAL_ID, E_FIELD_ID,
+    E_CONSTANT_VALUE, E_GLOBAL_VALUE, E_ARRAY, E_EQUALITY, E_STORE, E_GLOBAL_LOAD,
+    E_ARITHMETIC, E_NEGATE, E_ORDER, E_BRANCH, E_MAKE, E_FIELD, E_FIELD_STORE,
+    E_SWITCH_VALUE, E_SWITCH_DUPLICATE, E_SWITCH_BOOL, E_COUNT
+};
+static void mutate_enum(Fixture *x, int which) {
+    IrFunction *f = &x->functions[0], *g = &x->functions[1];
+    if (which == E_SWITCH || which >= E_SWITCH_VALUE) {
+        f->switch_count = 4;
+        for (unsigned n = 0; n < 4; ++n) x->entries[n] = (SwitchEntry){x->members[n].value, n ? 7 : 5};
+        x->code[0][4] = ins(OP_SWITCH, 7, 0, 0, 4);
+    }
+    switch (which) {
+    case E_VALID: case E_SWITCH: break;
+    case E_CALL:
+        f->argument_count = 1; x->arguments[0] = 0; x->code[0][2] = ins(OP_CALL, 1, 1, 0, 1);
+        g->parameter_count = g->slot_count = g->register_count = 1; g->result = TY_ENUM;
+        x->slots[1][0] = x->registers[1][0] = TY_ENUM; g->code_count = 2;
+        x->code[1][0] = ins(OP_LOAD, 0, 0, 0, 0); x->code[1][1] = ins(OP_RETURN, 0, 0, 0, 0); break;
+    case E_MIN: case E_MAX: case E_ZERO:
+        x->globals[0].initial = which == E_MIN ? INT32_MIN : which == E_MAX ? INT32_MAX : 0;
+        x->code[0][2].a = (uint32_t)x->globals[0].initial; break;
+    case E_MAX_ENUMS:
+        x->program.enum_count = L_MAX_ENUMS;
+        for (unsigned n = 2; n < L_MAX_ENUMS; ++n) x->enums[n] = x->enums[0];
+        x->globals[0].type = x->fields[0][0].type = x->slots[0][0] = x->registers[0][0] = x->registers[0][1] = (Type)(TY_ENUM + L_MAX_ENUMS - 1); break;
+    case E_MAX_MEMBERS:
+        x->enums[0].member_count = L_MAX_MEMBERS;
+        for (unsigned n = 0; n < L_MAX_MEMBERS; ++n) {
+            snprintf(x->member_names[n], sizeof(x->member_names[n]), "M%u", n);
+            x->members[n] = (IrMember){x->member_names[n], n + 1 == L_MAX_MEMBERS ? -7 : (int32_t)n};
+        }
+        break;
+    case E_LIMIT: x->program.enum_count = L_MAX_ENUMS + 1; break;
+    case E_EMPTY: x->enums[0].member_count = 0; break;
+    case E_MEMBERS_LIMIT: x->enums[0].member_count = L_MAX_MEMBERS + 1; break;
+    case E_MEMBER_DUPLICATE: x->members[1].name = "A"; break;
+    case E_RESULT_ID: g->result = (Type)(TY_ENUM + 2); break;
+    case E_SLOT_ID: x->slots[0][0] = (Type)(TY_ENUM + 2); break;
+    case E_REGISTER_ID: x->registers[0][0] = (Type)(TY_ENUM + 2); break;
+    case E_GLOBAL_ID: x->globals[0].type = (Type)(TY_ENUM + 2); break;
+    case E_FIELD_ID: x->fields[0][0].type = (Type)(TY_ENUM + 2); break;
+    case E_CONSTANT_VALUE: x->code[0][2].a = 1; break;
+    case E_GLOBAL_VALUE: x->globals[0].initial = 1; break;
+    case E_ARRAY: x->slot_lengths[0][0] = 1; break;
+    case E_EQUALITY: x->registers[0][1] = (Type)(TY_ENUM + 1); break;
+    case E_STORE: x->slots[0][0] = (Type)(TY_ENUM + 1); break;
+    case E_GLOBAL_LOAD: x->globals[0].type = (Type)(TY_ENUM + 1); break;
+    case E_ARITHMETIC: x->code[0][3] = ins(OP_ADD, 3, 0, 1, 0); break;
+    case E_NEGATE: x->code[0][3] = ins(OP_NEG, 3, 0, 0, 0); break;
+    case E_ORDER: x->code[0][3] = ins(OP_LT, 2, 0, 1, 0); break;
+    case E_BRANCH: x->code[0][4].a = 0; break;
+    case E_MAKE: x->code[0][2] = ins(OP_STRUCT, 1, 0, 1, 0); break;
+    case E_FIELD: x->code[0][3] = ins(OP_FIELD, 2, 0, 0, 0); break;
+    case E_FIELD_STORE: x->code[0][3] = ins(OP_FIELD_STORE, 0, 0, 0, 0); break;
+    case E_SWITCH_VALUE: x->entries[1].value = 1; break;
+    case E_SWITCH_DUPLICATE: x->entries[1].value = -7; break;
+    case E_SWITCH_BOOL: x->code[0][4].a = 2; break;
+    }
+}
+static void check_enum(int which) {
+    Context *ctx = calloc(1, sizeof(*ctx)); if (!ctx) exit(1);
+    ctx->filename = "enum-verifier-test";
+    if (!setjmp(ctx->failure)) {
+        Fixture x; enum_fixture(&x); mutate_enum(&x, which);
+        verify(ctx, &x.program);
+        write_bytecode(ctx, &x.program, "build/verifier-enum.lbc");
+        size_t size; unsigned char *bytes = read_file(ctx, "build/verifier-enum.lbc", &size);
+        Program *p = read_bytecode(ctx, bytes, size);
+        size_t allocated = ctx->allocated;
+        for (unsigned repeat = 0; repeat < 3; ++repeat)
+            if (execute_program(ctx, p) != 42 || ctx->allocated != allocated || p->globals[0].initial != x.globals[0].initial) exit(1);
+    }
+    int expected = which <= E_MAX_MEMBERS ? 0 : 65;
+    if (ctx->status != expected) { fprintf(stderr, "enum verifier case %d: expected %d, got %d\n", which, expected, ctx->status); exit(1); }
+    cleanup(ctx); free(ctx);
+}
+static void enum_bytes(void) {
+    Context *ctx = calloc(1, sizeof(*ctx)); if (!ctx) exit(1);
+    ctx->filename = "enum-format-test"; if (setjmp(ctx->failure)) exit(1);
+    Fixture x; enum_fixture(&x); x.program.struct_count = 0; x.program.enum_count = 1; x.enums[0].member_count = 2;
+    write_bytecode(ctx, &x.program, "build/verifier-enum.lbc");
+    size_t size; unsigned char *original = read_file(ctx, "build/verifier-enum.lbc", &size), *bytes = allocate(ctx, size);
+    check_bytes(original, size, true);
+    for (size_t n = 0; n < size; ++n) check_bytes(original, n, false);
+    static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
+        {24, L_MAX_ENUMS + 1, 4}, {28, 0, 4}, {28, UINT32_MAX, 4}, {32, 0, 1},
+        {33, 0, 4}, {33, L_MAX_MEMBERS + 1, 4}, {37, 0, 4}, {37, UINT32_MAX, 4}, {41, 0, 1},
+        {50, 'A', 1}, {60, TY_ENUM + 1, 4}, {64, 1, 4}, {42, 1, 4}
+    };
+    for (size_t n = 0; n < sizeof(corruptions) / sizeof(*corruptions); ++n) {
+        memcpy(bytes, original, size); store(bytes, corruptions[n].offset, corruptions[n].value, corruptions[n].width);
+        check_bytes(bytes, size, false);
+    }
+    cleanup(ctx); free(ctx); remove("build/verifier-enum.lbc");
 }
 static void global_bytes(void) {
     Context *ctx = calloc(1, sizeof(*ctx)); if (!ctx) exit(1);
@@ -544,7 +670,7 @@ static void global_bytes(void) {
     check_bytes(original, size, true);
     for (size_t n = 0; n < size; ++n) check_bytes(original, n, false);
     static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
-        {24, 0, 4}, {24, UINT32_MAX, 4}, {28, 0, 1}, {29, TY_AUTO, 4}
+        {28, 0, 4}, {28, UINT32_MAX, 4}, {32, 0, 1}, {33, TY_AUTO, 4}
     };
     for (size_t n = 0; n < sizeof(corruptions) / sizeof(*corruptions); ++n) {
         memcpy(bytes, original, size); store(bytes, corruptions[n].offset, corruptions[n].value, corruptions[n].width);
@@ -552,7 +678,7 @@ static void global_bytes(void) {
     }
     const uint32_t values[] = {0, 1, 2, UINT32_MAX};
     for (unsigned n = 0; n < 4; ++n) {
-        memcpy(bytes, original, size); store(bytes, 29, TY_BOOL, 4); store(bytes, 33, values[n], 4);
+        memcpy(bytes, original, size); store(bytes, 33, TY_BOOL, 4); store(bytes, 37, values[n], 4);
         check_bytes(bytes, size, n < 2);
     }
     cleanup(ctx); free(ctx); remove("build/verifier-globals.lbc");
@@ -566,9 +692,9 @@ static void struct_bytes(void) {
     check_bytes(original, size, true);
     for (size_t n = 0; n < size; ++n) check_bytes(original, n, false);
     static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
-        {24, 0, 4}, {24, UINT32_MAX, 4}, {28, 0, 1}, {29, 0, 4}, {29, L_MAX_FIELDS + 1, 4},
-        {33, 0, 4}, {33, UINT32_MAX, 4}, {37, 0, 1}, {38, TY_VOID, 4}, {38, TY_STRUCT, 4}, {38, UINT32_MAX, 4},
-        {46, 'x', 1}, {47, TY_AUTO, 4}
+        {28, 0, 4}, {28, UINT32_MAX, 4}, {32, 0, 1}, {33, 0, 4}, {33, L_MAX_FIELDS + 1, 4},
+        {37, 0, 4}, {37, UINT32_MAX, 4}, {41, 0, 1}, {42, TY_VOID, 4}, {42, TY_STRUCT, 4}, {42, UINT32_MAX, 4},
+        {50, 'x', 1}, {51, TY_AUTO, 4}
     };
     for (size_t n = 0; n < sizeof(corruptions) / sizeof(*corruptions); ++n) {
         memcpy(bytes, original, size); store(bytes, corruptions[n].offset, corruptions[n].value, corruptions[n].width);
@@ -580,8 +706,10 @@ static void struct_bytes(void) {
 int main(void) {
     for (int which = 0; which < CASE_COUNT; ++which) check(which);
     for (int which = 0; which < S_COUNT; ++which) check_struct(which);
+    for (int which = 0; which < E_COUNT; ++which) check_enum(which);
     global_bytes();
     struct_bytes();
+    enum_bytes();
     Context *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) return 1;
     ctx->filename = "roundtrip-test";
@@ -594,24 +722,24 @@ int main(void) {
     check_bytes(original, size, true);
     for (size_t length = 0; length < size; ++length) check_bytes(original, length, false);
     static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
-        {0, 0, 1}, {4, 2, 2}, {6, L_BC_MINOR + 1, 2}, {6, 0, 2}, {6, 1, 2}, {6, 2, 2}, {6, 3, 2}, {8, 0, 4}, {8, L_MAX_FUNCTIONS + 1, 4},
-        {12, 2, 4}, {16, L_MAX_GLOBALS + 1, 4}, {20, L_MAX_STRUCTS + 1, 4}, {24, 0, 4}, {24, UINT32_MAX, 4}, {28, 0, 1},
-        {40, L_MAX_SLOTS + 1, 4}, {44, L_MAX_REGISTERS + 1, 4},
-        {48, L_MAX_CODE + 1, 4}, {52, L_MAX_ARGS + 1, 4}, {56, L_MAX_CASES + 1, 4},
-        {68, L_MAX_ARRAY + 1, 4}
+        {0, 0, 1}, {4, 2, 2}, {6, L_BC_MINOR + 1, 2}, {6, 0, 2}, {6, 1, 2}, {6, 2, 2}, {6, 3, 2}, {6, 4, 2}, {8, 0, 4}, {8, L_MAX_FUNCTIONS + 1, 4},
+        {12, 2, 4}, {16, L_MAX_GLOBALS + 1, 4}, {20, L_MAX_STRUCTS + 1, 4}, {24, L_MAX_ENUMS + 1, 4}, {28, 0, 4}, {28, UINT32_MAX, 4}, {32, 0, 1},
+        {44, L_MAX_SLOTS + 1, 4}, {48, L_MAX_REGISTERS + 1, 4},
+        {52, L_MAX_CODE + 1, 4}, {56, L_MAX_ARGS + 1, 4}, {60, L_MAX_CASES + 1, 4},
+        {72, L_MAX_ARRAY + 1, 4}
     };
     for (size_t j = 0; j < sizeof(corruptions) / sizeof(*corruptions); ++j) {
         memcpy(bytes, original, size);
         store(bytes, corruptions[j].offset, corruptions[j].value, corruptions[j].width);
         check_bytes(bytes, size, false);
     }
-    /* With empty struct/global tables, slot types start at 60; lengths start at 68. */
+    /* With empty nominal/global tables, slot types start at 64; lengths start at 72. */
     memcpy(bytes, original, size);
-    store(bytes, 68, L_MAX_ARRAY, 4); store(bytes, 72, 2, 4);
+    store(bytes, 72, L_MAX_ARRAY, 4); store(bytes, 76, 2, 4);
     check_bytes(bytes, size, false);
     memcpy(bytes, original, size); bytes[size] = 0;
     check_bytes(bytes, size + 1, false);
     free(bytes); cleanup(ctx); free(ctx); remove("build/verifier.lbc"); remove("build/verifier-case.lbc");
-    printf("verifier: %d IR cases plus truncation/format mutations passed\n", CASE_COUNT + S_COUNT);
+    printf("verifier: %d IR cases plus truncation/format mutations passed\n", CASE_COUNT + S_COUNT + E_COUNT);
     return 0;
 }
