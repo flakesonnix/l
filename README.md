@@ -110,13 +110,18 @@ Program results can overlap these codes; diagnostics are written to stderr.
 `make test` checks the frontend, source and serialized-bytecode execution, IR
 roundtrips, reproducible output and defined failures.
 It also runs `make fuzz`: a fixed-seed bytecode mutation corpus plus generated
-array and switch programs checked against independent host-side models. Mutations
-include truncation, bit/word replacement, insertion, deletion, splicing and random
-data.
+array, switch and expression programs checked against independent host-side
+models. Mutations include truncation, bit/word replacement, insertion, deletion,
+splicing and random data.
 The semantic tests compare full 32-bit results before and after serialization and
 check signed index boundaries for integer/boolean array reads and writes. Switch
 models check signed boundary labels, default placement, unmatched selectors,
 fallthrough, returns, nested breaks/continues and single selector evaluation.
+Expression models check full-width arithmetic, overflow and division traps,
+short-circuit side effects, assignments, postfix updates and nested call arguments.
+Generated control-flow graphs are checked against a separate path-state model for
+register dominance and scalar/array initialization, both directly and after
+serialization. These graphs may contain loops and are verified, never executed.
 The seed is `0x4c313146`; diagnostics and generated sources are in `build/fuzz.log`.
 Arbitrary bytecode mutants are parsed and verified, not executed, because they
 may contain nonterminating loops. VM executions use bounded generated programs

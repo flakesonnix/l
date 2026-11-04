@@ -11,6 +11,7 @@
 typedef struct { const unsigned char *bytes; size_t size; } Seed;
 static uint32_t random_state = FUZZ_SEED;
 static size_t inputs, accepted, rejected, programs, executions;
+static size_t graphs, valid_graphs, invalid_graphs;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -356,6 +357,200 @@ static void switch_limit_cases(void) {
     }
 }
 
+typedef struct { int32_t variable; int status; } ExpressionModel;
+static int32_t expression_checked(ExpressionModel *model, int64_t value) {
+    if (model->status) return 0;
+    if (value < INT32_MIN || value > INT32_MAX) { model->status = 70; return 0; }
+    return (int32_t)value;
+}
+static int32_t expression_value(void) {
+    static const int32_t edges[] = {INT32_MIN, INT32_MIN + 1, INT32_MAX - 1, INT32_MAX, -97, -1, 0, 1, 97};
+    return random_number(2) ? edges[random_number(sizeof(edges) / sizeof(*edges))] : (int32_t)random_number(201) - 100;
+}
+/* Emit typed expressions while a host-side model tracks values, effects and traps. */
+static int32_t expression_model(ExpressionModel *model, unsigned depth, bool boolean) {
+    if (boolean) {
+        unsigned kind = random_number(depth ? 5 : 2);
+        if (!kind) {
+            int32_t value = (int32_t)random_number(2);
+            append(value ? "true" : "false"); return value;
+        }
+        if (kind == 1) {
+            static const char *const operators[] = {"==", "!=", "<", "<=", ">", ">="};
+            unsigned op = random_number(6);
+            append("("); int32_t a = expression_model(model, depth ? depth - 1 : 0, false);
+            append("%s", operators[op]); int32_t b = expression_model(model, depth ? depth - 1 : 0, false);
+            append(")");
+            switch (op) {
+            case 0: return a == b; case 1: return a != b; case 2: return a < b;
+            case 3: return a <= b; case 4: return a > b; default: return a >= b;
+            }
+        }
+        if (kind == 2) {
+            append("(!"); int32_t value = expression_model(model, depth - 1, true); append(")"); return !value;
+        }
+        append("("); int32_t a = expression_model(model, depth - 1, true);
+        bool conjunction = kind == 3;
+        append(conjunction ? "&&" : "||");
+        ExpressionModel skipped = *model;
+        bool shorted = conjunction ? !a : a != 0;
+        int32_t b = expression_model(shorted ? &skipped : model, depth - 1, true);
+        append(")"); return conjunction ? a && b : a || b;
+    }
+    unsigned kind = random_number(depth ? 9 : 6);
+    if (kind < 6) {
+        int32_t value = expression_value();
+        if (!kind || kind == 5) { append("(%d)", value); return value; }
+        if (kind == 1) { append("n"); return model->variable; }
+        if (kind == 4) {
+            append("(n=%d)", value);
+            if (!model->status) model->variable = value;
+            return value;
+        }
+        bool increment = kind == 2;
+        append(increment ? "n++" : "n--");
+        int32_t old = model->variable;
+        int32_t next = expression_checked(model, (int64_t)old + (increment ? 1 : -1));
+        if (!model->status) model->variable = next;
+        return old;
+    }
+    if (kind == 6) {
+        bool negative = random_number(2) != 0;
+        append(negative ? "(-" : "(+");
+        int32_t value = expression_model(model, depth - 1, false);
+        append(")"); return expression_checked(model, negative ? -(int64_t)value : value);
+    }
+    unsigned op = random_number(5);
+    append(kind == 8 ? "pair(" : "(");
+    int32_t a = expression_model(model, depth - 1, false);
+    static const char operators[] = "+-*/%";
+    if (kind == 8) append(","); else append("%c", operators[op]);
+    int32_t b = expression_model(model, depth - 1, false);
+    append(")");
+    if (model->status) return 0;
+    if (kind == 8) {
+        int32_t product = expression_checked(model, (int64_t)a * 3);
+        return expression_checked(model, (int64_t)product + b);
+    }
+    if (op >= 3 && (!b || (a == INT32_MIN && b == -1))) { model->status = 70; return 0; }
+    switch (op) {
+    case 0: return expression_checked(model, (int64_t)a + b);
+    case 1: return expression_checked(model, (int64_t)a - b);
+    case 2: return expression_checked(model, (int64_t)a * b);
+    case 3: return expression_checked(model, (int64_t)a / b);
+    default: return expression_checked(model, (int64_t)a % b);
+    }
+}
+static void expression_cases(void) {
+    unsigned successes = 0, traps = 0;
+    for (unsigned test = 0; test < MODEL_CASES * 4; ++test) {
+        ExpressionModel model = {expression_value(), 0};
+        bool boolean = test % 2 != 0;
+        source_length = 0;
+        append("int pair(int a,int b){return a*3+b;}int main(){int n=%d;%s value=", model.variable, boolean ? "bool" : "int");
+        int32_t expected = expression_model(&model, 1 + random_number(5), boolean);
+        append(";if(n!=%d)1/0;", model.variable);
+        append(boolean ? "if(value)return 1;return 0;}" : "return value;}");
+        if (model.status) ++traps; else ++successes;
+        semantic_case(model.status ? 0 : expected, model.status);
+    }
+    if (!successes || !traps) failed("expression model did not exercise values and traps");
+}
+
+/* Enumerate (PC, defined-value set) states instead of using the verifier's meet algorithm. */
+enum { GRAPH_REGISTERS = 6, GRAPH_SLOTS = 2, GRAPH_CODE = 13, GRAPH_STATES = 1u << (GRAPH_REGISTERS + GRAPH_SLOTS) };
+static bool graph_model(const IrFunction *f) {
+    bool seen[GRAPH_CODE][GRAPH_STATES] = {{false}};
+    uint32_t queue[GRAPH_CODE * GRAPH_STATES], reachable = 0;
+    size_t head = 0, tail = 1;
+    queue[0] = 0; seen[0][0] = true;
+    while (head < tail) {
+        uint32_t state = queue[head++], pc = state / GRAPH_STATES, bits = state % GRAPH_STATES, uses = 0;
+        Instruction i = f->code[pc];
+        switch (i.op) {
+        case OP_LOAD:
+            uses = 1u << (GRAPH_REGISTERS + i.a);
+            if (i.c) uses |= 1u << i.b;
+            break;
+        case OP_STORE:
+            uses = 1u << i.a;
+            if (i.c) uses |= (1u << (GRAPH_REGISTERS + i.dst)) | (1u << i.b);
+            break;
+        case OP_ADD: uses = (1u << i.a) | (1u << i.b); break;
+        case OP_BRANCH: case OP_SWITCH: case OP_RETURN: uses = 1u << i.a; break;
+        default: break;
+        }
+        if ((bits & uses) != uses) return false;
+        if (i.op == OP_CONST || i.op == OP_LOAD || i.op == OP_ADD) {
+            reachable |= 1u << i.dst; bits |= 1u << i.dst;
+        }
+        if (i.op == OP_CLEAR || (i.op == OP_STORE && !i.c)) bits |= 1u << (GRAPH_REGISTERS + i.dst);
+        uint32_t next[3]; unsigned count = 0;
+        if (i.op == OP_JUMP) next[count++] = i.a;
+        else if (i.op == OP_BRANCH) { next[count++] = i.b; next[count++] = i.c; }
+        else if (i.op == OP_SWITCH) {
+            if (i.dst != L_NONE) next[count++] = i.dst;
+            for (uint32_t j = i.b; j < i.b + i.c; ++j) next[count++] = f->switch_entries[j].target;
+        } else if (i.op != OP_RETURN) next[count++] = pc + 1;
+        for (unsigned j = 0; j < count; ++j) {
+            if (!seen[next[j]][bits]) {
+                seen[next[j]][bits] = true;
+                queue[tail++] = next[j] * GRAPH_STATES + bits;
+            }
+        }
+    }
+    return reachable == (1u << GRAPH_REGISTERS) - 1;
+}
+static Instruction ins(Opcode op, uint32_t dst, uint32_t a, uint32_t b, uint32_t c) {
+    return (Instruction){op, dst, a, b, c, 1, 1};
+}
+static void graph_check(const Program *p, bool valid, bool serialized) {
+    Context *ctx = context("fuzz-graph");
+    if (!setjmp(ctx->failure)) {
+        if (serialized) (void)roundtrip(ctx, p); else verify(ctx, p);
+    }
+    if (ctx->status != (valid ? 0 : 65)) failed("verifier differs from the independent path model");
+    dispose(ctx);
+}
+static void graph_case(const Program *p, bool valid) {
+    ++graphs; if (valid) ++valid_graphs; else ++invalid_graphs;
+    fprintf(stderr, "verifier graph %zu: expected %s\n", graphs, valid ? "acceptance" : "rejection");
+    inspect(p, stderr);
+    graph_check(p, valid, false); graph_check(p, valid, true);
+}
+static void graph_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES * 4; ++test) {
+        Type slots[] = {TY_INT, TY_INT}, registers[] = {TY_BOOL, TY_INT, TY_INT, TY_INT, TY_INT, TY_INT};
+        uint32_t lengths[] = {0, 1};
+        SwitchEntry entries[6];
+        Instruction code[] = {
+            ins(OP_CONST, 0, 1, 0, 0), ins(OP_CONST, 1, 42, 0, 0), ins(OP_JUMP, 0, 3, 0, 0),
+            ins(OP_STORE, 0, 1, 0, 0), ins(OP_CLEAR, 1, 0, 0, 0), ins(OP_CONST, 2, 0, 0, 0),
+            ins(OP_JUMP, 0, 7, 0, 0), ins(OP_LOAD, 3, 0, 0, 0), ins(OP_STORE, 1, 1, 2, 1),
+            ins(OP_LOAD, 4, 1, 2, 1), ins(OP_ADD, 5, 3, 4, 0), ins(OP_JUMP, 0, 12, 0, 0),
+            ins(OP_RETURN, 0, 5, 0, 0)
+        };
+        IrFunction f = {.name = "main", .result = TY_INT, .slot_count = GRAPH_SLOTS, .register_count = GRAPH_REGISTERS,
+            .code_count = GRAPH_CODE, .slots = slots, .registers = registers, .slot_lengths = lengths,
+            .code = code, .switch_entries = entries};
+        static const unsigned forks[] = {2, 6, 11};
+        for (unsigned j = 0; j < 3; ++j) {
+            unsigned pc = forks[j], kind = random_number(4), target = random_number(GRAPH_CODE);
+            if (kind == 1) code[pc] = ins(OP_JUMP, 0, target, 0, 0);
+            if (kind == 2) code[pc] = ins(OP_BRANCH, 0, 0, pc + 1, target);
+            if (kind == 3) {
+                unsigned count = random_number(3);
+                code[pc] = ins(OP_SWITCH, random_number(3) ? pc + 1 : L_NONE, 1, f.switch_count, count);
+                for (unsigned k = 0; k < count; ++k)
+                    entries[f.switch_count++] = (SwitchEntry){(int32_t)k, random_number(GRAPH_CODE)};
+            }
+        }
+        bool valid = graph_model(&f);
+        Program p = {1, 0, &f}; graph_case(&p, valid);
+    }
+    if (!valid_graphs || !invalid_graphs) failed("graph model did not exercise acceptance and rejection");
+}
+
 int main(void) {
     if (!freopen("build/fuzz.log", "w", stderr)) { puts("fuzz: cannot open build/fuzz.log"); return 1; }
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -367,8 +562,12 @@ int main(void) {
     switch_cases();
     switch_loop_cases();
     switch_limit_cases();
+    expression_cases();
+    graph_cases();
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
+    printf("fuzz: %zu verifier graphs (%zu accepted, %zu rejected) matched the independent path model\n",
+           graphs, valid_graphs, invalid_graphs);
     return 0;
 }
