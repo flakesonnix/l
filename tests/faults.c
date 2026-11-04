@@ -68,7 +68,8 @@ static void vector_element_overflow(Context *ctx) {
 static void missing_filename(Context *ctx) { ctx->filename = NULL; fail(ctx, 0, 0, "test diagnostic"); }
 static void type_names(Context *ctx) {
     (void)ctx;
-    if (strcmp(type_name(TY_AUTO), "auto") || strcmp(type_name((Type)99), "invalid")) exit(1);
+    if (strcmp(type_name(TY_AUTO), "auto") || strcmp(type_name(TY_NAMED), "unresolved type") ||
+        strcmp(type_name((Type)99), "invalid")) exit(1);
 }
 static void syntax_depth(Context *ctx) { ctx->nesting = L_MAX_DEPTH; enter(ctx, (Token){0}); }
 static void nul_source(Context *ctx) { size_t count; (void)lex(ctx, "\0", 1, &count); }

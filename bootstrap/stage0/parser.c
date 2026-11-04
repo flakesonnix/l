@@ -20,20 +20,29 @@ static Token name_path(Parser *p, int separator) {
     }
     return name;
 }
-static Type parse_type(Parser *p) {
+static Type parse_type(Parser *p, Token *name) {
     Token token = peek(p);
+    if (token.kind == TK_NAME) { *name = name_path(p, TK_SCOPE); return TY_NAMED; }
     ++p->at;
     switch (token.kind) {
     case TK_INT: return TY_INT;
     case TK_BOOL: return TY_BOOL;
     case TK_VOID: return TY_VOID;
     case TK_AUTO: return TY_AUTO;
-    default: token_fail(p->ctx, token, "expected Stage 0 type (int, bool, void, auto)");
+    default: token_fail(p->ctx, token, "expected Stage 0 type (int, bool, void, auto or type alias)");
     }
 }
 static bool starts_decl(Parser *p) {
     int k = peek(p).kind;
-    return k == TK_CONST || k == TK_INT || k == TK_BOOL || k == TK_VOID || k == TK_AUTO;
+    if (k == TK_CONST || k == TK_INT || k == TK_BOOL || k == TK_VOID || k == TK_AUTO) return true;
+    if (k != TK_NAME) return false;
+    /* A qualified name followed by an identifier is a declaration, not a value expression. */
+    size_t at = p->at + 1;
+    while (p->tokens[at].kind == TK_SCOPE) {
+        if (p->tokens[++at].kind != TK_NAME) return false;
+        ++at;
+    }
+    return p->tokens[at].kind == TK_NAME;
 }
 static Expr *expression(Parser *, int);
 static Stmt *statement(Parser *);
@@ -123,7 +132,7 @@ static Expr *expression(Parser *p, int minimum) {
 static Decl *declaration(Parser *p, bool parameter) {
     Decl *decl = allocate(p->ctx, sizeof(*decl));
     decl->immutable = take(p, TK_CONST);
-    decl->type = parse_type(p);
+    decl->type = parse_type(p, &decl->type_name);
     decl->name = expect(p, TK_NAME, "expected variable name");
     if (take(p, '[')) {
         Token length = expect(p, TK_INTEGER, "expected a literal array length");
@@ -250,6 +259,19 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
         }
         if (peek(p).kind == TK_MODULE || peek(p).kind == TK_IMPORT)
             token_fail(p->ctx, peek(p), "module and import declarations must precede other declarations");
+        if (take(p, TK_USING)) {
+            if (ast->alias_count++ == L_MAX_ALIASES) token_fail(p->ctx, token, "too many type aliases (maximum 1024)");
+            TypeAlias *alias = allocate(p->ctx, sizeof(*alias));
+            alias->module = ast->entry; alias->scope = scope; alias->exported = exported;
+            alias->name = expect(p, TK_NAME, "expected type alias name");
+            expect(p, '=', "expected '=' after type alias name");
+            alias->type = parse_type(p, &alias->target_name);
+            expect(p, ';', "expected ';' after type alias");
+            TypeAlias **aliases = &ast->aliases;
+            while (*aliases) aliases = &(*aliases)->next;
+            *aliases = alias;
+            continue;
+        }
         bool is_static = take(p, TK_STATIC);
         if (is_static || take(p, TK_CONST)) {
             if (is_static) {
@@ -258,7 +280,7 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
             Global *constant = allocate(p->ctx, sizeof(*constant));
             constant->module = ast->entry; constant->scope = scope; constant->exported = exported;
             constant->is_static = is_static;
-            constant->type = parse_type(p);
+            constant->type = parse_type(p, &constant->type_name);
             constant->name = expect(p, TK_NAME, is_static ? "expected static storage name" : "expected module constant name");
             expect(p, '=', is_static ? "static storage requires a scalar constant initializer" : "module constants require a scalar initializer");
             constant->value = expression(p, 1);
@@ -271,7 +293,7 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
         if (ast->function_count++ >= L_MAX_FUNCTIONS) token_fail(p->ctx, peek(p), "too many functions (maximum 256)");
         Function *fn = allocate(p->ctx, sizeof(*fn));
         fn->module = ast->entry; fn->scope = scope; fn->exported = exported;
-        fn->result = parse_type(p);
+        fn->result = parse_type(p, &fn->result_name);
         fn->name = expect(p, TK_NAME, "expected function name");
         expect(p, '(', "expected '(' after function name");
         Decl **param = &fn->parameters;
@@ -325,5 +347,6 @@ Ast *parse(Context *ctx, Token *tokens, size_t count) {
     declarations(&p, ast, (Token){.text = ""}, false);
     ast->entry->functions = ast->functions;
     ast->entry->globals = ast->globals;
+    ast->entry->aliases = ast->aliases;
     return ast;
 }

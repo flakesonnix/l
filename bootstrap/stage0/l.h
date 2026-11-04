@@ -17,6 +17,7 @@
 #define L_MAX_IMPORTS 1024u
 #define L_MAX_CONSTANTS 1024u
 #define L_MAX_GLOBALS 1024u
+#define L_MAX_ALIASES 1024u
 #define L_MAX_REGISTERS 4096u
 #define L_MAX_SLOTS 1024u
 #define L_MAX_ARRAY 65535u
@@ -38,13 +39,13 @@ typedef struct {
 } Context;
 
 typedef struct { const char *text; size_t length; uint32_t line, column; int kind; int64_t integer; } Token;
-typedef enum { TY_VOID, TY_INT, TY_BOOL, TY_AUTO } Type;
+typedef enum { TY_VOID, TY_INT, TY_BOOL, TY_AUTO, TY_NAMED } Type;
 enum {
     TK_EOF = 256, TK_NAME, TK_INTEGER, TK_INT, TK_BOOL, TK_VOID, TK_AUTO,
     TK_CONST, TK_TRUE, TK_FALSE, TK_IF, TK_ELSE, TK_WHILE, TK_FOR, TK_RETURN,
     TK_MODULE, TK_EQ, TK_NE, TK_LE, TK_GE, TK_AND, TK_OR, TK_INC, TK_DEC,
     TK_BREAK, TK_CONTINUE, TK_SWITCH, TK_CASE, TK_DEFAULT,
-    TK_IMPORT, TK_AS, TK_PUB, TK_NAMESPACE, TK_SCOPE, TK_STATIC
+    TK_IMPORT, TK_AS, TK_PUB, TK_NAMESPACE, TK_SCOPE, TK_STATIC, TK_USING
 };
 
 typedef struct Expr Expr;
@@ -58,6 +59,7 @@ typedef struct Import Import;
 typedef struct ImportName ImportName;
 typedef struct Namespace Namespace;
 typedef struct Global Global;
+typedef struct TypeAlias TypeAlias;
 struct ExprList { Expr *value; ExprList *next; };
 struct SwitchCase { Token token; int32_t value; bool is_default; Stmt *body; SwitchCase *next; };
 typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX, EX_GLOBAL } ExprKind;
@@ -73,7 +75,7 @@ struct Expr {
     ExprList *args;
     Global *global;
 };
-struct Decl { Token name; Type type; bool immutable; uint32_t slot; uint32_t array; Expr *value; Decl *next; };
+struct Decl { Token name, type_name; Type type; bool immutable; uint32_t slot; uint32_t array; Expr *value; Decl *next; };
 typedef enum { ST_BLOCK, ST_DECL, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_EMPTY, ST_BREAK, ST_CONTINUE, ST_SWITCH } StmtKind;
 struct Stmt {
     StmtKind kind;
@@ -85,7 +87,7 @@ struct Stmt {
 };
 struct Function {
     Token name;
-    Token scope;
+    Token scope, result_name;
     Module *module;
     bool exported;
     Type result;
@@ -97,7 +99,7 @@ struct Function {
     Function *next;
 };
 struct Global {
-    Token name, scope;
+    Token name, scope, type_name;
     Module *module;
     Type type;
     bool exported, is_static;
@@ -106,6 +108,14 @@ struct Global {
     unsigned state;
     uint32_t symbol;
     Global *parent, *next;
+};
+struct TypeAlias {
+    Token name, scope, target_name;
+    Module *module;
+    Type type;
+    bool exported;
+    unsigned state;
+    TypeAlias *parent, *next;
 };
 struct ImportName { Token name, binding; ImportName *next; };
 struct Import { Token name, qualifier, alias; ImportName *names; Module *target; Import *next; };
@@ -117,15 +127,17 @@ struct Module {
     Namespace *namespaces;
     Function *functions;
     Global *globals;
+    TypeAlias *aliases;
     unsigned state;
     Module *next;
 };
 typedef struct {
     Function *functions;
-    uint32_t function_count, constant_count, static_count;
+    uint32_t function_count, constant_count, static_count, alias_count;
     Module *modules, *entry;
     Function *entrypoint;
     Global *globals;
+    TypeAlias *aliases;
 } Ast;
 typedef struct ModuleRoot ModuleRoot;
 typedef struct PackageDependency PackageDependency;

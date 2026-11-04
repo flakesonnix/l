@@ -282,6 +282,159 @@ try {
     'app/a.l': `module app.a;${Array.from({ length: 128 }, (_, n) => `int f${n}(){return 0;}`).join('')}`,
     'app/b.l': `module app.b;${Array.from({ length: 128 }, (_, n) => `int f${n}(){return 0;}`).join('')}` }, /too many functions across modules/);
 
+  // Transparent scalar type aliases share module/namespace lookup and disappear before IR.
+  const aliasProgram = body => program({ 'app/main.l': `module app.main;${body}` });
+  const aliasFiles = main => ({ 'app/main.l': `module app.main;${main}`,
+    'std/types.l': 'module std.types;using Hidden=int;pub using Count=Hidden;'
+      + 'namespace flags{pub using Enabled=bool;}pub Count twice(Count n){return n*2;}' });
+  aliasProgram('using Count=int;Count main(){Count n=42;return n;}');
+  aliasProgram('using Count=Other;using Other=int;Count main(){return 42;}');
+  aliasProgram('Count main(){Count n=42;return n;}using Count=int;');
+  aliasProgram('using Flag=bool;using Count=int;Count f(Count n,Flag active){if(active)return n;return 0;}Count main(){return f(42,true);}');
+  aliasProgram('using Count=int;using Flag=bool;const Count initial=40;static Count count=initial;static Flag active=true;Count main(){if(active){active=false;return count++ + count++ -39;}return 0;}');
+  aliasProgram('using Count=int;using Flag=bool;Count main(){Count a[2];Flag b[2];b[1]=true;a[1]=42;if(b[1]&&!b[0])return a[1];return 0;}');
+  aliasProgram('using Count=int;Count main(){const Count a[1];const Count n=42;return a[0]+n;}');
+  aliasProgram('using Count=int;Count main(){Count sum=0;for(Count i=0;i<7;i++)sum=sum+i;return sum*2;}');
+  aliasProgram('namespace n{using Count=int;}namespace n{Count value(){return 42;}}int main(){n::Count zero=0;return zero+n::value();}');
+  aliasProgram('namespace n{using Count=int;namespace nested{Count value(){return 42;}}}int main(){return n::nested::value();}');
+  aliasProgram('namespace n{namespace kinds{using Count=int;}namespace use{using Number=kinds::Count;Number value(){return 42;}}}int main(){return n::use::value();}');
+  aliasProgram('using Kind=int;namespace n{using Kind=bool;Kind active(){return true;}}int main(){Kind value=42;if(n::active())return value;return 0;}');
+  aliasProgram('using Count=int;int main(){Count Count=42;return Count;}');
+  aliasProgram('using Count=int;int main(){{int Count=0;Count++;}Count n=42;return n;}');
+  aliasProgram('using Count=int;int f(int Count){return Count;}int main(){return f(42);}');
+  aliasProgram('using Count=int;using Flag=bool;int f(Count n){return n*2;}int f(Flag n){if(n)return 42;return 0;}int main(){return f(21)+f(true)-42;}');
+  program(aliasFiles('import std.types;std::types::Count main(){std::types::Count n=21;return std::types::twice(n);}'));
+  program(aliasFiles('import std.types as t;using Number=t::Count;Number main(){return t::twice(21);}'));
+  program(aliasFiles('import std.types::{Count as Number,flags::Enabled as Flag,twice};Number main(){Flag ready=true;if(ready)return twice(21);return 0;}'));
+  program(aliasFiles('import std.types::{Count};using Count=bool;int main(){Count ready=true;if(ready)return 42;return 0;}'));
+  program(aliasFiles('import std.types;int main(){return std::types::twice(21);}'));
+  program({ ...aliasFiles('import std.types;int main(){return std::types::twice(21);}'),
+    'std/types.l': 'module std.types;using Hidden=int;pub Hidden twice(Hidden n){return n*2;}' });
+  const erasedSource = 'module app.main;\nusing Int=int;using Bool=bool;\nstatic Int count=40;static Bool active=true;\n'
+    + 'Int next(Int n){return count++ + n;}Int main(){Bool b[1];b[0]=active;if(b[0])return next(2);return 0;}';
+  const erased = program({ 'app/main.l': erasedSource });
+  const primitives = program({ 'app/main.l': erasedSource.replace(/using \w+=\w+;/g, text => ' '.repeat(text.length))
+    .replace(/\bInt\b/g, 'int').replace(/\bBool\b/g, 'bool') });
+  assert.deepEqual(readFileSync(resolve(erased.directory, 'program.lbc')), readFileSync(resolve(primitives.directory, 'program.lbc')));
+  for (const [body, message] of [
+    ['using =int;int main(){return 42;}', /type alias name/],
+    ['using Count int;int main(){return 42;}', /after type alias name/],
+    ['using Count=int int main(){return 42;}', /after type alias/],
+    ['using Count=;int main(){return 42;}', /expected Stage 0 type/],
+    ['using Count=void;int main(){return 42;}', /target must be int or bool/],
+    ['using Count=auto;int main(){return 42;}', /target must be int or bool/],
+    ['using Count=int[2];int main(){return 42;}', /after type alias/],
+    ['using Count=int();int main(){return 42;}', /after type alias/],
+    ['using Count=const int;int main(){return 42;}', /expected Stage 0 type/],
+    ['using namespace n;namespace n{}int main(){return 42;}', /type alias name/],
+    ['using Count<T>=int;int main(){return 42;}', /after type alias name/],
+    ['int main(){using Count=int;return 42;}', /expected expression/],
+    ['using Count=int;using Count=int;int main(){return 42;}', /duplicate type alias/],
+    ['namespace n{using Count=int;}namespace n{using Count=bool;}int main(){return 42;}', /duplicate type alias/],
+    ['using Count=int;const int Count=42;int main(){return 42;}', /conflicts with module constant/],
+    ['static int Count=42;using Count=int;int main(){return 42;}', /conflicts with module constant/],
+    ['using Count=int;int Count(){return 42;}int main(){return 42;}', /conflicts with function/],
+    ['namespace Count{}using Count=int;int main(){return 42;}', /conflicts with namespace/],
+    ['using Count=int;int main(){Count n=true;return 42;}', /expected int, got bool/],
+    ['using Flag=bool;int main(){Flag a[1];a[0]=42;return 42;}', /expected bool, got int/],
+    ['using Count=int;const Count n=true;int main(){return 42;}', /expected int, got bool/],
+    ['using Count=int;static Count n=true;int main(){return 42;}', /expected int, got bool/],
+    ['using Count=int;int f(Count n){return n;}int f(int n){return n;}int main(){return 42;}', /duplicate function signature/],
+    ['using Flag=bool;Flag main(){return true;}', /entry point must have signature/],
+    ['using Count=int;int main(){return Count;}', /type alias is not a value/],
+    ['using Count=int;int main(){Count=42;return 0;}', /type alias is not a value/],
+    ['using Count=int;int main(){return Count();}', /type alias is not callable/],
+    ['using Count=int;int main(){return Count(42);}', /type alias is not callable/],
+    ['int value(){return 42;}using Count=value;int main(){return 42;}', /not a type alias/],
+    ['const int value=42;using Count=value;int main(){return 42;}', /not a type alias/],
+    ['using Count=Missing;int main(){return 42;}', /unknown/],
+    ['Missing main(){return 42;}', /unknown/],
+    ['int f(Missing n){return 42;}int main(){return 42;}', /unknown/],
+    ['const Missing n=42;int main(){return 42;}', /unknown/],
+    ['int main(){Missing n=42;return n;}', /unknown/],
+    ['using Count=int;int main(){int Count=0;Count n=42;return n;}', /local binding/],
+    ['using Count=int;int f(Count Count,Count n){return n;}int main(){return 42;}', /local binding/],
+    ['namespace n{using Count=int;}int main(){int n=0;n::Count value=42;return value;}', /local binding/],
+    ['using Count=int;namespace n{}int main(){n::Count value=42;return value;}', /not a type alias/],
+    ['using Count=int;namespace n{const int Count=0;int main(){Count value=42;return value;}}int main(){return 42;}', /not a type alias/],
+    ['using Count=int;int main(){Count::;}', /after name separator/],
+    ['using Count=int;int main(){Count::', /after name separator/],
+    ['using Count=int;int main(){for(Count::;false;){}return 42;}', /after name separator/],
+  ]) rejected({ 'app/main.l': `module app.main;${body}` }, message);
+  for (const [body, message] of [
+    ['import std.types;int main(){Count n=42;return n;}', /unknown/],
+    ['import std.types;int main(){std::types::Hidden n=42;return n;}', /inaccessible symbol/],
+    ['import std.types;using Number=std::types::Hidden;int main(){return 42;}', /inaccessible symbol/],
+    ['import std.types::{Hidden};int main(){return 42;}', /requires pub/],
+    ['import std.types;int main(){return std::types::Hidden();}', /inaccessible symbol/],
+    ['import std.types;int main(){return std::types::Hidden;}', /inaccessible symbol/],
+    ['import std.types as t;using t=int;int main(){return 42;}', /alias conflicts/],
+    ['import std.types as t;int main(){int t=0;t::Count n=42;return n;}', /local binding/],
+    ['import std.types::{Count};import std.types::{flags::Enabled as Count};int main(){return 42;}', /ambiguous selective/],
+    ['import std.types;using Number=missing::Count;int main(){return 42;}', /no unqualified fallback/],
+  ]) rejected(aliasFiles(body), message);
+  rejected({ 'app/main.l': 'module app.main;import app.bridge;app::bridge::Count main(){return 42;}',
+    'app/bridge.l': 'module app.bridge;import std.types::{Count};', 'std/types.l': 'module std.types;pub using Count=int;' }, /not a type alias/);
+  for (const [body, path] of [
+    ['using A=A;', 'app::main::A -> app::main::A'],
+    ['using A=B;using B=A;', 'app::main::A -> app::main::B -> app::main::A'],
+    ['using A=n::B;namespace n{using B=C;using C=A;}', 'app::main::A -> app::main::n::B -> app::main::n::C -> app::main::A'],
+  ]) {
+    const f = rejected({ 'app/main.l': `module app.main;${body}int main(){return 42;}` }, /type alias dependency cycle/);
+    assert.ok(source(f, 65).stderr.includes(path));
+  }
+  const aliasFailure = rejected({ ...aliasFiles('import std.types;int main(){return 42;}'),
+    'std/types.l': 'module std.types;using A=B;using B=A;' }, /type alias dependency cycle/);
+  assert.ok(source(aliasFailure, 65).stderr.includes('/std/types.l:'));
+  const aliasChain = length => Array.from({ length }, (_, n) => `using A${n}=${n + 1 < length ? `A${n + 1}` : 'int'};`).join('');
+  aliasProgram(`${aliasChain(256)}A0 main(){return 42;}`);
+  rejected({ 'app/main.l': `module app.main;${aliasChain(257)}int main(){return 42;}` }, /nesting limit/);
+  const aliasLimit = Array.from({ length: 1024 }, (_, n) => `using A${n}=int;`).join('');
+  aliasProgram(`${aliasLimit}A1023 main(){return 42;}`);
+  rejected({ 'app/main.l': `module app.main;${aliasLimit}using Extra=bool;int main(){return 42;}` }, /too many type aliases/);
+  rejected({ 'app/main.l': `module app.main;import app.types;${aliasLimit}int main(){return 42;}`,
+    'app/types.l': 'module app.types;using Extra=int;' }, /too many type aliases across modules/);
+
+  state = 0x414c4941;
+  for (let test = 0; test < 32; ++test) {
+    const project = {}, types = [], entryImports = [];
+    let main = 'int main(){';
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.a${n}`, parents = [], imports = [], references = [];
+      for (let p = 0; p < n; ++p) if (p >= n - 2 || random(3) === 0) {
+        const parent = `${p < 4 ? 'std' : 'app'}.a${p}`, kind = (test + n + p) % 3;
+        parents.push(p);
+        if (!kind) { imports.push(`import ${parent};`); references.push(`${parent.replaceAll('.', '::')}::kinds::Value`); }
+        else if (kind === 1) { imports.push(`import ${parent} as p${p};`); references.push(`p${p}::kinds::Value`); }
+        else { imports.push(`import ${parent}::{kinds::Value as V${p}};`); references.push(`V${p}`); }
+      }
+      let type = random(2) ? 'int' : 'bool', target = type;
+      if (parents.length && random(3) === 0) {
+        const at = random(parents.length); type = types[parents[at]]; target = references[at];
+      }
+      const literal = type === 'int' ? String(random(10001) - 5000) : String(random(2) !== 0);
+      types.push(type);
+      if (test % 2) imports.reverse();
+      project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${imports.join('')}`
+        + `namespace kinds{pub using Value=Storage;using Storage=${target};}`
+        + `pub const kinds::Value seed=${literal};pub static kinds::Value cell=seed;`
+        + 'pub kinds::Value identity(kinds::Value value){return value;}';
+      const kind = (test + n) % 3, prefix = kind === 0 ? name.replaceAll('.', '::') : `m${n}`;
+      let valueType = `${prefix}::kinds::Value`, identity = `${prefix}::identity`, seed = `${prefix}::seed`, cell = `${prefix}::cell`;
+      if (kind === 2) {
+        entryImports.push(`import ${name}::{kinds::Value as T${n},identity as f${n},seed as s${n},cell as c${n}};`);
+        valueType = `T${n}`; identity = `f${n}`; seed = `s${n}`; cell = `c${n}`;
+      } else entryImports.push(`import ${name}${kind ? ` as ${prefix}` : ''};`);
+      const updated = type === 'int' ? String(BigInt(literal) + 1n) : String(literal !== 'true');
+      main += `${valueType} v${n}=${identity}(${seed});if(v${n}!=${literal})return 1;`
+        + `${cell}=${type === 'int' ? `v${n}+1` : `!v${n}`};if(${cell}!=${updated})return 1;`;
+    }
+    if (test % 2) entryImports.reverse();
+    project['app/main.l'] = `module app.main;${entryImports.join('')}${main}return 42;}`;
+    const settings = config(); if (test % 2) settings.module_roots.reverse();
+    program(project, 42, settings);
+  }
+
   // Module constants share normal namespace, import and visibility rules.
   const constantFiles = main => ({ 'app/main.l': `module app.main;${main}`,
     'std/values.l': 'module std.values;const int seed=40;pub const int answer=seed+2;pub const bool ready=answer==42;' });
@@ -561,6 +714,7 @@ try {
   staticProgram(`${staticLimit}int main(){return g1023;}`);
   const separateLimits = fixture({ 'app/main.l': `module app.main;${constantLimit}${staticLimit}int main(){return g1023;}` });
   source(separateLimits);
+  source(fixture({ 'app/main.l': `module app.main;${aliasLimit}${constantLimit}${staticLimit}A1023 main(){return g1023;}` }));
   rejected({ 'app/main.l': `module app.main;${staticLimit}static int extra=0;int main(){return 42;}` }, /too many static globals/);
   rejected({ 'app/main.l': `module app.main;import app.state;${staticLimit}int main(){return 42;}`,
     'app/state.l': 'module app.state;static int other=0;' }, /too many static globals across modules/);
@@ -721,7 +875,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 constant DAGs, 32 static DAGs in two import orders, ${constantModels} constant-expression models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 alias DAGs, 32 constant DAGs, 32 static DAGs in two import orders, ${constantModels} constant-expression models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

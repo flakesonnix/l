@@ -14,6 +14,7 @@ make
 ./build/l run examples/modules.l --manifest examples/package.json
 ./build/l run examples/constants.l --manifest examples/package.json
 ./build/l run examples/static_demo.l --manifest examples/package.json
+./build/l run examples/alias_demo.l --manifest examples/package.json
 make test                                      # Requires Node.js 22+
 make fuzz                                      # Deterministic mutation/model tests
 make sanitize
@@ -27,6 +28,8 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
 - Module imports, aliases, selective imports, private-by-default functions and
   explicit `pub` exports; qualification uses `::`, not `.`.
 - Nested/reopened namespaces and statically resolved `int`/`bool` function overloads.
+- Transparent module/namespace scalar type aliases: `using Count = int;`, with
+  forward references, imports, visibility checks and cycle diagnostics.
 - Module/namespace `const int` and `const bool` declarations, compile-time checked
   initializers, forward references and normal import/visibility rules.
 - Module/namespace `static int` and `static bool` storage, with compile-time
@@ -87,7 +90,7 @@ management. The repository does not imply these subsystems have been implemented
 
 Module behavior follows [the normative module-system specification 0.1.1](spec/module-system-v0.1.1.md)
 for the currently implemented declaration and type subset. This does not add
-structs, classes, enums, type aliases, aggregate globals, generic constraints or
+structs, classes, enums, aggregate globals, generic constraints or
 runtime overload resolution. Public signatures currently contain
 only public primitives.
 
@@ -124,10 +127,10 @@ a transitive one. Source locations must be canonical and declarations must match
 their root-relative module paths; source-file symlinks cannot alias module
 identities. Reachable units are registered before dependency-cycle detection and
 processed in dependency order. Diagnostics include the complete cycle path.
-The seed permits 256 reachable modules, 1024 imports per module, 256 functions and
-1024 module constants plus 1024 scalar static globals across the linked program. Filesystem
-discovery/resolution, graph ordering and declaration lookup are separate compiler
-operations. The current filesystem implementation uses POSIX `realpath` and
+The seed permits 256 reachable modules, 1024 imports per module, 256 functions,
+1024 module constants, 1024 scalar static globals and 1024 type aliases across the
+linked program. Filesystem discovery/resolution, graph ordering and declaration
+lookup are separate compiler operations. The current filesystem implementation uses POSIX `realpath` and
 `access`.
 
 ```c
@@ -140,13 +143,14 @@ int main() {
 }
 ```
 
-Module imports expose qualified declarations only. Aliases are module-local;
-selective imports bind public constants, static globals, function names or overload groups.
+Module imports expose qualified declarations only. Import aliases are module-local;
+selective imports bind public type aliases, constants, static globals, function
+names or overload groups.
 Redundant module imports warn; conflicting aliases/bindings fail. Lexical bindings,
 enclosing namespaces and module declarations precede selective imports in lookup. Failed
 qualified lookup never falls back to an unqualified name. Namespace reopening
-does not change declaration visibility; private helpers/constants/static globals remain
-module-private.
+does not change declaration visibility; private helpers, constants, static globals
+and type aliases remain module-private.
 Wildcard imports, re-exports, import cycles and executable module initialization
 are rejected. Dependencies do not supply a hidden entry point: imported functions
 named `main` are ordinary functions. Bytecode requires no manifest. Artifact
@@ -157,6 +161,42 @@ the reachable module graph, including relative-path variants, symlinks and hard
 links. Rejected aliases return usage status `64` without truncating inputs;
 file-identity inspection failures return `74`. These are preflight checks, not an
 atomic-write or concurrent-filesystem-mutation guarantee.
+
+### Scalar type aliases
+
+```c
+module app.types;
+
+using InternalCount = int;
+pub using Count = InternalCount;
+namespace flags {
+    pub using Enabled = bool;
+}
+```
+
+`using Name = Type;` declares a transparent alias at module or namespace scope.
+The target must resolve to `int` or `bool`, directly or through other aliases.
+Forward references and namespace reopening work; every alias is checked, including
+unused declarations. Alias cycles report the complete qualified-name path, and
+resolution uses the existing 256-level nesting limit.
+
+Alias names follow ordinary lookup, private-by-default visibility, `pub`, module
+aliases and selective-import rules. They share the declaration namespace with
+functions, constants, static storage and namespaces; duplicate names are errors.
+Locals and parameters can shadow alias names, including in later parameter types.
+Failed qualified lookup never falls back to another type of the same name.
+
+Aliases may appear in function results/parameters, local scalar/array types and
+module constant/static types. They are not new nominal types: overload matching
+uses the underlying primitive, and `f(Count)` conflicts with `f(int)` when `Count`
+aliases `int`. Private alias names may be used in public function signatures
+because the resolved signature exposes only public primitives, not the alias.
+Aliases cannot be called, used as values or used as casts.
+
+Local aliases, `using namespace`, generic aliases, aliases to `void`/`auto`, and
+array/function aliases are not supported. `using` is now a reserved keyword.
+Aliases disappear before IR lowering and add no runtime objects or bytecode
+metadata; IR/bytecode stays **1.3**. The existing exact-version policy is unchanged.
 
 ### Compile-time constants
 
@@ -171,7 +211,8 @@ namespace numbers {
 }
 ```
 
-Module constants require explicit `int` or `bool` types and scalar initializers.
+Module constants require explicit `int`/`bool` types (or transparent aliases to
+them) and scalar initializers.
 Their initializer syntax permits literals, constant references, and the supported
 unary/binary operators. Function calls, assignments, postfix updates and indexing
 are rejected, including in unevaluated operands. All operands are name/type
@@ -203,9 +244,9 @@ pub int next() {
 ```
 
 `static` declarations are scalar, module/namespace-scoped bindings with explicit
-`int`/`bool` types and required compile-time initializers. Initializers follow the
-constant-expression rules above: literals, constant references and checked pure
-operators only. They cannot read mutable static storage, call functions, assign,
+`int`/`bool` types (or transparent aliases) and required compile-time initializers.
+Initializers follow the constant-expression rules above: literals, constant
+references and checked pure operators only. They cannot read mutable static storage, call functions, assign,
 update or index anything, even in unevaluated operands. Unused declarations are
 checked too. Initial values are stored as data; no module initialization function
 or arbitrary code runs before `main`.
@@ -278,6 +319,11 @@ whose source and bytecode results are checked against independent host-side sums
 Constant tests compare 927 scalar expression cases against a host-side BigInt
 oracle and exercise 32 constant-import DAGs (seed `0x434f4e53`), visibility,
 forward references, cycles, short-circuiting, inlining, limits and defined errors.
+Alias tests exercise 32 generated cross-package import DAGs (seed `0x414c4941`),
+checked against independently tracked primitive types. They cover visibility,
+shadowing, cycles, limits, overload identity, all supported type positions and
+byte-for-byte erasure against equivalent primitive-only source with matching
+instruction locations.
 Static tests cover shared state, visibility, initialization, recursion, aliasing,
 evaluation order, signed/boolean metadata, limits, traps and version rejection.
 They also compare 32 stateful import DAGs (seed `0x53544154`) against a BigInt

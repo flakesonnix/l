@@ -110,6 +110,7 @@ Ast *load_modules(Context *ctx, const ModuleConfig *config, const char *entry, c
     visit(ctx, module, stack, 0, order, &count);
     Function **tail = &ast->functions;
     Global **constants = &ast->globals;
+    TypeAlias **aliases = &ast->aliases;
     for (unsigned n = 0; n < count; ++n) {
         ctx->filename = order[n]->path;
         for (Function *fn = order[n]->functions; fn;) {
@@ -124,9 +125,15 @@ Ast *load_modules(Context *ctx, const ModuleConfig *config, const char *entry, c
                 token_fail(ctx, constant->name, "too many module constants across modules (maximum 1024)");
             Global *next = constant->next; *constants = constant; constants = &constant->next; constant = next;
         }
+        for (TypeAlias *alias = order[n]->aliases; alias;) {
+            if (ast->alias_count++ == L_MAX_ALIASES)
+                token_fail(ctx, alias->name, "too many type aliases across modules (maximum 1024)");
+            TypeAlias *next = alias->next; *aliases = alias; aliases = &alias->next; alias = next;
+        }
     }
     *tail = NULL;
     *constants = NULL;
+    *aliases = NULL;
     ctx->filename = saved;
     return ast;
 }

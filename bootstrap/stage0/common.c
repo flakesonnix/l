@@ -109,6 +109,7 @@ const char *type_name(Type type) {
     case TY_INT: return "int";
     case TY_BOOL: return "bool";
     case TY_AUTO: return "auto";
+    case TY_NAMED: return "unresolved type";
     }
     return "invalid";
 }

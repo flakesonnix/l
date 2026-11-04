@@ -183,7 +183,17 @@ int main(void) {
         {"int main(){switch(1){case -0:case 0:return 42;}return 0;}", false},
         {"int main(){switch(1){default:return 42;case 0:case 1:}}", false},
         {"int main(){switch(1){case 0:default:case 1:return 42;}}", true},
-        {"int main(){switch(1){case 0:int n=1;default:int n=2;return n;}return 0;}", false}
+        {"int main(){switch(1){case 0:int n=1;default:int n=2;return n;}return 0;}", false},
+        {"using Count=int;Count main(){Count n=42;return n;}", true},
+        {"using Flag=bool;using Count=int;Count f(Flag b,Count n){if(b)return n;return 0;}Count main(){return f(true,42);}", true},
+        {"using Count=Other;using Other=int;Count main(){return 42;}", true},
+        {"namespace n{using Count=int;}int main(){n::Count a[1];a[0]=42;return a[0];}", true},
+        {"using Count=int;const Count start=40;static Count count=start;Count main(){return count++ + count++ -39;}", true},
+        {"using Count=int;int main(){using Local=Count;return 42;}", false},
+        {"using Count=Missing;int main(){return 42;}", false},
+        {"using Count=Count;int main(){return 42;}", false},
+        {"using Count=int;int f(Count n){return n;}int f(int n){return n;}int main(){return 42;}", false},
+        {"using Count=int;int main(){int Count=0;Count n=42;return n;}", false}
     };
     int failures = 0;
     for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); ++i) failures += check(cases[i].source, cases[i].valid);

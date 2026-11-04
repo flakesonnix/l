@@ -41,9 +41,18 @@ static Global *find_global(const Ast *ast, const Module *module, Token path) {
         if (global_named(constant, module, path)) return constant;
     return NULL;
 }
+static bool alias_named(const TypeAlias *alias, const Module *module, Token path) {
+    return alias->module == module && token_equal(alias->scope, parent_scope(path)) && token_equal(alias->name, leaf_name(path));
+}
+static TypeAlias *find_alias(const Ast *ast, const Module *module, Token path) {
+    for (TypeAlias *alias = ast->aliases; alias; alias = alias->next)
+        if (alias_named(alias, module, path)) return alias;
+    return NULL;
+}
 static bool symbol_named(const Ast *ast, const Module *module, Token path) {
     for (const Function *fn = ast->functions; fn; fn = fn->next) if (function_named(fn, module, path)) return true;
     if (find_global(ast, module, path)) return true;
+    if (find_alias(ast, module, path)) return true;
     for (Namespace *ns = module->namespaces; ns; ns = ns->next) if (token_equal(ns->name, path)) return true;
     return false;
 }
@@ -114,8 +123,48 @@ static Global *visible_global(Semantic *s, ResolvedName name) {
         token_fail(s->ctx, name.path, "inaccessible symbol: declaration is private to its module");
     return constant;
 }
+static TypeAlias *visible_alias(Semantic *s, ResolvedName name) {
+    TypeAlias *alias = find_alias(s->ast, name.module, name.path);
+    if (alias && name.module != s->fn->module && !alias->exported)
+        token_fail(s->ctx, name.path, "inaccessible symbol: type alias is private to its module");
+    return alias;
+}
+static Type resolve_alias(Context *, Ast *, TypeAlias *, TypeAlias *);
+static Type resolve_type(Semantic *s, Type type, Token name, TypeAlias *parent) {
+    if (type != TY_NAMED) return type;
+    TypeAlias *alias = visible_alias(s, resolve_name(s, name, false));
+    if (!alias) token_fail(s->ctx, name, "declaration is not a type alias");
+    return resolve_alias(s->ctx, s->ast, alias, parent);
+}
+static Token alias_name(Context *ctx, const TypeAlias *alias) {
+    Token name = join_name(ctx, alias->scope, alias->name, "::");
+    return join_name(ctx, alias->module->qualifier, name, "::");
+}
+static Type resolve_alias(Context *ctx, Ast *ast, TypeAlias *alias, TypeAlias *parent) {
+    if (alias->state == 2) return alias->type;
+    const char *saved = ctx->filename; ctx->filename = alias->module->path;
+    if (alias->state == 1) {
+        TypeAlias *path[L_MAX_DEPTH]; unsigned count = 0;
+        for (TypeAlias *node = parent; node != alias; node = node->parent) path[count++] = node;
+        Token trace = alias_name(ctx, alias);
+        while (count) trace = join_name(ctx, trace, alias_name(ctx, path[--count]), " -> ");
+        trace = join_name(ctx, trace, alias_name(ctx, alias), " -> ");
+        fail(ctx, alias->name.line, alias->name.column, "type alias dependency cycle detected: %.*s", (int)trace.length, trace.text);
+    }
+    enter(ctx, alias->name);
+    alias->state = 1; alias->parent = parent;
+    Function scope = {.module = alias->module, .scope = alias->scope};
+    Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope};
+    alias->type = resolve_type(&s, alias->type, alias->target_name, alias);
+    if (alias->type != TY_INT && alias->type != TY_BOOL) token_fail(ctx, alias->name, "type alias target must be int or bool");
+    alias->state = 2; alias->parent = NULL;
+    leave(ctx); ctx->filename = saved;
+    return alias->type;
+}
 static Global *resolve_global(Semantic *s, Token name) {
-    Global *constant = visible_global(s, resolve_name(s, name, false));
+    ResolvedName resolved = resolve_name(s, name, false);
+    Global *constant = visible_global(s, resolved);
+    if (!constant && visible_alias(s, resolved)) token_fail(s->ctx, name, "type alias is not a value");
     if (!constant) token_fail(s->ctx, name, "declaration is not a scalar constant");
     return constant;
 }
@@ -123,6 +172,7 @@ static Function *resolve_call(Semantic *s, Token name, const Type *types, uint32
     ResolvedName resolved = resolve_name(s, name, true);
     Global *global = visible_global(s, resolved);
     if (global) token_fail(s->ctx, name, global->is_static ? "static storage is not callable" : "module constant is not callable");
+    if (visible_alias(s, resolved)) token_fail(s->ctx, name, "type alias is not callable");
     return overload(s, resolved.module, resolved.path, types, count);
 }
 static Decl *resolve_index(Semantic *s, Expr *e) {
@@ -257,6 +307,7 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
     }
     case ST_DECL: {
         Decl *d = stmt->decl;
+        d->type = resolve_type(s, d->type, d->type_name, NULL);
         if (d->array) {
             if (d->type != TY_INT && d->type != TY_BOOL)
                 token_fail(s->ctx, d->name, "array element type must be int or bool");
@@ -365,6 +416,8 @@ static void imports(Context *ctx, const Ast *ast, Module *module) {
                 if (function_named(fn, item->target, name->name)) { found = true; visible = visible || fn->exported; }
             Global *constant = find_global(ast, item->target, name->name);
             if (constant) { found = true; visible = constant->exported; }
+            TypeAlias *alias = find_alias(ast, item->target, name->name);
+            if (alias) { found = true; visible = alias->exported; }
             if (!found) token_fail(ctx, name->name, "unknown selectively imported declaration");
             if (!visible) token_fail(ctx, name->name, "inaccessible symbol: selective import requires pub");
             for (Import *other = module->imports; other; other = other->next)
@@ -380,11 +433,20 @@ static void imports(Context *ctx, const Ast *ast, Module *module) {
 }
 void analyze(Context *ctx, Ast *ast) {
     const char *saved = ctx->filename;
+    for (TypeAlias *alias = ast->aliases; alias; alias = alias->next) {
+        ctx->filename = alias->module->path;
+        Token full = join_name(ctx, alias->scope, alias->name, "::");
+        for (TypeAlias *other = ast->aliases; other != alias; other = other->next)
+            if (alias_named(other, alias->module, full)) token_fail(ctx, alias->name, "duplicate type alias declaration");
+        if (find_global(ast, alias->module, full)) token_fail(ctx, alias->name, "type alias conflicts with module constant/static storage");
+        for (Function *fn = ast->functions; fn; fn = fn->next)
+            if (function_named(fn, alias->module, full)) token_fail(ctx, alias->name, "type alias conflicts with function declaration");
+        for (Namespace *ns = alias->module->namespaces; ns; ns = ns->next)
+            if (token_equal(ns->name, full)) token_fail(ctx, alias->name, "type alias conflicts with namespace declaration");
+    }
     uint32_t global_index = 0;
     for (Global *constant = ast->globals; constant; constant = constant->next) {
         ctx->filename = constant->module->path;
-        if (constant->type != TY_INT && constant->type != TY_BOOL)
-            token_fail(ctx, constant->name, "module constant/static type must be explicit int or bool");
         if (constant->is_static) constant->symbol = global_index++;
         Token full = join_name(ctx, constant->scope, constant->name, "::");
         for (Global *other = ast->globals; other != constant; other = other->next)
@@ -395,14 +457,29 @@ void analyze(Context *ctx, Ast *ast) {
             if (token_equal(ns->name, full)) token_fail(ctx, constant->name, "module constant/static storage conflicts with namespace declaration");
     }
     for (Module *module = ast->modules; module; module = module->next) imports(ctx, ast, module);
+    for (TypeAlias *alias = ast->aliases; alias; alias = alias->next) (void)resolve_alias(ctx, ast, alias, NULL);
+    for (Global *constant = ast->globals; constant; constant = constant->next) {
+        ctx->filename = constant->module->path;
+        Function scope = {.module = constant->module, .scope = constant->scope};
+        Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope};
+        constant->type = resolve_type(&s, constant->type, constant->type_name, NULL);
+        if (constant->type != TY_INT && constant->type != TY_BOOL)
+            token_fail(ctx, constant->name, "module constant/static type must be explicit int or bool");
+    }
     bool main_found = false;
     for (Function *fn = ast->functions; fn; fn = fn->next) {
         ctx->filename = fn->module->path;
+        Semantic s = {.ctx = ctx, .ast = ast, .fn = fn};
+        fn->result = resolve_type(&s, fn->result, fn->result_name, NULL);
         if (fn->result == TY_AUTO) token_fail(ctx, fn->name, "function return type must be explicit");
         Type parameters[L_MAX_SLOTS]; uint32_t count = 0;
-        for (Decl *p = fn->parameters; p; p = p->next)
+        for (Decl *p = fn->parameters; p; p = p->next) {
+            p->type = resolve_type(&s, p->type, p->type_name, NULL);
             if (p->type == TY_VOID || p->type == TY_AUTO) token_fail(ctx, p->name, "parameter type must be int or bool");
             else parameters[count++] = p->type;
+            Binding *binding = allocate(ctx, sizeof(*binding));
+            *binding = (Binding){p, 0, s.bindings}; s.bindings = binding;
+        }
         for (Function *other = ast->functions; other != fn; other = other->next)
             if (other->module == fn->module && token_equal(fn->scope, other->scope) && token_equal(fn->name, other->name) && signature(other, parameters, count))
                 token_fail(ctx, fn->name, "duplicate function signature");
