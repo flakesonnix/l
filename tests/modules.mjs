@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 
 const compiler = resolve(process.argv[2]);
@@ -75,6 +75,34 @@ try {
     'std/math.l': 'module std.math;pub int main(int n){return n*2;}' });
   program({ ...files('import std.math;int main(){return 42;}'),
     'std/math.l': 'module std.math;int never_called(){return 1/0;}' });
+  // Compilation must never truncate any reachable source or the manifest through an output alias.
+  const protectedProject = { ...files('import app.bridge;int main(){return app::bridge::answer();}'),
+    'app/bridge.l': 'module app.bridge;import std.math;pub int answer(){return std::math::answer();}' };
+  for (const name of ['app/main.l', 'app/bridge.l', 'std/math.l', 'manifest']) {
+    for (const alias of ['dot', 'parent', 'symlink', 'hardlink', 'directory', 'identical']) {
+      const f = fixture(protectedProject), target = name === 'manifest' ? f.manifest : resolve(f.directory, 'src', name);
+      const inputs = [f.manifest, ...Object.keys(protectedProject).map(path => resolve(f.directory, 'src', path))];
+      const originals = inputs.map(path => readFileSync(path));
+      let output = target;
+      if (alias === 'dot') output = `${dirname(target)}/./${basename(target)}`;
+      else if (alias === 'parent') output = `${dirname(target)}/../${basename(dirname(target))}/${basename(target)}`;
+      else if (alias === 'symlink' || alias === 'hardlink') {
+        output = resolve(f.directory, 'alias.lbc');
+        if (alias === 'symlink') symlinkSync(target, output); else linkSync(target, output);
+      } else if (alias === 'directory') {
+        const directory = resolve(f.directory, 'alias'); symlinkSync(dirname(target), directory);
+        output = resolve(directory, basename(target));
+      }
+      assert.match(source(f, 64, 'compile', ['-o', output], { cwd: '/' }).stderr,
+        /output would overwrite compiler input|input and output must be different/);
+      for (let n = 0; n < inputs.length; ++n) assert.deepEqual(readFileSync(inputs[n]), originals[n], `${name}: ${alias} changed an input`);
+      source(f, 42, 'run');
+    }
+  }
+  const outputLoop = fixture(), loopOutput = resolve(outputLoop.directory, 'loop.lbc');
+  symlinkSync('loop.lbc', loopOutput);
+  assert.match(source(outputLoop, 74, 'compile', ['-o', loopOutput]).stderr, /cannot inspect bytecode output/);
+  source(outputLoop, 42, 'run');
   const noEntry = rejected({ 'app/main.l': 'module app.main;import std.math;',
     'std/math.l': 'module std.math;int main(){return 42;}' }, /missing entry point/);
   assert.ok(source(noEntry, 65).stderr.includes('/app/main.l:'));

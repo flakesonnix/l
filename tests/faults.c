@@ -1,7 +1,9 @@
 #include "../bootstrap/stage0/l.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include "source.h"
 
 /* Linker interposition exercises real error handling without production hooks. */
@@ -9,9 +11,12 @@ void *__real_calloc(size_t, size_t);
 size_t __real_fread(void *, size_t, size_t, FILE *);
 int __real_ferror(FILE *);
 int __real_fclose(FILE *);
+int __real_stat(const char *, struct stat *);
 static bool fail_allocation;
 static int fail_read;
 static bool fail_close;
+static const char *fail_stat_path;
+static int fail_stat_error;
 
 void *__wrap_calloc(size_t count, size_t size) {
     if (fail_allocation) { fail_allocation = false; return NULL; }
@@ -30,6 +35,12 @@ int __wrap_fclose(FILE *file) {
     int result = __real_fclose(file);
     if (fail_close) { fail_close = false; return EOF; }
     return result;
+}
+int __wrap_stat(const char *path, struct stat *info) {
+    if (fail_stat_path && !strcmp(path, fail_stat_path)) {
+        fail_stat_path = NULL; errno = fail_stat_error; return -1;
+    }
+    return __real_stat(path, info);
 }
 
 static Ast *frontend(Context *ctx, const char *source) {
@@ -110,6 +121,20 @@ static void close_failure(Context *ctx) {
     fail_close = true;
     write_bytecode(ctx, p, "build/fault-output.lbc");
 }
+static void protected_output_failure(Context *ctx, const char *path, int error) {
+    FILE *file = fopen("build/fault-output.lbc", "wb");
+    if (!file) exit(1);
+    fputs("unchanged", file); fclose(file);
+    char *args[] = {"l", "compile", "examples/answer.l", "--manifest", "examples/package.json", "-o", "build/fault-output.lbc", NULL};
+    fail_stat_path = path; fail_stat_error = error;
+    if (l_main(7, args) != 74 || fail_stat_path) exit(1);
+    size_t length;
+    unsigned char *bytes = read_file(ctx, "build/fault-output.lbc", &length);
+    if (length != 9 || memcmp(bytes, "unchanged", 9)) exit(1);
+}
+static void output_stat_failure(Context *ctx) { protected_output_failure(ctx, "build/fault-output.lbc", EACCES); }
+static void manifest_stat_failure(Context *ctx) { protected_output_failure(ctx, "examples/package.json", ENOENT); }
+static void source_stat_failure(Context *ctx) { protected_output_failure(ctx, canonical_path(ctx, "examples/answer.l"), EIO); }
 static void bad_expr_analyze(Context *ctx) {
     Ast *ast = frontend(ctx, "int main(){return 0;}");
     ast->functions->body->body->expr->kind = (ExprKind)99;
@@ -258,6 +283,7 @@ int main(void) {
     check(path_edges, 0);
     check(canonical_memory, 65);
     check(read_failure, 74); check(read_zero, 74); check(read_growth, 0); check(read_limit, 65); check(close_failure, 74);
+    check(output_stat_failure, 0); check(manifest_stat_failure, 0); check(source_stat_failure, 0);
     check(bad_expr_analyze, 65); check(bad_stmt_analyze, 65);
     check(bad_expr_lower, 65); check(bad_stmt_lower, 65); check(low_literal, 65);
     check(bad_constant_kind, 65); check(bad_constant_unary, 65); check(bad_constant_binary, 65);
@@ -269,6 +295,6 @@ int main(void) {
     fail_allocation = true;
     if (l_main(3, args) != 71) return 1;
     remove("build/fault-input"); remove("build/fault-output.lbc");
-    puts("fault injection: 41 cases passed");
+    puts("fault injection: 44 cases passed");
     return 0;
 }

@@ -1,13 +1,35 @@
 #include "l.h"
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static int usage(void) {
     fputs("usage: l check|run|inspect FILE.l --manifest PACKAGE.json\n"
           "       l compile FILE.l --manifest PACKAGE.json -o FILE.lbc\n"
           "       l check|run|inspect FILE.lbc\n", stderr);
     return 64;
+}
+
+static void different_file(Context *ctx, const struct stat *output, const char *input) {
+    struct stat source;
+    if (stat(input, &source)) {
+        ctx->status = 74; fail(ctx, 0, 0, "cannot inspect compiler input: %s", input);
+    }
+    if (source.st_dev == output->st_dev && source.st_ino == output->st_ino) {
+        ctx->status = 64; fail(ctx, 0, 0, "bytecode output would overwrite compiler input: %s", input);
+    }
+}
+static void protect_inputs(Context *ctx, const char *output, const char *manifest, const Ast *ast) {
+    struct stat target;
+    if (stat(output, &target)) {
+        if (errno == ENOENT) return;
+        ctx->status = 74; fail(ctx, 0, 0, "cannot inspect bytecode output");
+    }
+    different_file(ctx, &target, manifest);
+    for (const Module *module = ast->modules; module; module = module->next)
+        different_file(ctx, &target, module->path);
 }
 
 int l_main(int argc, char **argv) {
@@ -55,6 +77,7 @@ int l_main(int argc, char **argv) {
             analyze(ctx, ast);
             p = lower(ctx, ast);
             verify(ctx, p);
+            if (compile) protect_inputs(ctx, output, manifest, ast);
         }
         if (compile) write_bytecode(ctx, p, output);
         if (run) ctx->status = (int)((uint32_t)execute_program(ctx, p) & 255u);

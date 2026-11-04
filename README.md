@@ -152,6 +152,12 @@ are rejected. Dependencies do not supply a hidden entry point: imported function
 named `main` are ordinary functions. Bytecode requires no manifest. Artifact
 version **1.3** rejects older versions, including **1.2**; recompile from source.
 
+`compile -o` rejects an existing output that aliases the manifest or any source in
+the reachable module graph, including relative-path variants, symlinks and hard
+links. Rejected aliases return usage status `64` without truncating inputs;
+file-identity inspection failures return `74`. These are preflight checks, not an
+atomic-write or concurrent-filesystem-mutation guarantee.
+
 ### Compile-time constants
 
 ```c
