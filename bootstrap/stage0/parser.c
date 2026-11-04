@@ -182,7 +182,37 @@ static Stmt *statement(Parser *p) {
         ++p->at;
         s = new_stmt(p, token.kind == TK_BREAK ? ST_BREAK : ST_CONTINUE, token);
         expect(p, ';', "expected ';' after loop control statement");
-    } else if (starts_decl(p)) {
+    } else if (take(p, TK_SWITCH)) {
+        s = new_stmt(p, ST_SWITCH, token);
+        s->expr = condition(p);
+        expect(p, '{', "expected '{' after switch condition");
+        SwitchCase **tail = &s->cases;
+        while (!take(p, '}')) {
+            if (peek(p).kind == TK_EOF) token_fail(p->ctx, peek(p), "expected '}' before end of file");
+            SwitchCase *label = allocate(p->ctx, sizeof(*label));
+            label->token = peek(p);
+            if (take(p, TK_CASE)) {
+                Token value = peek(p);
+                bool negative = take(p, '-');
+                value = expect(p, TK_INTEGER, "expected an integer literal after case");
+                if (value.integer > (negative ? INT64_C(2147483648) : INT32_MAX))
+                    token_fail(p->ctx, value, "case value is outside the int range");
+                label->value = (int32_t)(negative ? -value.integer : value.integer);
+                expect(p, ':', "expected ':' after case value");
+            } else if (take(p, TK_DEFAULT)) {
+                label->is_default = true;
+                expect(p, ':', "expected ':' after default");
+            } else token_fail(p->ctx, peek(p), "expected case or default label");
+            Stmt **body = &label->body;
+            while (peek(p).kind != TK_CASE && peek(p).kind != TK_DEFAULT && peek(p).kind != '}') {
+                if (peek(p).kind == TK_EOF) token_fail(p->ctx, peek(p), "expected '}' before end of file");
+                *body = statement(p); body = &(*body)->next;
+            }
+            *tail = label; tail = &label->next;
+        }
+    } else if (token.kind == TK_CASE || token.kind == TK_DEFAULT)
+        token_fail(p->ctx, token, "case/default requires an enclosing switch body");
+    else if (starts_decl(p)) {
         s = new_stmt(p, ST_DECL, token); s->decl = declaration(p, false);
     } else if (take(p, ';')) s = new_stmt(p, ST_EMPTY, token);
     else {

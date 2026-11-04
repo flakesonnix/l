@@ -97,7 +97,9 @@ static void fuzz_bytecode(void) {
             "void nop(){}int main(){nop();int a[2];a[1]=42;return choose(true,a[1]);}",
         "int fact(int n){if(n<2)return 1;return n*fact(n-1);}int main(){return fact(3)+36;}",
         "bool valid(int n){return n>0&&n<10;}int main(){int n=0;int sum=0;"
-            "while(valid(n=n+1)){int a[1];a[0]=n;if(n%2==0)continue;sum=sum+a[0];if(n==5)break;}return sum+33;}"
+            "while(valid(n=n+1)){int a[1];a[0]=n;if(n%2==0)continue;sum=sum+a[0];if(n==5)break;}return sum+33;}",
+        "int pick(int n){switch(n){case 0:return 10;case 1:case 2:return 30;default:return 99;}}"
+            "int main(){return pick(0)+pick(1)+pick(2)+pick(9)-127;}"
     };
     Seed seeds[sizeof(sources) / sizeof(*sources)];
     Context *ctx = context("fuzz-seed");
@@ -239,6 +241,121 @@ static void bounds_cases(void) {
     }
 }
 
+typedef struct { int32_t value, delta; unsigned action; } ModelLabel;
+static unsigned switch_table(ModelLabel labels[8], unsigned *fallback, unsigned actions) {
+    int32_t values[] = {INT32_MIN, INT32_MAX, -97, -1, 0, 1, 2, 97};
+    unsigned count = random_number(9);
+    *fallback = random_number(count + 1); /* count means no default. */
+    for (unsigned j = 8; j > 1; --j) {
+        unsigned at = random_number(j);
+        int32_t saved = values[j - 1]; values[j - 1] = values[at]; values[at] = saved;
+    }
+    for (unsigned j = 0; j < count; ++j)
+        labels[j] = (ModelLabel){values[j], (int32_t)random_number(201) - 100, random_number(actions)};
+    return count;
+}
+static unsigned switch_target(const ModelLabel *labels, unsigned count, unsigned fallback, int32_t key) {
+    for (unsigned j = 0; j < count; ++j) if (j != fallback && labels[j].value == key) return j;
+    return fallback;
+}
+/* Interpret label bodies independently, testing every label plus two unmatched keys. */
+static void switch_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        ModelLabel labels[8]; unsigned fallback;
+        unsigned count = switch_table(labels, &fallback, 4);
+        int32_t initial = (int32_t)random_number(201) - 100;
+        int32_t after = (int32_t)random_number(201) - 100, expected = 0;
+        source_length = 0;
+        append("int pick(int key){int sum=%d;int cursor=0;int keys[1];keys[0]=key;switch(keys[cursor++]){", initial);
+        for (unsigned j = 0; j < count; ++j) {
+            if (j == fallback) append("default:");
+            else append("case %d:", labels[j].value);
+            unsigned action = labels[j].action;
+            if (!action) continue; /* Empty labels fall into the next body. */
+            append("sum=sum+%d;", labels[j].delta);
+            if (action == 2) append("break;1/0;");
+            if (action == 3) append("return sum+cursor*37;1/0;");
+        }
+        append("}return sum+%d+cursor*37;}int main(){int total=0;", after);
+        for (unsigned sample = 0; sample < count + 2; ++sample) {
+            int32_t key = sample < count ? labels[sample].value : sample == count ? -1001 : 1001;
+            int32_t result = initial; bool returned = false;
+            for (unsigned at = switch_target(labels, count, fallback, key); at < count; ++at) {
+                unsigned action = labels[at].action;
+                if (!action) continue;
+                result += labels[at].delta;
+                if (action == 3) returned = true;
+                if (action >= 2) break;
+            }
+            expected += result + 37 + (returned ? 0 : after);
+            append("total=total+pick(%d);", key);
+        }
+        append("return total;}");
+        semantic_case(expected, 0);
+    }
+}
+/* Nested breaks stay in their switch; continues skip switches and reach the loop. */
+static void switch_loop_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        ModelLabel labels[8]; unsigned fallback;
+        unsigned count = switch_table(labels, &fallback, 5), length = count + 2;
+        int32_t initial = (int32_t)random_number(201) - 100, expected = initial;
+        source_length = 0;
+        append("int main(){int sum=%d;int cursor=0;int keys[%u];", initial, length);
+        for (unsigned sample = 0; sample < length; ++sample) {
+            int32_t key = sample < count ? labels[sample].value : sample == count ? -1001 : 1001;
+            append("keys[%u]=%d;", sample, key);
+            bool continued = false;
+            for (unsigned at = switch_target(labels, count, fallback, key); at < count; ++at) {
+                expected += labels[at].delta;
+                unsigned action = labels[at].action;
+                if (action == 1) break;
+                if (action == 2) { continued = true; break; }
+                if (action == 3) expected += (key == labels[at].value ? 17 : -11) + 5;
+                if (action == 4) {
+                    continued = key == labels[at].value;
+                    if (!continued) expected += 10;
+                    break;
+                }
+            }
+            if (!continued) expected += 101;
+        }
+        if (test % 2) append("int i=0;while(i<%u){i++;", length);
+        else append("for(int i=0;i<%u;i++){", length);
+        append("switch(keys[cursor++]){");
+        for (unsigned j = 0; j < count; ++j) {
+            if (j == fallback) append("default:");
+            else append("case %d:", labels[j].value);
+            append("sum=sum+%d;", labels[j].delta);
+            switch (labels[j].action) {
+            case 0: break; /* Fall through. */
+            case 1: append("break;"); break;
+            case 2: append("continue;1/0;"); break;
+            case 3:
+                append("switch(keys[cursor-1]){case %d:sum=sum+17;break;default:sum=sum-11;}sum=sum+5;", labels[j].value);
+                break;
+            case 4:
+                append("switch(keys[cursor-1]){case %d:continue;default:sum=sum+7;break;}sum=sum+3;break;", labels[j].value);
+                break;
+            }
+        }
+        append("}sum=sum+101;}return sum+cursor*37;}");
+        semantic_case(expected + (int32_t)length * 37, 0);
+    }
+}
+static void switch_limit_cases(void) {
+    for (unsigned has_default = 0; has_default < 2; ++has_default) {
+        unsigned count = L_MAX_CASES - has_default;
+        source_length = 0;
+        append("int pick(int key){switch(key){");
+        for (unsigned j = 0; j < count; ++j) append("case %u:", j);
+        append("return 42;");
+        if (has_default) append("default:return 7;");
+        append("}return 0;}int main(){return pick(0)+pick(%u)+pick(%u);}", count - 1, count);
+        semantic_case(84 + (has_default ? 7 : 0), 0);
+    }
+}
+
 int main(void) {
     if (!freopen("build/fuzz.log", "w", stderr)) { puts("fuzz: cannot open build/fuzz.log"); return 1; }
     setvbuf(stderr, NULL, _IONBF, 0);
@@ -247,6 +364,9 @@ int main(void) {
     random_state = FUZZ_SEED;
     model_cases();
     bounds_cases();
+    switch_cases();
+    switch_loop_cases();
+    switch_limit_cases();
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);

@@ -91,6 +91,17 @@ static int32_t run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, 
         case OP_CLEAR:
             memset(elements + offsets[i.dst], 0, f->slot_lengths[i.dst] * sizeof(*elements));
             break;
+        case OP_SWITCH: {
+            int32_t value = registers[i.a];
+            uint32_t target = i.dst;
+            for (uint32_t j = i.b; j < i.b + i.c; ++j) {
+                if (f->switch_entries[j].value == value) { target = f->switch_entries[j].target; break; }
+            }
+            if (target == L_NONE) trap(vm, i, "unhandled switch value");
+            pc = target;
+            break;
+        }
+        case OP_TRAP: trap(vm, i, "trap");
         default: trap(vm, i, "invalid opcode");
         }
     }

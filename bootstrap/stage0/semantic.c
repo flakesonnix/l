@@ -4,7 +4,9 @@
 
 typedef struct Binding Binding;
 struct Binding { Decl *decl; unsigned depth; Binding *next; };
-typedef struct { Context *ctx; Ast *ast; Function *fn; Binding *bindings; unsigned depth; uint32_t elements; unsigned loops; } Semantic;
+typedef struct Enclosing Enclosing;
+struct Enclosing { bool is_loop; unsigned breaks; Enclosing *parent; };
+typedef struct { Context *ctx; Ast *ast; Function *fn; Binding *bindings; unsigned depth; uint32_t elements; Enclosing *enclosing; bool reachable; } Semantic;
 static Type analyze_expr(Semantic *, Expr *);
 static bool analyze_stmt(Semantic *, Stmt *);
 
@@ -121,6 +123,16 @@ static bool scoped_stmt(Semantic *s, Stmt *stmt) {
     --s->depth; s->bindings = saved;
     return falls;
 }
+static bool analyze_sequence(Semantic *s, Stmt *first) {
+    bool falls = true, reachable = s->reachable;
+    for (Stmt *child = first; child; child = child->next) {
+        s->reachable = reachable && falls;
+        bool child_falls = analyze_stmt(s, child);
+        falls = falls && child_falls;
+    }
+    s->reachable = reachable;
+    return falls;
+}
 static bool analyze_stmt(Semantic *s, Stmt *stmt) {
     bool falls = true;
     enter(s->ctx, stmt->token);
@@ -128,10 +140,7 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
     case ST_BLOCK: {
         Binding *saved = s->bindings;
         ++s->depth;
-        for (Stmt *child = stmt->body; child; child = child->next) {
-            bool child_falls = analyze_stmt(s, child);
-            falls = falls && child_falls;
-        }
+        falls = analyze_sequence(s, stmt->body);
         --s->depth; s->bindings = saved; break;
     }
     case ST_DECL: {
@@ -150,10 +159,17 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
     case ST_RETURN:
         require(s, stmt->token, stmt->expr ? analyze_expr(s, stmt->expr) : TY_VOID, s->fn->result);
         falls = false; break;
-    case ST_BREAK: case ST_CONTINUE:
-        if (!s->loops) token_fail(s->ctx, stmt->token, stmt->kind == ST_BREAK ?
-            "break requires an enclosing loop" : "continue requires an enclosing loop");
+    case ST_BREAK: {
+        if (!s->enclosing) token_fail(s->ctx, stmt->token, "break requires an enclosing loop or switch");
+        if (s->reachable) ++s->enclosing->breaks;
         falls = false; break;
+    }
+    case ST_CONTINUE: {
+        Enclosing *target = s->enclosing;
+        while (target && !target->is_loop) target = target->parent;
+        if (!target) token_fail(s->ctx, stmt->token, "continue requires an enclosing loop");
+        falls = false; break;
+    }
     case ST_IF: {
         require(s, stmt->condition->token, analyze_expr(s, stmt->condition), TY_BOOL);
         bool a = scoped_stmt(s, stmt->body);
@@ -166,16 +182,51 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
         if (stmt->init) (void)analyze_stmt(s, stmt->init);
         if (stmt->condition) require(s, stmt->condition->token, analyze_expr(s, stmt->condition), TY_BOOL);
         if (stmt->step) (void)analyze_expr(s, stmt->step);
-        ++s->loops;
+        Enclosing loop = { true, 0, s->enclosing };
+        s->enclosing = &loop;
         (void)scoped_stmt(s, stmt->body);
-        --s->loops;
+        s->enclosing = loop.parent;
         --s->depth; s->bindings = saved; break;
     }
     case ST_WHILE:
         require(s, stmt->condition->token, analyze_expr(s, stmt->condition), TY_BOOL);
-        ++s->loops;
-        (void)scoped_stmt(s, stmt->body);
-        --s->loops; break;
+        {
+            Enclosing loop = { true, 0, s->enclosing };
+            s->enclosing = &loop;
+            (void)scoped_stmt(s, stmt->body);
+            s->enclosing = loop.parent;
+        }
+        break;
+    case ST_SWITCH: {
+        require(s, stmt->expr->token, analyze_expr(s, stmt->expr), TY_INT);
+        Binding *saved = s->bindings;
+        ++s->depth;
+        Enclosing sw = { false, 0, s->enclosing };
+        s->enclosing = &sw;
+        bool has_default = false;
+        uint32_t count = 0;
+        for (SwitchCase *label = stmt->cases; label; label = label->next) ++count;
+        if (count > L_MAX_CASES) token_fail(s->ctx, stmt->token, "too many switch labels (maximum 1024)");
+        bool tail_falls = true;
+        for (SwitchCase *label = stmt->cases; label; label = label->next) {
+            if (label->is_default) {
+                if (has_default) token_fail(s->ctx, label->token, "duplicate default label");
+                has_default = true;
+            } else {
+                for (SwitchCase *other = stmt->cases; other != label; other = other->next)
+                    if (!other->is_default && other->value == label->value)
+                        token_fail(s->ctx, label->token, "duplicate case value");
+            }
+            tail_falls = analyze_sequence(s, label->body);
+        }
+        s->enclosing = sw.parent;
+        --s->depth; s->bindings = saved;
+        /* Every label is a possible entry. Earlier bodies either terminate or
+           fall into later labels, so only a break, an unmatched selector, or
+           reaching the last body's end can leave the switch normally. */
+        falls = sw.breaks > 0 || !has_default || tail_falls;
+        break;
+    }
     case ST_EMPTY: break;
     default: token_fail(s->ctx, stmt->token, "invalid AST statement");
     }
@@ -198,13 +249,10 @@ void analyze(Context *ctx, Ast *ast) {
     }
     if (!main_found) fail(ctx, 0, 0, "missing entry point int main()");
     for (Function *fn = ast->functions; fn; fn = fn->next) {
-        Semantic s = { ctx, ast, fn, NULL, 0, 0, 0 };
+        Semantic s = { ctx, ast, fn, NULL, 0, 0, NULL, true };
         for (Decl *p = fn->parameters; p; p = p->next) bind(&s, p);
         /* Parameters and the outermost function block share one scope. */
-        bool falls = true;
-        for (Stmt *st = fn->body->body; st; st = st->next) {
-            bool next = analyze_stmt(&s, st); falls = falls && next;
-        }
+        bool falls = analyze_sequence(&s, fn->body->body);
         if (falls && fn->result != TY_VOID) token_fail(ctx, fn->name, "not all control-flow paths return a value");
     }
 }

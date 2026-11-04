@@ -8,9 +8,9 @@
 #include <setjmp.h>
 
 #define L_IR_MAJOR 1
-#define L_IR_MINOR 1
+#define L_IR_MINOR 2
 #define L_BC_MAJOR 1
-#define L_BC_MINOR 1
+#define L_BC_MINOR 2
 #define L_NONE UINT32_MAX
 #define L_MAX_FUNCTIONS 256u
 #define L_MAX_REGISTERS 4096u
@@ -18,6 +18,7 @@
 #define L_MAX_ARRAY 65535u
 #define L_MAX_SLOTS_ELEMENTS 65536u
 #define L_MAX_CODE 16384u
+#define L_MAX_CASES 1024u
 #define L_MAX_ARGS 2048u
 #define L_MAX_DEPTH 256u
 #define L_MAX_STEPS UINT64_C(10000000)
@@ -38,7 +39,7 @@ enum {
     TK_EOF = 256, TK_NAME, TK_INTEGER, TK_INT, TK_BOOL, TK_VOID, TK_AUTO,
     TK_CONST, TK_TRUE, TK_FALSE, TK_IF, TK_ELSE, TK_WHILE, TK_FOR, TK_RETURN,
     TK_MODULE, TK_EQ, TK_NE, TK_LE, TK_GE, TK_AND, TK_OR, TK_INC, TK_DEC,
-    TK_BREAK, TK_CONTINUE
+    TK_BREAK, TK_CONTINUE, TK_SWITCH, TK_CASE, TK_DEFAULT
 };
 
 typedef struct Expr Expr;
@@ -46,7 +47,9 @@ typedef struct Stmt Stmt;
 typedef struct Decl Decl;
 typedef struct Function Function;
 typedef struct ExprList ExprList;
+typedef struct SwitchCase SwitchCase;
 struct ExprList { Expr *value; ExprList *next; };
+struct SwitchCase { Token token; int32_t value; bool is_default; Stmt *body; SwitchCase *next; };
 typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX } ExprKind;
 struct Expr {
     ExprKind kind;
@@ -60,13 +63,14 @@ struct Expr {
     ExprList *args;
 };
 struct Decl { Token name; Type type; bool immutable; uint32_t slot; uint32_t array; Expr *value; Decl *next; };
-typedef enum { ST_BLOCK, ST_DECL, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_EMPTY, ST_BREAK, ST_CONTINUE } StmtKind;
+typedef enum { ST_BLOCK, ST_DECL, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_EMPTY, ST_BREAK, ST_CONTINUE, ST_SWITCH } StmtKind;
 struct Stmt {
     StmtKind kind;
     Token token;
     Stmt *next, *body, *other, *init;
     Expr *expr, *condition, *step;
     Decl *decl;
+    SwitchCase *cases;
 };
 struct Function {
     Token name;
@@ -83,18 +87,20 @@ typedef struct { Function *functions; uint32_t function_count; } Ast;
 typedef enum {
     OP_CONST, OP_LOAD, OP_STORE, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_REM,
     OP_NEG, OP_NOT, OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE,
-    OP_JUMP, OP_BRANCH, OP_CALL, OP_RETURN, OP_BOUNDS, OP_CLEAR, OP_COUNT
+    OP_JUMP, OP_BRANCH, OP_CALL, OP_RETURN, OP_BOUNDS, OP_CLEAR, OP_SWITCH, OP_TRAP, OP_COUNT
 } Opcode;
 typedef struct { Opcode op; uint32_t dst, a, b, c, line, column; } Instruction;
+typedef struct { int32_t value; uint32_t target; } SwitchEntry;
 typedef struct {
     char *name;
     Type result;
-    uint32_t parameter_count, slot_count, register_count, code_count, argument_count;
+    uint32_t parameter_count, slot_count, register_count, code_count, argument_count, switch_count;
     Type *slots, *registers;
     uint32_t *slot_lengths;
     Instruction *code;
     uint32_t *arguments;
-    size_t register_capacity, code_capacity, argument_capacity;
+    SwitchEntry *switch_entries;
+    size_t register_capacity, code_capacity, argument_capacity, switch_capacity;
 } IrFunction;
 typedef struct { uint32_t function_count, entry; IrFunction *functions; } Program;
 

@@ -135,6 +135,11 @@ static void continue_outside_lower(Context *ctx) {
     ast->functions->body->body->kind = ST_CONTINUE;
     (void)lower(ctx, ast);
 }
+static void continue_in_switch_lower(Context *ctx) {
+    Ast *ast = frontend(ctx, "int main(){switch(1){default:break;}return 0;}"); analyze(ctx, ast);
+    ast->functions->body->body->cases->body->kind = ST_CONTINUE;
+    (void)lower(ctx, ast);
+}
 
 static char generated[300000];
 static void append(const char *text) {
@@ -193,6 +198,21 @@ static void many_arguments(Context *ctx) {
     append("return 0;}");
     Ast *ast = frontend(ctx, generated); analyze(ctx, ast); (void)lower(ctx, ast);
 }
+static void switch_labels(unsigned count) {
+    for (unsigned i = 0; i < count; ++i) {
+        char text[40]; snprintf(text, sizeof(text), "case %u:", i); append(text);
+    }
+}
+static void many_switch_labels(Context *ctx) {
+    strcpy(generated, "int main(){switch(0){"); switch_labels(L_MAX_CASES + 1);
+    append("break;}return 0;}");
+    analyze(ctx, frontend(ctx, generated));
+}
+static void many_switch_entries(Context *ctx) {
+    strcpy(generated, "int main(){switch(0){"); switch_labels(L_MAX_CASES);
+    append("break;}switch(0){case 0:break;}return 0;}");
+    Ast *ast = frontend(ctx, generated); analyze(ctx, ast); (void)lower(ctx, ast);
+}
 
 static void check(void (*action)(Context *), int expected) {
     Context *ctx = calloc(1, sizeof(*ctx));
@@ -214,12 +234,13 @@ int main(void) {
     check(bad_expr_analyze, 65); check(bad_stmt_analyze, 65);
     check(bad_expr_lower, 65); check(bad_stmt_lower, 65); check(low_literal, 65);
     check(break_outside_lower, 65); check(continue_outside_lower, 65);
+    check(continue_in_switch_lower, 65); check(many_switch_labels, 65); check(many_switch_entries, 65);
     check(many_functions, 65); check(many_parameters, 65); check(many_locals, 65);
     check(many_temps, 65); check(many_registers, 65); check(many_instructions, 65); check(many_arguments, 65);
     char *args[] = {"l", "check", "examples/answer.l", NULL};
     fail_allocation = true;
     if (l_main(3, args) != 71) return 1;
     remove("build/fault-input"); remove("build/fault-output.lbc");
-    puts("fault injection: 33 cases passed");
+    puts("fault injection: 36 cases passed");
     return 0;
 }

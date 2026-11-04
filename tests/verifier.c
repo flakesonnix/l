@@ -10,6 +10,7 @@ typedef struct {
     Instruction code[2][12];
     uint32_t arguments[4];
     uint32_t slot_lengths[2][4];
+    SwitchEntry entries[L_MAX_CASES];
 } Fixture;
 
 static Instruction ins(Opcode op, uint32_t dst, uint32_t a, uint32_t b, uint32_t c) {
@@ -25,6 +26,7 @@ static void reset(Fixture *x) {
         x->functions[j].registers = x->registers[j];
         x->functions[j].code = x->code[j];
         x->functions[j].arguments = x->arguments;
+        x->functions[j].switch_entries = x->entries;
     }
     x->functions[0].result = TY_INT;
     x->functions[0].slot_count = 2;
@@ -52,6 +54,11 @@ enum {
     ARRAY_LOAD_UNINITIALIZED, ARRAY_STORE_UNINITIALIZED, ARRAY_LOAD_UNDEFINED_INDEX,
     ARRAY_STORE_UNDEFINED_INDEX, ARRAY_BOUNDS_UNDEFINED_INDEX,
     ARRAY_VM_LOAD_OOB, ARRAY_VM_LOAD_NEGATIVE, ARRAY_VM_STORE_OOB, ARRAY_VM_STORE_NEGATIVE,
+    SWITCH_VALID, SWITCH_DEFAULT, SWITCH_UNMATCHED_TRAP, SWITCH_SELECTOR_TYPE,
+    SWITCH_DUPLICATE, SWITCH_TARGET_RANGE, SWITCH_DEFAULT_RANGE, SWITCH_ENTRY_RANGE,
+    SWITCH_CASES_LIMIT, TRAP_DIRECT, SWITCH_UNUSED_TARGET, SWITCH_ENTRY_OFFSET,
+    SWITCH_ENTRY_OVERFLOW, SWITCH_UNDEFINED_SELECTOR, SWITCH_MAX_SUCCESSORS,
+    SWITCH_LAST_EDGE_UNINITIALIZED, SWITCH_MATCH_NO_DEFAULT, SWITCH_EMPTY_TRAP,
     CASE_COUNT
 };
 
@@ -70,9 +77,26 @@ static void array_fixture(Fixture *x) {
     x->code[0][6] = ins(OP_RETURN, 0, 2, 0, 0);
 }
 
+/* Valid switch: selector 7 is unmatched by case 42 and falls to default at pc 4. */
+static void switch_fixture(Fixture *x) {
+    IrFunction *f = &x->functions[0];
+    f->register_count = 3;
+    x->registers[0][0] = TY_INT; x->registers[0][1] = TY_INT; x->registers[0][2] = TY_INT;
+    f->switch_count = 1;
+    x->entries[0] = (SwitchEntry){ 42, 3 };
+    f->code_count = 6;
+    x->code[0][0] = ins(OP_CONST, 0, 7, 0, 0);
+    x->code[0][1] = ins(OP_SWITCH, 4, 0, 0, 1);
+    x->code[0][2] = ins(OP_TRAP, 0, 0, 0, 0);
+    x->code[0][3] = ins(OP_CONST, 1, 42, 0, 0);
+    x->code[0][4] = ins(OP_CONST, 2, 42, 0, 0);
+    x->code[0][5] = ins(OP_RETURN, 0, 2, 0, 0);
+}
+
 static void mutate(Fixture *x, int which) {
     IrFunction *f = &x->functions[0], *g = &x->functions[1];
-    if (which >= ARRAY_VALID) array_fixture(x);
+    if (which >= ARRAY_VALID && which < SWITCH_VALID) array_fixture(x);
+    if (which >= SWITCH_VALID) switch_fixture(x);
     switch (which) {
     case VALID: break;
     case NO_FUNCTIONS: x->program.function_count = 0; break;
@@ -184,6 +208,45 @@ static void mutate(Fixture *x, int which) {
     case ARRAY_VM_STORE_OOB: case ARRAY_VM_STORE_NEGATIVE:
         x->code[0][1].a = which == ARRAY_VM_STORE_OOB ? 2 : UINT32_MAX;
         x->code[0][3] = ins(OP_JUMP, 0, 4, 0, 0); break;
+    case SWITCH_VALID: break;
+    case SWITCH_DEFAULT: x->code[0][0].a = 42; break;
+    case SWITCH_UNMATCHED_TRAP: x->code[0][1].dst = L_NONE; break;
+    case SWITCH_MATCH_NO_DEFAULT: x->code[0][0].a = 42; x->code[0][1].dst = L_NONE; break;
+    case SWITCH_EMPTY_TRAP:
+        f->register_count = 1; f->code_count = 2; f->switch_count = 0;
+        x->code[0][1] = ins(OP_SWITCH, L_NONE, 0, 0, 0); break;
+    case SWITCH_SELECTOR_TYPE: x->registers[0][0] = TY_BOOL; x->code[0][0].a = 1; break;
+    case SWITCH_DUPLICATE:
+        f->switch_count = 2; x->entries[1] = (SwitchEntry){ 42, 3 };
+        x->code[0][1].c = 2; break;
+    case SWITCH_TARGET_RANGE: x->entries[0].target = 99; break;
+    case SWITCH_DEFAULT_RANGE: x->code[0][1].dst = 99; break;
+    case SWITCH_ENTRY_RANGE: x->code[0][1].b = 1; break;
+    case SWITCH_CASES_LIMIT:
+        f->switch_count = L_MAX_CASES + 1; x->code[0][1].c = 2; break;
+    case TRAP_DIRECT:
+        f->register_count = 1; f->code_count = 2; f->switch_count = 0;
+        x->code[0][1] = ins(OP_TRAP, 0, 0, 0, 0); break;
+    case SWITCH_UNUSED_TARGET:
+        f->switch_count = 2; x->entries[1] = (SwitchEntry){ 0, 99 }; break;
+    case SWITCH_ENTRY_OFFSET: x->code[0][1].b = UINT32_MAX; break;
+    case SWITCH_ENTRY_OVERFLOW: x->code[0][1].c = UINT32_MAX; break;
+    case SWITCH_UNDEFINED_SELECTOR: x->code[0][1].a = 1; break;
+    case SWITCH_MAX_SUCCESSORS:
+        f->switch_count = L_MAX_CASES; x->code[0][1].c = L_MAX_CASES;
+        for (uint32_t j = 0; j < L_MAX_CASES; ++j) x->entries[j] = (SwitchEntry){ (int32_t)j, 4 };
+        /* Only the final edge reaches r1's definition. Never truncate successors. */
+        x->entries[L_MAX_CASES - 1].target = 3; break;
+    case SWITCH_LAST_EDGE_UNINITIALIZED:
+        f->switch_count = L_MAX_CASES; f->code_count = 7;
+        for (uint32_t j = 0; j < L_MAX_CASES; ++j) x->entries[j] = (SwitchEntry){ (int32_t)j, 3 };
+        x->entries[L_MAX_CASES - 1].target = 5;
+        x->code[0][1] = ins(OP_CONST, 1, 42, 0, 0);
+        x->code[0][2] = ins(OP_SWITCH, 3, 0, 0, L_MAX_CASES);
+        x->code[0][3] = ins(OP_STORE, 0, 1, 0, 0);
+        x->code[0][4] = ins(OP_JUMP, 0, 5, 0, 0);
+        x->code[0][5] = ins(OP_LOAD, 2, 0, 0, 0);
+        x->code[0][6] = ins(OP_RETURN, 0, 2, 0, 0); break;
     }
 }
 
@@ -205,8 +268,11 @@ static void check(int which) {
         if (result != 42) exit(1);
     }
     int expected = which == VALID || which == DIAMOND || which == LOAD_STORE ||
-        which == ARRAY_VALID || which == ARRAY_NOCHECK ? 0 : 65;
-    if (which == VM_BAD_OPCODE || which >= ARRAY_VM_LOAD_OOB) expected = 70;
+        which == ARRAY_VALID || which == ARRAY_NOCHECK ||
+        which == SWITCH_VALID || which == SWITCH_DEFAULT || which == SWITCH_MAX_SUCCESSORS ||
+        which == SWITCH_MATCH_NO_DEFAULT ? 0 : 65;
+    if (which == VM_BAD_OPCODE || (which >= ARRAY_VM_LOAD_OOB && which < SWITCH_VALID)) expected = 70;
+    if (which == SWITCH_UNMATCHED_TRAP || which == TRAP_DIRECT || which == SWITCH_EMPTY_TRAP) expected = 70;
     if (ctx->status != expected) { fprintf(stderr, "verifier case %d: expected %d, got %d\n", which, expected, ctx->status); exit(1); }
     cleanup(ctx); free(ctx);
 }
@@ -240,19 +306,20 @@ int main(void) {
     check_bytes(original, size, true);
     for (size_t length = 0; length < size; ++length) check_bytes(original, length, false);
     static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
-        {0, 0, 1}, {4, 2, 2}, {6, L_BC_MINOR + 1, 2}, {6, 0, 2}, {8, 0, 4}, {8, L_MAX_FUNCTIONS + 1, 4},
+        {0, 0, 1}, {4, 2, 2}, {6, L_BC_MINOR + 1, 2}, {6, 0, 2}, {6, 1, 2}, {8, 0, 4}, {8, L_MAX_FUNCTIONS + 1, 4},
         {12, 2, 4}, {16, 0, 4}, {16, UINT32_MAX, 4}, {20, 0, 1},
         {29, L_MAX_SLOTS + 1, 4}, {33, L_MAX_REGISTERS + 1, 4},
-        {37, L_MAX_CODE + 1, 4}, {41, L_MAX_ARGS + 1, 4}, {47, L_MAX_ARRAY + 1, 4}
+        {37, L_MAX_CODE + 1, 4}, {41, L_MAX_ARGS + 1, 4}, {45, L_MAX_CASES + 1, 4},
+        {51, L_MAX_ARRAY + 1, 4}
     };
     for (size_t j = 0; j < sizeof(corruptions) / sizeof(*corruptions); ++j) {
         memcpy(bytes, original, size);
         store(bytes, corruptions[j].offset, corruptions[j].value, corruptions[j].width);
         check_bytes(bytes, size, false);
     }
-    /* Slot types occupy bytes 45..46; the two 32-bit lengths start at byte 47. */
+    /* Slot types occupy bytes 49..50; the two 32-bit lengths start at byte 51. */
     memcpy(bytes, original, size);
-    store(bytes, 47, L_MAX_ARRAY, 4); store(bytes, 51, 2, 4);
+    store(bytes, 51, L_MAX_ARRAY, 4); store(bytes, 55, 2, 4);
     check_bytes(bytes, size, false);
     memcpy(bytes, original, size); bytes[size] = 0;
     check_bytes(bytes, size + 1, false);

@@ -2,9 +2,9 @@
 
 #include <string.h>
 
-typedef struct Loop Loop;
-struct Loop { uint32_t breaks, continues; Loop *parent; };
-typedef struct { Context *ctx; Program *program; IrFunction *fn; Loop *loop; } Lower;
+typedef struct Breakable Breakable;
+struct Breakable { bool is_loop; uint32_t breaks, continues; Breakable *parent; };
+typedef struct { Context *ctx; Program *program; IrFunction *fn; Breakable *breakables; } Lower;
 static uint32_t lower_expr(Lower *, Expr *);
 static bool lower_stmt(Lower *, Stmt *);
 
@@ -28,8 +28,16 @@ static uint32_t emit(Lower *l, Token t, Opcode op, uint32_t dst, uint32_t a, uin
     f->code[f->code_count] = (Instruction){ op, dst, a, b, c, t.line, t.column };
     return f->code_count++;
 }
+static uint32_t switch_entry(Lower *l, int32_t value) {
+    IrFunction *f = l->fn;
+    if (f->switch_count == L_MAX_CASES) fail(l->ctx, 0, 0, "too many switch cases");
+    reserve(l->ctx, (void **)&f->switch_entries, &f->switch_capacity, f->switch_count + 1, sizeof(*f->switch_entries));
+    f->switch_entries[f->switch_count].value = value;
+    f->switch_entries[f->switch_count].target = 0;
+    return f->switch_count++;
+}
 static void patch_jumps(Lower *l, uint32_t head, uint32_t target) {
-    /* Pending jumps form a list through operand a until the loop target is known. */
+    /* Pending jumps form a list through operand a until the control-flow target is known. */
     while (head != L_NONE) {
         uint32_t next = l->fn->code[head].a;
         l->fn->code[head].a = target;
@@ -139,8 +147,12 @@ static bool lower_stmt(Lower *l, Stmt *s) {
         emit(l, s->token, OP_RETURN, 0, value, 0, 0); return false;
     }
     case ST_BREAK: case ST_CONTINUE: {
-        if (!l->loop) token_fail(l->ctx, s->token, "loop control statement outside a loop during lowering");
-        uint32_t *head = s->kind == ST_BREAK ? &l->loop->breaks : &l->loop->continues;
+        if (!l->breakables) token_fail(l->ctx, s->token, "break/continue outside a loop or switch during lowering");
+        Breakable *target = l->breakables;
+        if (s->kind == ST_CONTINUE)
+            while (target && !target->is_loop) target = target->parent;
+        if (!target) token_fail(l->ctx, s->token, "continue requires an enclosing loop during lowering");
+        uint32_t *head = s->kind == ST_CONTINUE ? &target->continues : &target->breaks;
         *head = emit(l, s->token, OP_JUMP, 0, *head, 0, 0);
         return false;
     }
@@ -159,10 +171,10 @@ static bool lower_stmt(Lower *l, Stmt *s) {
         uint32_t start = l->fn->code_count;
         uint32_t cond = s->condition ? lower_expr(l, s->condition) : constant(l, s->token, TY_BOOL, 1);
         uint32_t branch = emit(l, s->token, OP_BRANCH, 0, cond, l->fn->code_count + 1, 0);
-        Loop loop = { L_NONE, L_NONE, l->loop };
-        l->loop = &loop;
+        Breakable loop = { true, L_NONE, L_NONE, l->breakables };
+        l->breakables = &loop;
         bool body_falls = lower_stmt(l, s->body);
-        l->loop = loop.parent;
+        l->breakables = loop.parent;
         if (body_falls || loop.continues != L_NONE) {
             /* for-continues run the step; while-continues recheck the condition. */
             patch_jumps(l, loop.continues, l->fn->code_count);
@@ -172,6 +184,33 @@ static bool lower_stmt(Lower *l, Stmt *s) {
         l->fn->code[branch].c = l->fn->code_count;
         patch_jumps(l, loop.breaks, l->fn->code_count);
         break;
+    }
+    case ST_SWITCH: {
+        uint32_t selector = lower_expr(l, s->expr);
+        uint32_t first = l->fn->switch_count, count = 0;
+        for (SwitchCase *label = s->cases; label; label = label->next)
+            if (!label->is_default) switch_entry(l, label->value), ++count;
+        /* OP_SWITCH: a=selector reg, b=first entry, c=case count, dst=default/fallthrough target. */
+        uint32_t switch_pc = emit(l, s->token, OP_SWITCH, L_NONE, selector, first, count);
+        Breakable sw = { false, L_NONE, L_NONE, l->breakables };
+        l->breakables = &sw;
+        bool tail_falls = true;
+        uint32_t case_index = 0;
+        uint32_t default_target = L_NONE;
+        for (SwitchCase *label = s->cases; label; label = label->next) {
+            uint32_t target = l->fn->code_count;
+            if (label->is_default) default_target = target;
+            else l->fn->switch_entries[first + case_index++].target = target;
+            tail_falls = true;
+            for (Stmt *child = label->body; child; child = child->next) {
+                if (!lower_stmt(l, child)) { tail_falls = false; break; }
+            }
+        }
+        l->breakables = sw.parent;
+        uint32_t after = l->fn->code_count;
+        l->fn->code[switch_pc].dst = default_target != L_NONE ? default_target : after;
+        patch_jumps(l, sw.breaks, after);
+        return sw.breaks != L_NONE || default_target == L_NONE || tail_falls;
     }
     case ST_EMPTY: break;
     default: token_fail(l->ctx, s->token, "invalid AST statement during lowering");
@@ -218,13 +257,17 @@ static void access_mode(Context *ctx, const IrFunction *f, uint32_t slot, Instru
     if (i.c) same(ctx, register_type(ctx, f, i.b), TY_INT);
 }
 static bool defines(Opcode op) { return op <= OP_LOAD || (op >= OP_ADD && op <= OP_GE) || op == OP_CALL; }
-static unsigned successors(Context *ctx, const IrFunction *f, uint32_t pc, uint32_t next[2]) {
+static unsigned successors(Context *ctx, const IrFunction *f, uint32_t pc, uint32_t next[L_MAX_CASES + 1]) {
     Instruction i = f->code[pc];
-    unsigned count;
-    if (i.op == OP_RETURN) return 0;
-    if (i.op == OP_JUMP) { next[0] = i.a; count = 1; }
-    else if (i.op == OP_BRANCH) { next[0] = i.b; next[1] = i.c; count = 2; }
-    else { next[0] = pc + 1; count = 1; }
+    unsigned count = 0;
+    if (i.op == OP_RETURN || i.op == OP_TRAP) return 0;
+    if (i.op == OP_JUMP) { next[count++] = i.a; }
+    else if (i.op == OP_BRANCH) { next[count++] = i.b; next[count++] = i.c; }
+    else if (i.op == OP_SWITCH) {
+        if (i.dst != L_NONE) next[count++] = i.dst;
+        for (uint32_t j = i.b; j < i.b + i.c; ++j) next[count++] = f->switch_entries[j].target;
+    }
+    else { next[count++] = pc + 1; }
     for (unsigned n = 0; n < count; ++n) if (next[n] >= f->code_count) invalid(ctx, "control flow leaves function");
     return count;
 }
@@ -250,7 +293,8 @@ static void dataflow(Context *ctx, const IrFunction *f, bool **seen_out) {
         Instruction i = f->code[pc];
         if (defines(i.op) && i.dst != L_NONE) set_bit(out, i.dst);
         if (i.op == OP_CLEAR || (i.op == OP_STORE && !i.c)) set_bit(out, f->register_count + i.dst);
-        uint32_t next[2]; unsigned count = successors(ctx, f, pc, next);
+        uint32_t next[L_MAX_CASES + 1];
+        unsigned count = successors(ctx, f, pc, next);
         for (unsigned j = 0; j < count; ++j) {
             uint32_t target = next[j];
             uint64_t *into = state + target * words;
@@ -286,6 +330,7 @@ static void dataflow(Context *ctx, const IrFunction *f, bool **seen_out) {
             break;
         case OP_RETURN: if (i.a != L_NONE) use(ctx, bits, i.a); break;
         case OP_BOUNDS: use(ctx, bits, i.a); break;
+        case OP_SWITCH: use(ctx, bits, i.a); break;
         default: break;
         }
     }
@@ -302,7 +347,9 @@ void verify(Context *ctx, const Program *p) {
         const IrFunction *f = &p->functions[n];
         if (f->result > TY_BOOL || f->parameter_count > f->slot_count || f->slot_count > L_MAX_SLOTS ||
             f->register_count > L_MAX_REGISTERS || !f->code_count || f->code_count > L_MAX_CODE ||
-            f->argument_count > L_MAX_ARGS) invalid(ctx, "invalid function limits or result type");
+            f->argument_count > L_MAX_ARGS || f->switch_count > L_MAX_CASES) invalid(ctx, "invalid function limits or result type");
+        for (uint32_t j = 0; j < f->switch_count; ++j)
+            if (f->switch_entries[j].target >= f->code_count) invalid(ctx, "switch target out of range");
         for (uint32_t j = 0; j < f->slot_count; ++j)
             if (f->slots[j] != TY_INT && f->slots[j] != TY_BOOL) invalid(ctx, "invalid slot type");
         uint32_t elements = 0;
@@ -372,9 +419,21 @@ void verify(Context *ctx, const Program *p) {
                     if (i.a != L_NONE) invalid(ctx, "void return has a value");
                 } else same(ctx, register_type(ctx, f, i.a), f->result);
                 break;
+            case OP_SWITCH: {
+                same(ctx, register_type(ctx, f, i.a), TY_INT);
+                if (i.b > f->switch_count || i.c > f->switch_count - i.b) invalid(ctx, "invalid switch case vector");
+                if (i.dst != L_NONE && i.dst >= f->code_count) invalid(ctx, "switch default target out of range");
+                for (uint32_t j = i.b; j < i.b + i.c; ++j) {
+                    for (uint32_t k = i.b; k < j; ++k)
+                        if (f->switch_entries[k].value == f->switch_entries[j].value)
+                            invalid(ctx, "duplicate switch case value");
+                }
+                break;
+            }
+            case OP_TRAP: break;
             default: break;
             }
-            uint32_t next[2]; (void)successors(ctx, f, pc, next);
+            uint32_t next[L_MAX_CASES + 1]; (void)successors(ctx, f, pc, next);
         }
         bool *seen = NULL;
         dataflow(ctx, f, &seen);

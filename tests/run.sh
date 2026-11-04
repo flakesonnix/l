@@ -109,10 +109,46 @@ program 42 'void f(){for(;;){break;}}int main(){f();return 42;}'
 program 70 'int main(){while(true)continue;return 0;}' 'instruction limit exceeded'
 program 70 'int main(){for(;;1/0)continue;return 0;}' 'division by zero'
 
+program 42 'int pick(int n){switch(n){case 0:return 10;case 1:return 20;case 2:case 3:return 30;default:return 99;}}int main(){return pick(0)+pick(1)+pick(2)+pick(3)+pick(4)-147;}'
+program 42 'int main(){int n=0;switch(5){case 1:n=1;break;default:n=2;}return n+40;}'
+program 42 'int main(){int n=0;switch(2){case 1:n=1;case 2:n=2;case 3:n=n+1;}return n+39;}'
+program 42 'int main(){switch(9){}return 42;}'
+program 42 'int main(){int n=1;switch(n){case 1:n=41;}return n+1;}'
+program 42 'int main(){int n=0;switch(-1){case -1:n=20;break;default:n=1;}return n+22;}'
+program 42 'int main(){int n=0;switch(2147483647){case 2147483647:n=40;break;}return n+2;}'
+program 42 'int main(){int n=0;switch(-2147483648){case -2147483648:n=40;break;}return n+2;}'
+program 42 'int f(int n){switch(n){case 1:return 1;default:return 0;}}int main(){return f(1)*42;}'
+program 42 'int f(int n){switch(n){case 1:return 1;default:return 0;}}int main(){return f(9)+42;}'
+program 42 'int f(int n){switch(n){case 1:break;default:return 1;}return 0;}int main(){return f(1)+42;}'
+program 42 'int f(int n){switch(n){case 1:break;default:return 1;}return 0;}int main(){return f(9)+41;}'
+program 42 'int main(){int n=0;while(true){switch(n){case 3:break;default:n++;continue;}break;}return n+39;}'
+program 42 'int main(){int total=0;for(int i=0;i<4;i++){switch(i){case 0:total=total+1;continue;case 1:total=total+10;break;default:total=total+100;break;}}return total-169;}'
+program 42 'int main(){switch(2){case 1:{int x=1;return x;}case 2:{int x=42;return x;}default:return 0;}}'
+program 42 'int main(){int a[3];a[0]=2;switch(a[0]){case 2:a[1]=42;break;default:return 0;}return a[1];}'
+program 42 'int main(){switch(1+1){case 2:return 42;default:return 0;}}'
+program 42 'int main(){int n=0;for(;;){switch(n){case 2:return 42;}n++;}return 0;}'
+program 70 'int main(){while(true){switch(1){case 1:continue;case 2:return 0;}return 0;}return 0;}' 'instruction limit exceeded'
+program 70 'int main(){int n=0;switch(n){case 0:1/0;default:break;}return 42;}' 'division by zero'
+program 42 'int main(){switch(1){default:return 42;break;int n=1;}}'
+program 42 'int main(){switch(1){default:return 42;{break;int n=1;}}}'
+program 42 'int main(){switch(1){case 1:return 42;1/0;default:return 0;}}'
+program 42 'int main(){int n=0;switch(1){case 1:n=42;break;n=0;default:return 0;}return n;}'
+program 42 'int main(){switch(3){default:case 0:case 1:return 42;}}'
+program 42 'int main(){int n=0;switch(2){default:n=1;case 2:n=n+41;}return n+1;}'
+program 42 'int main(){switch(1){default:while(true){break;}return 42;}}'
+program 42 'int main(){switch(1){default:for(;;){break;}return 42;}}'
+program 42 'int main(){int n=0;for(int i=0;i<3;i++){switch(i){default:switch(i){default:continue;}}n=1;}return n+42;}'
+program 42 'int main(){int n=0;switch(0){default:switch(1){case 1:break;default:return 0;}n=42;break;}return n;}'
+program 42 'int main(){switch(0){default:if(true)return 42;else return 0;}}'
+program 42 'int main(){switch(0){default:if(false)break;else return 42;}return 0;}'
+program 42 'int main(){int a[1];a[0]=2;int index=0;int n=0;switch(a[index++]){case 2:n=41;break;default:return 0;}return n+index;}'
+program 42 'int main(){switch(2){case 1:int n=7;case 2:n=42;return n;default:return 0;}}'
+
 status 42 "$compiler" run "$root/examples/answer.l"
 status 55 "$compiler" run "$root/examples/fibonacci.l"
 status 42 "$compiler" run "$root/examples/arrays.l"
 status 42 "$compiler" run "$root/examples/loop-control.l"
+status 42 "$compiler" run "$root/examples/switch.l"
 status 64 "$compiler"
 status 64 "$compiler" unknown ignored
 status 64 "$compiler" compile ignored
@@ -131,6 +167,18 @@ grep -Fq ':1:12: error: break requires an enclosing loop' "$work/stderr"
 printf 'int main(){continue;return 0;}\n' >"$work/bad.l"
 status 65 "$compiler" check "$work/bad.l"
 grep -Fq ':1:12: error: continue requires an enclosing loop' "$work/stderr"
+printf 'int main(){switch(2){case 1:int n=42;case 2:return n;default:return 0;}}\n' >"$work/bad.l"
+status 65 "$compiler" check "$work/bad.l"
+grep -Fq 'slot is uninitialized' "$work/stderr"
+printf 'int main(){switch(2){case 1:int a[1];case 2:return a[0];default:return 0;}}\n' >"$work/bad.l"
+status 65 "$compiler" check "$work/bad.l"
+grep -Fq 'slot is uninitialized' "$work/stderr"
+printf 'int main(){switch(2){case 1:int n=42;case 2:n++;return n;default:return 0;}}\n' >"$work/bad.l"
+status 65 "$compiler" check "$work/bad.l"
+grep -Fq 'slot is uninitialized' "$work/stderr"
+printf 'int main(){switch(2){case 1:int a[1];case 2:a[0]=42;return a[0];default:return 0;}}\n' >"$work/bad.l"
+status 65 "$compiler" check "$work/bad.l"
+grep -Fq 'slot is uninitialized' "$work/stderr"
 status 65 "$compiler" compile "$work/first.lbc" -o "$work/no.lbc"
 status 74 "$compiler" compile "$root/examples/answer.l" -o "$work/missing/out.lbc"
 status 74 "$compiler" compile "$root/examples/answer.l" -o /dev/full
