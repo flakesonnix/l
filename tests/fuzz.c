@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include "source.h"
 
 #define FUZZ_SEED UINT32_C(0x4c313146)
 #define MAX_INPUT 65536u
@@ -34,6 +35,7 @@ static Context *context(const char *filename) {
 }
 static void dispose(Context *ctx) { cleanup(ctx); free(ctx); }
 static Program *compile(Context *ctx, const char *text) {
+    text = test_source(ctx, text);
     size_t count;
     Token *tokens = lex(ctx, text, strlen(text), &count);
     Ast *ast = parse(ctx, tokens, count);
@@ -60,7 +62,7 @@ static void run_expected(const Program *p, int32_t expected, int status) {
 }
 static void semantic_case(int32_t expected, int status) {
     ++programs;
-    fprintf(stderr, "semantic case %zu: expected value=%d status=%d\n%s\n", programs, expected, status, source);
+    fprintf(stderr, "semantic case %zu: expected value=%d status=%d\nmodule test;\n%s\n", programs, expected, status, source);
     Context *ctx = context("fuzz-source");
     if (setjmp(ctx->failure)) failed("generated source or its bytecode was rejected");
     Program *p = compile(ctx, source);

@@ -30,6 +30,73 @@ static void bind(Semantic *s, Decl *decl) {
     Binding *b = allocate(s->ctx, sizeof(*b));
     b->decl = decl; b->depth = s->depth; b->next = s->bindings; s->bindings = b;
 }
+static bool function_named(const Function *fn, const Module *module, Token path) {
+    return fn->module == module && token_equal(fn->scope, parent_scope(path)) && token_equal(fn->name, leaf_name(path));
+}
+static bool symbol_named(const Ast *ast, const Module *module, Token path) {
+    for (const Function *fn = ast->functions; fn; fn = fn->next) if (function_named(fn, module, path)) return true;
+    for (Namespace *ns = module->namespaces; ns; ns = ns->next) if (token_equal(ns->name, path)) return true;
+    return false;
+}
+static bool signature(const Function *fn, const Type *types, uint32_t count) {
+    if (fn->parameter_count != count) return false;
+    uint32_t n = 0;
+    for (Decl *p = fn->parameters; p; p = p->next) if (p->type != types[n++]) return false;
+    return true;
+}
+static Function *overload(Semantic *s, Module *module, Token path, const Type *types, uint32_t count) {
+    bool found = false, visible = false, inaccessible = false;
+    for (Function *fn = s->ast->functions; fn; fn = fn->next) {
+        if (!function_named(fn, module, path)) continue;
+        found = true;
+        bool matches = signature(fn, types, count);
+        if (module != s->fn->module && !fn->exported) { inaccessible = inaccessible || matches; continue; }
+        visible = true;
+        if (matches) return fn;
+    }
+    if (inaccessible || (found && !visible)) token_fail(s->ctx, path, "inaccessible symbol: declaration is private to its module");
+    token_fail(s->ctx, path, found ? "no matching function overload" : "unknown function or qualified declaration");
+}
+static bool qualified_prefix(Token prefix, Token name) {
+    /* Parser-produced paths use only '::', so a matching colon starts a separator. */
+    return name.length > prefix.length + 2 && !memcmp(prefix.text, name.text, prefix.length) &&
+        name.text[prefix.length] == ':';
+}
+static Function *resolve_call(Semantic *s, Token name, const Type *types, uint32_t count) {
+    bool qualified = memchr(name.text, ':', name.length) != NULL;
+    Token first = name;
+    if (qualified) first.length = (size_t)((const char *)memchr(name.text, ':', name.length) - name.text);
+    if (lookup(s, first)) token_fail(s->ctx, name, "local binding is not callable or a namespace");
+    Module *module = s->fn->module;
+    Token scope = s->fn->scope;
+    for (;;) {
+        Token head = join_name(s->ctx, scope, first, "::");
+        if (symbol_named(s->ast, module, head))
+            return overload(s, module, join_name(s->ctx, scope, name, "::"), types, count);
+        if (!scope.length) break;
+        scope = parent_scope(scope);
+    }
+    if (!qualified) {
+        for (Import *item = module->imports; item; item = item->next)
+            for (ImportName *binding = item->names; binding; binding = binding->next)
+                if (token_equal(binding->binding, name)) return overload(s, item->target, binding->name, types, count);
+    } else {
+        Import *best = NULL;
+        for (Import *item = module->imports; item; item = item->next) {
+            if (item->alias.length && token_equal(item->alias, first)) {
+                Token rest = name; rest.text += first.length + 2; rest.length -= first.length + 2;
+                return overload(s, item->target, rest, types, count);
+            }
+            if (!item->alias.length && !item->names && qualified_prefix(item->qualifier, name) &&
+                (!best || item->qualifier.length > best->qualifier.length)) best = item;
+        }
+        if (best) {
+            Token rest = name; rest.text += best->qualifier.length + 2; rest.length -= best->qualifier.length + 2;
+            return overload(s, best->target, rest, types, count);
+        }
+    }
+    token_fail(s->ctx, name, qualified ? "unknown qualified name; no unqualified fallback" : "unknown function");
+}
 static Decl *resolve_index(Semantic *s, Expr *e) {
     if (e->left->kind != EX_NAME) token_fail(s->ctx, e->left->token, "arrays must be indexed through a variable name");
     Binding *b = lookup(s, e->left->token);
@@ -98,17 +165,14 @@ static Type analyze_expr(Semantic *s, Expr *e) {
     }
     case EX_CALL: {
         if (e->left->kind != EX_NAME) token_fail(s->ctx, e->token, "Stage 0 supports direct function calls only");
-        if (lookup(s, e->left->token)) token_fail(s->ctx, e->token, "local binding is not callable");
-        Function *fn = s->ast->functions;
-        uint32_t index = 0;
-        while (fn && !token_equal(fn->name, e->left->token)) { fn = fn->next; ++index; }
-        if (!fn) token_fail(s->ctx, e->token, "unknown function");
+        Type types[L_MAX_SLOTS]; uint32_t count = 0;
+        for (ExprList *arg = e->args; arg; arg = arg->next) {
+            if (count == L_MAX_SLOTS) token_fail(s->ctx, e->token, "too many function arguments");
+            types[count++] = analyze_expr(s, arg->value);
+        }
+        Function *fn = resolve_call(s, e->left->token, types, count);
+        uint32_t index = 0; for (Function *other = s->ast->functions; other != fn; other = other->next) ++index;
         e->symbol = index;
-        Decl *param = fn->parameters;
-        ExprList *arg = e->args;
-        for (; param && arg; param = param->next, arg = arg->next)
-            require(s, arg->value->token, analyze_expr(s, arg->value), param->type);
-        if (param || arg) token_fail(s->ctx, e->token, "wrong number of function arguments");
         e->type = fn->result; break;
     }
     default: token_fail(s->ctx, e->token, "invalid AST expression");
@@ -234,25 +298,67 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
     return falls;
 }
 
+static void imports(Context *ctx, const Ast *ast, Module *module) {
+    ctx->filename = module->path;
+    for (Import *item = module->imports; item; item = item->next) {
+        if (!item->target) token_fail(ctx, item->name, "unresolved import: module loading is required");
+        if (item->alias.length && symbol_named(ast, module, item->alias))
+            token_fail(ctx, item->alias, "module alias conflicts with a module-scope declaration");
+        for (Import *other = module->imports; other; other = other->next) {
+            if (item != other && item->alias.length && token_equal(item->alias, other->alias))
+                token_fail(ctx, item->alias, "conflicting module aliases");
+            for (ImportName *binding = other->names; binding; binding = binding->next)
+                if (item->alias.length && token_equal(item->alias, binding->binding))
+                    token_fail(ctx, item->alias, "module alias conflicts with a selective import");
+        }
+        for (ImportName *name = item->names; name; name = name->next) {
+            bool found = false, visible = false;
+            for (Function *fn = ast->functions; fn; fn = fn->next)
+                if (function_named(fn, item->target, name->name)) { found = true; visible = visible || fn->exported; }
+            if (!found) token_fail(ctx, name->name, "unknown selectively imported declaration");
+            if (!visible) token_fail(ctx, name->name, "inaccessible symbol: selective import requires pub");
+            for (Import *other = module->imports; other; other = other->next)
+                for (ImportName *binding = other->names; binding; binding = binding->next)
+                    if (binding != name && token_equal(name->binding, binding->binding))
+                        token_fail(ctx, name->binding, "ambiguous selective import binding; use explicit aliases");
+        }
+        for (Import *other = module->imports; other != item; other = other->next)
+            if (other->target == item->target)
+                fprintf(stderr, "%s:%u:%u: warning: duplicate import of %.*s\n", module->path,
+                        item->name.line, item->name.column, (int)item->name.length, item->name.text);
+    }
+}
 void analyze(Context *ctx, Ast *ast) {
+    const char *saved = ctx->filename;
+    for (Module *module = ast->modules; module; module = module->next) imports(ctx, ast, module);
     bool main_found = false;
     for (Function *fn = ast->functions; fn; fn = fn->next) {
+        ctx->filename = fn->module->path;
         if (fn->result == TY_AUTO) token_fail(ctx, fn->name, "function return type must be explicit");
-        for (Function *other = ast->functions; other != fn; other = other->next)
-            if (token_equal(fn->name, other->name)) token_fail(ctx, fn->name, "duplicate function declaration");
+        Type parameters[L_MAX_SLOTS]; uint32_t count = 0;
         for (Decl *p = fn->parameters; p; p = p->next)
             if (p->type == TY_VOID || p->type == TY_AUTO) token_fail(ctx, p->name, "parameter type must be int or bool");
-        if (fn->name.length == 4 && !memcmp(fn->name.text, "main", 4)) {
+            else parameters[count++] = p->type;
+        for (Function *other = ast->functions; other != fn; other = other->next)
+            if (other->module == fn->module && token_equal(fn->scope, other->scope) && token_equal(fn->name, other->name) && signature(other, parameters, count))
+                token_fail(ctx, fn->name, "duplicate function signature");
+        Token full = join_name(ctx, fn->scope, fn->name, "::");
+        for (Namespace *ns = fn->module->namespaces; ns; ns = ns->next)
+            if (token_equal(ns->name, full)) token_fail(ctx, fn->name, "function conflicts with namespace declaration");
+        if (fn->module == ast->entry && !fn->scope.length && fn->name.length == 4 && !memcmp(fn->name.text, "main", 4)) {
             main_found = true;
+            ast->entrypoint = fn;
             if (fn->result != TY_INT || fn->parameter_count) token_fail(ctx, fn->name, "entry point must have signature int main()");
         }
     }
-    if (!main_found) fail(ctx, 0, 0, "missing entry point int main()");
+    if (!main_found) { ctx->filename = ast->entry->path; fail(ctx, 0, 0, "missing entry point int main()"); }
     for (Function *fn = ast->functions; fn; fn = fn->next) {
+        ctx->filename = fn->module->path;
         Semantic s = { ctx, ast, fn, NULL, 0, 0, NULL, true };
         for (Decl *p = fn->parameters; p; p = p->next) bind(&s, p);
         /* Parameters and the outermost function block share one scope. */
         bool falls = analyze_sequence(&s, fn->body->body);
         if (falls && fn->result != TY_VOID) token_fail(ctx, fn->name, "not all control-flow paths return a value");
     }
+    ctx->filename = saved;
 }

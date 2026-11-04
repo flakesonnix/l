@@ -219,22 +219,29 @@ static bool lower_stmt(Lower *l, Stmt *s) {
 }
 
 Program *lower(Context *ctx, Ast *ast) {
+    const char *saved = ctx->filename;
     Program *p = allocate(ctx, sizeof(*p));
     p->function_count = ast->function_count;
     p->functions = allocate(ctx, p->function_count * sizeof(*p->functions));
     uint32_t index = 0;
     for (Function *fn = ast->functions; fn; fn = fn->next, ++index) {
         IrFunction *f = &p->functions[index];
-        f->name = copy_text(ctx, fn->name.text, fn->name.length);
+        ctx->filename = f->source_path = fn->module->path;
+        Token name = join_name(ctx, fn->scope, fn->name, "::");
+        name = join_name(ctx, fn->module->qualifier, name, "::");
+        Token package = {.text = fn->module->package, .length = strlen(fn->module->package)};
+        name = join_name(ctx, package, name, "::");
+        f->name = copy_text(ctx, name.text, name.length);
         f->result = fn->result; f->parameter_count = fn->parameter_count; f->slot_count = fn->slot_count;
         f->slots = allocate(ctx, L_MAX_SLOTS * sizeof(*f->slots));
         f->slot_lengths = allocate(ctx, L_MAX_SLOTS * sizeof(*f->slot_lengths));
         memcpy(f->slots, fn->slots, fn->slot_count * sizeof(*f->slots));
         memcpy(f->slot_lengths, fn->lengths, fn->slot_count * sizeof(*f->slot_lengths));
-        if (!strcmp(f->name, "main")) p->entry = index;
+        if (fn == ast->entrypoint) p->entry = index;
         Lower l = { ctx, p, f, NULL };
         if (lower_stmt(&l, fn->body)) emit(&l, fn->name, OP_RETURN, 0, L_NONE, 0, 0);
     }
+    ctx->filename = saved;
     return p;
 }
 
@@ -339,12 +346,14 @@ static void dataflow(Context *ctx, const IrFunction *f, bool **seen_out) {
 }
 
 void verify(Context *ctx, const Program *p) {
+    const char *saved = ctx->filename;
     if (!p->function_count || p->function_count > L_MAX_FUNCTIONS || p->entry >= p->function_count)
         invalid(ctx, "invalid function table");
     const IrFunction *entry = &p->functions[p->entry];
     if (entry->result != TY_INT || entry->parameter_count) invalid(ctx, "invalid entry signature");
     for (uint32_t n = 0; n < p->function_count; ++n) {
         const IrFunction *f = &p->functions[n];
+        ctx->filename = f->source_path ? f->source_path : saved;
         if (f->result > TY_BOOL || f->parameter_count > f->slot_count || f->slot_count > L_MAX_SLOTS ||
             f->register_count > L_MAX_REGISTERS || !f->code_count || f->code_count > L_MAX_CODE ||
             f->argument_count > L_MAX_ARGS || f->switch_count > L_MAX_CASES) invalid(ctx, "invalid function limits or result type");
@@ -450,4 +459,5 @@ void verify(Context *ctx, const Program *p) {
         release(ctx, seen);
         release(ctx, defined);
     }
+    ctx->filename = saved;
 }

@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include "source.h"
 
 /* Linker interposition exercises real error handling without production hooks. */
 void *__real_calloc(size_t, size_t);
@@ -32,6 +33,7 @@ int __wrap_fclose(FILE *file) {
 }
 
 static Ast *frontend(Context *ctx, const char *source) {
+    source = test_source(ctx, source);
     size_t count;
     Token *tokens = lex(ctx, source, strlen(source), &count);
     return parse(ctx, tokens, count);
@@ -66,6 +68,14 @@ static void lex_edges(Context *ctx) {
     (void)lex(ctx, "name9_", 6, &count);
     (void)lex(ctx, "/", 1, &count);
     (void)lex(ctx, "//", 2, &count);
+}
+static void path_edges(Context *ctx) {
+    if (strcmp(relative_path(ctx, "/", "abc"), "/abc") || strcmp(relative_path(ctx, "", "abc"), "abc") ||
+        strcmp(source_directory(ctx, "/package.json"), "/")) exit(1);
+}
+static void canonical_memory(Context *ctx) {
+    fail_allocation = true;
+    (void)canonical_path(ctx, "examples/package.json");
 }
 static void read_failure(Context *ctx) {
     size_t length;
@@ -230,6 +240,8 @@ int main(void) {
     check(vector_growth, 0); check(vector_overflow, 65); check(vector_element_overflow, 65);
     check(missing_filename, 65); check(type_names, 0); check(syntax_depth, 65);
     check(nul_source, 65); check(nul_block, 65); check(nul_line, 65); check(lex_edges, 0);
+    check(path_edges, 0);
+    check(canonical_memory, 65);
     check(read_failure, 74); check(read_zero, 74); check(read_growth, 0); check(read_limit, 65); check(close_failure, 74);
     check(bad_expr_analyze, 65); check(bad_stmt_analyze, 65);
     check(bad_expr_lower, 65); check(bad_stmt_lower, 65); check(low_literal, 65);
@@ -241,6 +253,6 @@ int main(void) {
     fail_allocation = true;
     if (l_main(3, args) != 71) return 1;
     remove("build/fault-input"); remove("build/fault-output.lbc");
-    puts("fault injection: 36 cases passed");
+    puts("fault injection: 38 cases passed");
     return 0;
 }

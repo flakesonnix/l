@@ -3,7 +3,7 @@ CPPFLAGS =
 CFLAGS = -std=c11 -O2 -g -Wall -Wextra -Wpedantic -Werror
 LDFLAGS =
 
-SOURCES = bootstrap/stage0/common.c bootstrap/stage0/lexer.c \
+SOURCES = bootstrap/stage0/common.c bootstrap/stage0/config.c bootstrap/stage0/modules.c bootstrap/stage0/lexer.c \
           bootstrap/stage0/parser.c bootstrap/stage0/semantic.c \
           bootstrap/stage0/lir.c bootstrap/stage0/bytecode.c \
           bootstrap/stage0/vm.c bootstrap/stage0/main.c
@@ -17,6 +17,7 @@ build/l: $(SOURCES) bootstrap/stage0/l.h
 
 test: build/l
 	sh tests/run.sh ./build/l
+	node tests/modules.mjs ./build/l
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DL_NO_MAIN $(SOURCES) tests/frontend.c $(LDFLAGS) -o build/frontend-test
 	./build/frontend-test
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DL_NO_MAIN $(SOURCES) tests/faults.c $(LDFLAGS) -Wl,--wrap=calloc,--wrap=fread,--wrap=ferror,--wrap=fclose -o build/faults-test

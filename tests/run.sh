@@ -4,8 +4,12 @@ compiler=$(realpath "$1")
 root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 mkdir -p "$root/build"
 work=$(mktemp -d "$root/build/test.XXXXXX")
-trap 'rm -f "$work"/*; rmdir "$work"' EXIT HUP INT TERM
+trap 'rm -rf -- "$work"' EXIT HUP INT TERM
 count=0
+cat >"$work/package.json" <<EOF
+{"version":1,"package":"test","module_roots":[{"package":"test","prefix":"","path":"."},{"package":"test","prefix":"examples","path":"$root/examples"}],"dependencies":[]}
+EOF
+source_compiler() { "$compiler" "$@" --manifest "$work/package.json"; }
 
 status() {
     want_status=$1
@@ -24,19 +28,19 @@ program() {
     program_status=$1
     source=$2
     program_error=${3:-'VM trap:'}
-    printf '%s\n' "$source" >"$work/input.l"
-    status 0 "$compiler" check "$work/input.l"
-    status "$program_status" "$compiler" run "$work/input.l"
+    printf 'module input;\n%s\n' "$source" >"$work/input.l"
+    status 0 source_compiler check "$work/input.l"
+    status "$program_status" source_compiler run "$work/input.l"
     if [ "$program_status" -eq 70 ]; then grep -Fq "$program_error" "$work/stderr"; fi
-    status 0 "$compiler" compile "$work/input.l" -o "$work/first.lbc"
+    status 0 source_compiler compile "$work/input.l" -o "$work/first.lbc"
     status 0 "$compiler" check "$work/first.lbc"
     status "$program_status" "$compiler" run "$work/first.lbc"
     if [ "$program_status" -eq 70 ]; then grep -Fq "$program_error" "$work/stderr"; fi
-    status 0 "$compiler" inspect "$work/input.l"
+    status 0 source_compiler inspect "$work/input.l"
     cp "$work/stdout" "$work/source.ir"
     status 0 "$compiler" inspect "$work/first.lbc"
     cmp "$work/source.ir" "$work/stdout"
-    status 0 "$compiler" compile "$work/input.l" -o "$work/second.lbc"
+    status 0 source_compiler compile "$work/input.l" -o "$work/second.lbc"
     cmp "$work/first.lbc" "$work/second.lbc"
 }
 
@@ -144,11 +148,12 @@ program 42 'int main(){switch(0){default:if(false)break;else return 42;}return 0
 program 42 'int main(){int a[1];a[0]=2;int index=0;int n=0;switch(a[index++]){case 2:n=41;break;default:return 0;}return n+index;}'
 program 42 'int main(){switch(2){case 1:int n=7;case 2:n=42;return n;default:return 0;}}'
 
-status 42 "$compiler" run "$root/examples/answer.l"
-status 55 "$compiler" run "$root/examples/fibonacci.l"
-status 42 "$compiler" run "$root/examples/arrays.l"
-status 42 "$compiler" run "$root/examples/loop-control.l"
-status 42 "$compiler" run "$root/examples/switch.l"
+status 42 source_compiler run "$root/examples/answer.l"
+status 55 source_compiler run "$root/examples/fibonacci.l"
+status 42 source_compiler run "$root/examples/arrays.l"
+status 42 source_compiler run "$root/examples/loop_control.l"
+status 42 source_compiler run "$root/examples/switch_demo.l"
+status 42 source_compiler run "$root/examples/modules.l"
 status 64 "$compiler"
 status 64 "$compiler" unknown ignored
 status 64 "$compiler" compile ignored
@@ -156,32 +161,32 @@ status 64 "$compiler" compile ignored --output ignored
 status 64 "$compiler" compile ignored -o ignored
 status 64 "$compiler" check ignored extra
 status 74 "$compiler" check "$work/missing.l"
-printf 'int main(){return true;}\n' >"$work/bad.l"
-status 65 "$compiler" check "$work/bad.l"
-grep -q ':1:12: error: expected int, got bool' "$work/stderr"
-status 65 "$compiler" compile "$work/bad.l" -o "$work/invalid.lbc"
+printf 'module bad;\nint main(){return true;}\n' >"$work/bad.l"
+status 65 source_compiler check "$work/bad.l"
+grep -q ':2:12: error: expected int, got bool' "$work/stderr"
+status 65 source_compiler compile "$work/bad.l" -o "$work/invalid.lbc"
 test ! -e "$work/invalid.lbc"
-printf 'int main(){break;return 0;}\n' >"$work/bad.l"
-status 65 "$compiler" check "$work/bad.l"
-grep -Fq ':1:12: error: break requires an enclosing loop' "$work/stderr"
-printf 'int main(){continue;return 0;}\n' >"$work/bad.l"
-status 65 "$compiler" check "$work/bad.l"
-grep -Fq ':1:12: error: continue requires an enclosing loop' "$work/stderr"
-printf 'int main(){switch(2){case 1:int n=42;case 2:return n;default:return 0;}}\n' >"$work/bad.l"
-status 65 "$compiler" check "$work/bad.l"
+printf 'module bad;\nint main(){break;return 0;}\n' >"$work/bad.l"
+status 65 source_compiler check "$work/bad.l"
+grep -Fq ':2:12: error: break requires an enclosing loop' "$work/stderr"
+printf 'module bad;\nint main(){continue;return 0;}\n' >"$work/bad.l"
+status 65 source_compiler check "$work/bad.l"
+grep -Fq ':2:12: error: continue requires an enclosing loop' "$work/stderr"
+printf 'module bad;\nint main(){switch(2){case 1:int n=42;case 2:return n;default:return 0;}}\n' >"$work/bad.l"
+status 65 source_compiler check "$work/bad.l"
 grep -Fq 'slot is uninitialized' "$work/stderr"
-printf 'int main(){switch(2){case 1:int a[1];case 2:return a[0];default:return 0;}}\n' >"$work/bad.l"
-status 65 "$compiler" check "$work/bad.l"
+printf 'module bad;\nint main(){switch(2){case 1:int a[1];case 2:return a[0];default:return 0;}}\n' >"$work/bad.l"
+status 65 source_compiler check "$work/bad.l"
 grep -Fq 'slot is uninitialized' "$work/stderr"
-printf 'int main(){switch(2){case 1:int n=42;case 2:n++;return n;default:return 0;}}\n' >"$work/bad.l"
-status 65 "$compiler" check "$work/bad.l"
+printf 'module bad;\nint main(){switch(2){case 1:int n=42;case 2:n++;return n;default:return 0;}}\n' >"$work/bad.l"
+status 65 source_compiler check "$work/bad.l"
 grep -Fq 'slot is uninitialized' "$work/stderr"
-printf 'int main(){switch(2){case 1:int a[1];case 2:a[0]=42;return a[0];default:return 0;}}\n' >"$work/bad.l"
-status 65 "$compiler" check "$work/bad.l"
+printf 'module bad;\nint main(){switch(2){case 1:int a[1];case 2:a[0]=42;return a[0];default:return 0;}}\n' >"$work/bad.l"
+status 65 source_compiler check "$work/bad.l"
 grep -Fq 'slot is uninitialized' "$work/stderr"
 status 65 "$compiler" compile "$work/first.lbc" -o "$work/no.lbc"
-status 74 "$compiler" compile "$root/examples/answer.l" -o "$work/missing/out.lbc"
-status 74 "$compiler" compile "$root/examples/answer.l" -o /dev/full
+status 74 source_compiler compile "$root/examples/answer.l" -o "$work/missing/out.lbc"
+status 74 source_compiler compile "$root/examples/answer.l" -o /dev/full
 printf 'nope' >"$work/bad.lbc"
 status 65 "$compiler" run "$work/bad.lbc"
 
@@ -192,7 +197,7 @@ printf '' >"$work/empty.l"
 status 65 "$compiler" check "$work/empty.l"
 status 74 "$compiler" check x
 # A successful load through a name shorter than four characters.
-status 0 "$compiler" compile "$root/examples/answer.l" -o "$work/answer.lbc"
+status 0 source_compiler compile "$root/examples/answer.l" -o "$work/answer.lbc"
 cp "$work/answer.lbc" "$work/b"
 status 42 sh -c 'cd "$1"; exec "$2" run b' sh "$work" "$compiler"
 printf 'LBC\000\002\000\000\000' >"$work/bad.lbc"
@@ -201,8 +206,10 @@ printf 'LBC\000' >"$work/bad.lbc"
 status 65 "$compiler" run "$work/bad.lbc"
 
 # The same declared source bytes at different absolute paths must produce identical artifacts.
-cp "$root/examples/answer.l" "$work/relocated.l"
-status 0 "$compiler" compile "$root/examples/answer.l" -o "$work/original.lbc"
-status 0 "$compiler" compile "$work/relocated.l" -o "$work/relocated.lbc"
+mkdir "$work/relocated"
+cp "$root/examples/answer.l" "$work/relocated/answer.l"
+printf '{"version":1,"package":"test","module_roots":[{"package":"test","prefix":"examples","path":"."}],"dependencies":[]}' >"$work/relocated/package.json"
+status 0 source_compiler compile "$root/examples/answer.l" -o "$work/original.lbc"
+status 0 "$compiler" compile "$work/relocated/answer.l" --manifest "$work/relocated/package.json" -o "$work/relocated.lbc"
 cmp "$work/original.lbc" "$work/relocated.lbc"
 echo "integration: $count checks passed"

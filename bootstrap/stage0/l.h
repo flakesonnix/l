@@ -13,6 +13,8 @@
 #define L_BC_MINOR 2
 #define L_NONE UINT32_MAX
 #define L_MAX_FUNCTIONS 256u
+#define L_MAX_MODULES 256u
+#define L_MAX_IMPORTS 1024u
 #define L_MAX_REGISTERS 4096u
 #define L_MAX_SLOTS 1024u
 #define L_MAX_ARRAY 65535u
@@ -39,7 +41,8 @@ enum {
     TK_EOF = 256, TK_NAME, TK_INTEGER, TK_INT, TK_BOOL, TK_VOID, TK_AUTO,
     TK_CONST, TK_TRUE, TK_FALSE, TK_IF, TK_ELSE, TK_WHILE, TK_FOR, TK_RETURN,
     TK_MODULE, TK_EQ, TK_NE, TK_LE, TK_GE, TK_AND, TK_OR, TK_INC, TK_DEC,
-    TK_BREAK, TK_CONTINUE, TK_SWITCH, TK_CASE, TK_DEFAULT
+    TK_BREAK, TK_CONTINUE, TK_SWITCH, TK_CASE, TK_DEFAULT,
+    TK_IMPORT, TK_AS, TK_PUB, TK_NAMESPACE, TK_SCOPE
 };
 
 typedef struct Expr Expr;
@@ -48,6 +51,10 @@ typedef struct Decl Decl;
 typedef struct Function Function;
 typedef struct ExprList ExprList;
 typedef struct SwitchCase SwitchCase;
+typedef struct Module Module;
+typedef struct Import Import;
+typedef struct ImportName ImportName;
+typedef struct Namespace Namespace;
 struct ExprList { Expr *value; ExprList *next; };
 struct SwitchCase { Token token; int32_t value; bool is_default; Stmt *body; SwitchCase *next; };
 typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX } ExprKind;
@@ -74,6 +81,9 @@ struct Stmt {
 };
 struct Function {
     Token name;
+    Token scope;
+    Module *module;
+    bool exported;
     Type result;
     Decl *parameters;
     uint32_t parameter_count, slot_count;
@@ -82,7 +92,24 @@ struct Function {
     Stmt *body;
     Function *next;
 };
-typedef struct { Function *functions; uint32_t function_count; } Ast;
+struct ImportName { Token name, binding; ImportName *next; };
+struct Import { Token name, qualifier, alias; ImportName *names; Module *target; Import *next; };
+struct Namespace { Token name; Namespace *next; };
+struct Module {
+    Token name, qualifier;
+    const char *path, *package;
+    Import *imports;
+    Namespace *namespaces;
+    Function *functions;
+    unsigned state;
+    Module *next;
+};
+typedef struct { Function *functions; uint32_t function_count; Module *modules, *entry; Function *entrypoint; } Ast;
+typedef struct ModuleRoot ModuleRoot;
+typedef struct PackageDependency PackageDependency;
+struct ModuleRoot { char *package, *directory; Token prefix; ModuleRoot *next; };
+struct PackageDependency { char *from, *to; PackageDependency *next; };
+typedef struct { char *package; ModuleRoot *roots; PackageDependency *dependencies; } ModuleConfig;
 
 typedef enum {
     OP_CONST, OP_LOAD, OP_STORE, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_REM,
@@ -93,6 +120,7 @@ typedef struct { Opcode op; uint32_t dst, a, b, c, line, column; } Instruction;
 typedef struct { int32_t value; uint32_t target; } SwitchEntry;
 typedef struct {
     char *name;
+    const char *source_path; /* Source-only diagnostics; not serialized. */
     Type result;
     uint32_t parameter_count, slot_count, register_count, code_count, argument_count, switch_count;
     Type *slots, *registers;
@@ -112,12 +140,21 @@ void cleanup(Context *);
 void reserve(Context *, void **, size_t *, size_t, size_t);
 char *copy_text(Context *, const char *, size_t);
 bool token_equal(Token, Token);
+Token join_name(Context *, Token, Token, const char *);
+Token namespace_path(Context *, Token);
+Token leaf_name(Token);
+Token parent_scope(Token);
 const char *type_name(Type);
 void enter(Context *, Token);
 void leave(Context *);
 unsigned char *read_file(Context *, const char *, size_t *);
 Token *lex(Context *, const char *, size_t, size_t *);
 Ast *parse(Context *, Token *, size_t);
+ModuleConfig *read_manifest(Context *, const char *);
+char *canonical_path(Context *, const char *);
+char *relative_path(Context *, const char *, const char *);
+char *source_directory(Context *, const char *);
+Ast *load_modules(Context *, const ModuleConfig *, const char *, const unsigned char *, size_t);
 void analyze(Context *, Ast *);
 Program *lower(Context *, Ast *);
 void verify(Context *, const Program *);

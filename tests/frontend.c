@@ -2,14 +2,16 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include "source.h"
 
 static int check(const char *source, bool valid) {
     Context *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) exit(1);
     ctx->filename = "frontend-test.l";
     if (!setjmp(ctx->failure)) {
+        const char *text = test_source(ctx, source);
         size_t count;
-        Token *tokens = lex(ctx, source, strlen(source), &count);
+        Token *tokens = lex(ctx, text, strlen(text), &count);
         analyze(ctx, parse(ctx, tokens, count));
     }
     bool accepted = ctx->status == 0;

@@ -15,6 +15,8 @@ static int32_t checked(Vm *vm, Instruction i, int64_t value) {
 static int32_t run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, Instruction callsite) {
     if (depth >= L_MAX_DEPTH) trap(vm, callsite, "call depth limit exceeded (256)");
     const IrFunction *f = &vm->program->functions[index];
+    const char *saved = vm->ctx->filename;
+    if (f->source_path) vm->ctx->filename = f->source_path;
     int32_t *registers = allocate(vm->ctx, f->register_count * sizeof(*registers));
     /* Each slot is a region inside one flat element store; scalar slots occupy one element. */
     uint32_t total = 0;
@@ -82,7 +84,8 @@ static int32_t run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, 
         }
         case OP_RETURN: {
             int32_t value = i.a == L_NONE ? 0 : registers[i.a];
-            release(vm->ctx, elements); release(vm->ctx, offsets); release(vm->ctx, registers); return value;
+            release(vm->ctx, elements); release(vm->ctx, offsets); release(vm->ctx, registers);
+            vm->ctx->filename = saved; return value;
         }
         case OP_BOUNDS:
             /* The conversion is the defined mod-2^32 wrap, so negative indexes are caught here. */

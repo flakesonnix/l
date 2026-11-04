@@ -12,6 +12,14 @@ static Token expect(Parser *p, int kind, const char *message) {
     if (!take(p, kind)) token_fail(p->ctx, token, message);
     return token;
 }
+static Token name_path(Parser *p, int separator) {
+    Token name = expect(p, TK_NAME, "invalid module path or qualified name: expected identifier");
+    while (take(p, separator)) {
+        Token part = expect(p, TK_NAME, "invalid module path or qualified name: expected identifier after name separator");
+        name = join_name(p->ctx, name, part, separator == '.' ? "." : "::");
+    }
+    return name;
+}
 static Type parse_type(Parser *p) {
     Token token = peek(p);
     ++p->at;
@@ -58,8 +66,8 @@ static Expr *primary(Parser *p) {
         e = new_expr(p, EX_INT, token); e->integer = token.integer;
     } else if (take(p, TK_TRUE) || take(p, TK_FALSE)) {
         e = new_expr(p, EX_BOOL, token); e->integer = token.kind == TK_TRUE;
-    } else if (take(p, TK_NAME)) {
-        e = new_expr(p, EX_NAME, token);
+    } else if (token.kind == TK_NAME) {
+        e = new_expr(p, EX_NAME, name_path(p, TK_SCOPE));
     } else if (take(p, '(')) {
         e = expression(p, 1);
         expect(p, ')', "expected ')' after expression");
@@ -223,32 +231,80 @@ static Stmt *statement(Parser *p) {
     return s;
 }
 
+static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
+    Function **tail = &ast->functions;
+    while (*tail) tail = &(*tail)->next;
+    while (peek(p).kind != TK_EOF && peek(p).kind != '}') {
+        Token token = peek(p);
+        bool exported = take(p, TK_PUB);
+        if (take(p, TK_NAMESPACE)) {
+            if (exported) token_fail(p->ctx, token, "namespaces do not change declaration visibility");
+            Token name = expect(p, TK_NAME, "expected namespace name");
+            name = join_name(p->ctx, scope, name, "::");
+            Namespace *ns = allocate(p->ctx, sizeof(*ns)); ns->name = name;
+            ns->next = ast->entry->namespaces; ast->entry->namespaces = ns;
+            expect(p, '{', "expected '{' after namespace name");
+            enter(p->ctx, token); declarations(p, ast, name, true); leave(p->ctx);
+            while (*tail) tail = &(*tail)->next;
+            continue;
+        }
+        if (peek(p).kind == TK_MODULE || peek(p).kind == TK_IMPORT)
+            token_fail(p->ctx, peek(p), "module and import declarations must precede other declarations");
+        if (ast->function_count++ >= L_MAX_FUNCTIONS) token_fail(p->ctx, peek(p), "too many functions (maximum 256)");
+        Function *fn = allocate(p->ctx, sizeof(*fn));
+        fn->module = ast->entry; fn->scope = scope; fn->exported = exported;
+        fn->result = parse_type(p);
+        fn->name = expect(p, TK_NAME, "expected function name");
+        expect(p, '(', "expected '(' after function name");
+        Decl **param = &fn->parameters;
+        if (!take(p, ')')) {
+            do {
+                if (++fn->parameter_count > L_MAX_SLOTS) token_fail(p->ctx, peek(p), "too many parameters");
+                *param = declaration(p, true); param = &(*param)->next;
+            } while (take(p, ','));
+            expect(p, ')', "expected ')' after parameters");
+        }
+        if (peek(p).kind != '{') token_fail(p->ctx, peek(p), "expected function body");
+        fn->body = statement(p);
+        *tail = fn; tail = &fn->next;
+    }
+    if (nested) expect(p, '}', "expected '}' after namespace");
+    else expect(p, TK_EOF, "unexpected '}' at module scope");
+}
 Ast *parse(Context *ctx, Token *tokens, size_t count) {
     Parser p = { ctx, tokens, 0, count };
     Ast *ast = allocate(ctx, sizeof(*ast));
-    if (take(&p, TK_MODULE)) {
-        expect(&p, TK_NAME, "expected module name");
-        while (take(&p, '.')) expect(&p, TK_NAME, "expected module name after '.'");
-        expect(&p, ';', "expected ';' after module declaration");
-    }
-    Function **tail = &ast->functions;
-    while (peek(&p).kind != TK_EOF) {
-        if (ast->function_count++ >= L_MAX_FUNCTIONS) token_fail(ctx, peek(&p), "too many functions (maximum 256)");
-        Function *fn = allocate(ctx, sizeof(*fn));
-        fn->result = parse_type(&p);
-        fn->name = expect(&p, TK_NAME, "expected function name");
-        expect(&p, '(', "expected '(' after function name");
-        Decl **param = &fn->parameters;
-        if (!take(&p, ')')) {
+    ast->entry = ast->modules = allocate(ctx, sizeof(*ast->entry));
+    ast->entry->path = ctx->filename; ast->entry->package = "";
+    expect(&p, TK_MODULE, "each source file must begin with exactly one module declaration");
+    ast->entry->name = name_path(&p, '.');
+    ast->entry->qualifier = namespace_path(ctx, ast->entry->name);
+    expect(&p, ';', "expected ';' after module declaration");
+    Import **tail = &ast->entry->imports;
+    uint32_t imports = 0;
+    while (take(&p, TK_IMPORT)) {
+        if (++imports > L_MAX_IMPORTS) token_fail(ctx, peek(&p), "too many imports");
+        Import *item = allocate(ctx, sizeof(*item));
+        item->name = name_path(&p, '.');
+        item->qualifier = namespace_path(ctx, item->name);
+        if (take(&p, TK_AS)) item->alias = expect(&p, TK_NAME, "expected module alias");
+        else if (take(&p, TK_SCOPE)) {
+            expect(&p, '{', "selective imports require '{'; wildcard imports are not supported");
+            ImportName **names = &item->names;
             do {
-                if (++fn->parameter_count > L_MAX_SLOTS) token_fail(ctx, peek(&p), "too many parameters");
-                *param = declaration(&p, true); param = &(*param)->next;
-            } while (take(&p, ','));
-            expect(&p, ')', "expected ')' after parameters");
+                ImportName *name = allocate(ctx, sizeof(*name));
+                name->name = name_path(&p, TK_SCOPE); name->binding = leaf_name(name->name);
+                if (take(&p, TK_AS)) name->binding = expect(&p, TK_NAME, "expected selective import alias");
+                *names = name; names = &name->next;
+                if (!take(&p, ',')) break;
+                if (peek(&p).kind == '}') break;
+            } while (true);
+            expect(&p, '}', "expected '}' after selective imports");
         }
-        if (peek(&p).kind != '{') token_fail(ctx, peek(&p), "expected function body");
-        fn->body = statement(&p);
-        *tail = fn; tail = &fn->next;
+        expect(&p, ';', "expected ';' after import");
+        *tail = item; tail = &item->next;
     }
+    declarations(&p, ast, (Token){.text = ""}, false);
+    ast->entry->functions = ast->functions;
     return ast;
 }

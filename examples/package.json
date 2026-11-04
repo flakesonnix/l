@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "package": "examples",
+  "module_roots": [
+    {"package": "examples", "prefix": "examples", "path": "."}
+  ],
+  "dependencies": []
+}

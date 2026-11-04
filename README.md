@@ -6,12 +6,13 @@ No LLVM or external library dependencies.
 
 ```sh
 make
-./build/l check examples/answer.l
-./build/l run examples/answer.l                  # Exit code 42
-./build/l compile examples/answer.l -o build/answer.lbc
+./build/l check examples/answer.l --manifest examples/package.json
+./build/l run examples/answer.l --manifest examples/package.json  # Exit code 42
+./build/l compile examples/answer.l --manifest examples/package.json -o build/answer.lbc
 ./build/l run build/answer.lbc                   # Exit code 42
 ./build/l inspect build/answer.lbc
-make test
+./build/l run examples/modules.l --manifest examples/package.json
+make test                                      # Requires Node.js 22+
 make fuzz                                      # Deterministic mutation/model tests
 make sanitize
 make coverage                                  # Requires GCC/gcov and Node.js 22+
@@ -20,7 +21,10 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
 ## Supported subset
 
 - ASCII identifiers, decimal literals, `//` and `/* … */` comments.
-- Optional `module a.b;` identity, one source file per program.
+- Mandatory `module a.b;`, one file per module, explicitly configured source roots.
+- Module imports, aliases, selective imports, private-by-default functions and
+  explicit `pub` exports; qualification uses `::`, not `.`.
+- Nested/reopened namespaces and exact static `int`/`bool` function overloads.
 - `int` (exactly 32 bits), `bool`, `void` functions, local inference with `auto`.
 - Initialized local variables, `const`, lexical scopes and shadowing.
 - Fixed local `int`/`bool` arrays: `int values[10];`, indexing and element
@@ -36,7 +40,7 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
 
 No implicit conversions between `int` and `bool`. Conditions must be `bool`.
 Scalar local declarations require initializers; parameters and function returns
-require explicit types. Entry point: `int main()`.
+require explicit types. Entry point: module-scope `int main()` in the entry file.
 Non-`void` functions must structurally return on all paths; a loop alone is not
 yet considered proof of a return. Operands and arguments evaluate left to right.
 
@@ -68,14 +72,82 @@ defined traps without C overflow UB. The VM limits execution to 10 million
 instructions, call depth to 256 and managed working memory to 128 MiB.
 These are seed-profile limits, not general L language limits.
 
-Not implemented yet: imports/module resolution, other primitive types,
+Not implemented yet: other primitive types,
 strings/IO, structs/enums, pointers/slices, ownership/borrows, generics/concepts,
 dynamic values, GC, classes, effects, native/LLVM, self-hosting and build/package
 management. The repository does not imply these subsystems have been implemented.
 
+## Modules and manifests
+
+Module behavior follows [the normative module-system specification 0.1.1](spec/module-system-v0.1.1.md)
+for the currently implemented declaration and type subset. This does not add
+structs, classes, enums, type aliases, globals, generic constraints or runtime
+overload resolution. Public signatures currently contain only public primitives.
+
+Every source command requires an explicit `--manifest FILE.json`. No manifest,
+module directory, standard library or dependency is implicitly searched for.
+Manifest version 1 has exactly these required fields:
+
+```json
+{
+  "version": 1,
+  "package": "my_application",
+  "module_roots": [
+    {"package": "my_application", "prefix": "app", "path": "src/app"},
+    {"package": "standard_library", "prefix": "std", "path": "deps/std"}
+  ],
+  "dependencies": [
+    {"from": "my_application", "to": "standard_library"}
+  ]
+}
+```
+
+Root paths resolve relative to the manifest's canonical directory; absolute root
+paths are also accepted. `app.main` maps to `src/app/main.l`. An explicitly
+registered empty prefix maps the entire dotted module path beneath its root.
+A prefix by itself has no implicit `index.l` module. Package identities use ASCII
+letters/underscores initially, then letters, digits, underscores or hyphens.
+Unknown/duplicate keys, invalid UTF-8/Unicode escapes and unregistered dependency
+packages are errors. JSON strings support standard escapes, including surrogate
+pairs. The seed permits 256 root registrations and 1024 dependency registrations.
+
+Resolution uses the longest matching prefix; equally matching registrations are
+ambiguous. Imports across packages require a direct declared dependency, not just
+a transitive one. Source locations must be canonical and declarations must match
+their root-relative module paths; source-file symlinks cannot alias module
+identities. Reachable units are registered before dependency-cycle detection and
+processed in dependency order. Diagnostics include the complete cycle path.
+The seed permits 256 reachable modules, 1024 imports per module and 256 functions
+across the whole linked program. Filesystem discovery/resolution, graph ordering
+and declaration lookup are separate compiler operations. The current filesystem
+implementation uses POSIX `realpath` and `access`.
+
+```c
+module app.main;
+import std.math as math;
+import std.math::{numbers::answer as answer};
+
+int main() {
+    return math::numbers::answer(10) + answer(true) - 20;
+}
+```
+
+Module imports expose qualified declarations only. Aliases are module-local;
+selective imports bind public function names or overload groups. Redundant module
+imports warn; conflicting aliases/bindings fail. Lexical bindings, enclosing
+namespaces and module declarations precede selective imports in lookup. Failed
+qualified lookup never falls back to an unqualified name. Namespace reopening
+does not change function visibility; private helpers remain module-private.
+Wildcard imports, re-exports, import cycles and executable module initialization
+are rejected. Dependencies do not supply a hidden entry point: imported functions
+named `main` are ordinary functions. Existing bytecode 1.2 remains readable without
+a manifest; mandatory module declarations and `--manifest` change source CLI usage.
+
 ## Pipeline and artifacts
 
-Lexer → AST → name resolution/type checking → typed SSA register IR with explicit
+Manifest → source-module discovery/registration → import resolution → cycle
+detection/dependency ordering → namespace/visibility/name resolution/type checking
+→ typed SSA register IR with explicit
 local storage slots → verification → bytecode → VM.
 The seed does not materialize separate HIR, Typed IR and MIR representations yet.
 The implemented subset has no ownership model yet.
@@ -97,8 +169,9 @@ The VM additionally checks bounds at each element access, so manipulated bytecod
 cannot bypass safety by omitting a preceding `bounds_check`.
 `inspect` displays the IR, not an ABI-stable text representation.
 
-Artifacts contain no timestamps or absolute source paths. Identical source files
-produce identical bytecode regardless of the input path. This is **not yet a
+Artifacts contain no timestamps or absolute source paths. Identical source
+dependency closures and package identities produce identical bytecode after
+relocation or source-root registration reordering. This is **not yet a
 hermetic build system** or stage-2/3 bootstrap verification.
 
 CLI exit codes: program result modulo 256, usage `64`, compilation/format errors
@@ -109,6 +182,10 @@ Program results can overlap these codes; diagnostics are written to stderr.
 
 `make test` checks the frontend, source and serialized-bytecode execution, IR
 roundtrips, reproducible output and defined failures.
+Module tests exercise manifest validation, aliases, overloads, visibility, cycle
+paths, limits, imported-source diagnostics, root ordering, relocation and changes
+of working directory. They include 32 fixed-seed dependency DAGs (`0x4d4f4455`)
+whose source and bytecode results are checked against independent host-side sums.
 It also runs `make fuzz`: a fixed-seed bytecode mutation corpus plus generated
 array, switch and expression programs checked against independent host-side
 models. Mutations include truncation, bit/word replacement, insertion, deletion,

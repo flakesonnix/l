@@ -14,7 +14,8 @@ static int keyword(Token token) {
         {"if", TK_IF}, {"else", TK_ELSE}, {"while", TK_WHILE}, {"for", TK_FOR},
         {"return", TK_RETURN}, {"module", TK_MODULE},
         {"break", TK_BREAK}, {"continue", TK_CONTINUE},
-        {"switch", TK_SWITCH}, {"case", TK_CASE}, {"default", TK_DEFAULT}
+        {"switch", TK_SWITCH}, {"case", TK_CASE}, {"default", TK_DEFAULT},
+        {"import", TK_IMPORT}, {"as", TK_AS}, {"pub", TK_PUB}, {"namespace", TK_NAMESPACE}
     };
     for (size_t i = 0; i < sizeof(keywords) / sizeof(*keywords); ++i)
         if (strlen(keywords[i].name) == token.length &&
@@ -78,6 +79,7 @@ Token *lex(Context *ctx, const char *source, size_t length, size_t *count) {
                 else if (c == '|' && next == '|') token.kind = TK_OR;
                 else if (c == '+' && next == '+') token.kind = TK_INC;
                 else if (c == '-' && next == '-') token.kind = TK_DEC;
+                else if (c == ':' && next == ':') token.kind = TK_SCOPE;
                 if (token.kind >= TK_EQ) { ++at; token.length = 2; }
             }
             if (token.kind < 256 && !strchr("{}()[];:,.+-*/%!<>=", c))

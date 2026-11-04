@@ -72,7 +72,35 @@ char *copy_text(Context *ctx, const char *text, size_t size) {
 }
 
 bool token_equal(Token a, Token b) {
-    return a.length == b.length && !memcmp(a.text, b.text, a.length);
+    return a.length == b.length && (!a.length || !memcmp(a.text, b.text, a.length));
+}
+Token join_name(Context *ctx, Token prefix, Token name, const char *separator) {
+    if (!prefix.length) return name;
+    size_t n = strlen(separator), length = prefix.length + n + name.length;
+    char *text = allocate(ctx, length + 1);
+    memcpy(text, prefix.text, prefix.length); memcpy(text + prefix.length, separator, n);
+    memcpy(text + prefix.length + n, name.text, name.length);
+    prefix.text = text; prefix.length = length;
+    return prefix;
+}
+Token namespace_path(Context *ctx, Token name) {
+    char *text = allocate(ctx, name.length * 2 + 1); size_t length = 0;
+    for (size_t n = 0; n < name.length; ++n) {
+        if (name.text[n] == '.') { text[length++] = ':'; text[length++] = ':'; }
+        else text[length++] = name.text[n];
+    }
+    name.text = text; name.length = length; return name;
+}
+Token leaf_name(Token name) {
+    Token leaf = name;
+    for (size_t n = 0; n < name.length; ++n)
+        if (name.text[n] == ':') { leaf.text = name.text + n + 1; leaf.length = name.length - n - 1; }
+    return leaf;
+}
+Token parent_scope(Token name) {
+    Token leaf = leaf_name(name);
+    name.length = leaf.length == name.length ? 0 : name.length - leaf.length - 2;
+    return name;
 }
 
 const char *type_name(Type type) {
