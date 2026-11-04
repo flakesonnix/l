@@ -102,7 +102,9 @@ static void fuzz_bytecode(void) {
         "bool valid(int n){return n>0&&n<10;}int main(){int n=0;int sum=0;"
             "while(valid(n=n+1)){int a[1];a[0]=n;if(n%2==0)continue;sum=sum+a[0];if(n==5)break;}return sum+33;}",
         "int pick(int n){switch(n){case 0:return 10;case 1:case 2:return 30;default:return 99;}}"
-            "int main(){return pick(0)+pick(1)+pick(2)+pick(9)-127;}"
+            "int main(){return pick(0)+pick(1)+pick(2)+pick(9)-127;}",
+        "const int minimum=-2147483648;namespace values{pub const int half=21;const bool ready=half*2==42&&minimum<0;}"
+            "int main(){if(values::ready)return values::half*2;return 0;}"
     };
     Seed seeds[sizeof(sources) / sizeof(*sources)];
     Context *ctx = context("fuzz-seed");

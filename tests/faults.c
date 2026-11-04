@@ -130,6 +130,21 @@ static void bad_stmt_lower(Context *ctx) {
     ast->functions->body->body->kind = (StmtKind)99;
     (void)lower(ctx, ast);
 }
+static void bad_constant_kind(Context *ctx) {
+    Ast *ast = frontend(ctx, "const int n=1;int main(){return n;}"); analyze(ctx, ast);
+    ast->constants->state = 0; ast->constants->value->kind = (ExprKind)99;
+    evaluate_constants(ctx, ast);
+}
+static void bad_constant_unary(Context *ctx) {
+    Ast *ast = frontend(ctx, "const int n=+1;int main(){return n;}"); analyze(ctx, ast);
+    ast->constants->state = 0; ast->constants->value->op = '?';
+    evaluate_constants(ctx, ast);
+}
+static void bad_constant_binary(Context *ctx) {
+    Ast *ast = frontend(ctx, "const int n=1+1;int main(){return n;}"); analyze(ctx, ast);
+    ast->constants->state = 0; ast->constants->value->op = '?';
+    evaluate_constants(ctx, ast);
+}
 static void low_literal(Context *ctx) {
     Ast *ast = frontend(ctx, "int main(){return 0;}");
     ast->functions->body->body->expr->integer = INT64_C(-2147483649);
@@ -245,6 +260,7 @@ int main(void) {
     check(read_failure, 74); check(read_zero, 74); check(read_growth, 0); check(read_limit, 65); check(close_failure, 74);
     check(bad_expr_analyze, 65); check(bad_stmt_analyze, 65);
     check(bad_expr_lower, 65); check(bad_stmt_lower, 65); check(low_literal, 65);
+    check(bad_constant_kind, 65); check(bad_constant_unary, 65); check(bad_constant_binary, 65);
     check(break_outside_lower, 65); check(continue_outside_lower, 65);
     check(continue_in_switch_lower, 65); check(many_switch_labels, 65); check(many_switch_entries, 65);
     check(many_functions, 65); check(many_parameters, 65); check(many_locals, 65);
@@ -253,6 +269,6 @@ int main(void) {
     fail_allocation = true;
     if (l_main(3, args) != 71) return 1;
     remove("build/fault-input"); remove("build/fault-output.lbc");
-    puts("fault injection: 38 cases passed");
+    puts("fault injection: 41 cases passed");
     return 0;
 }

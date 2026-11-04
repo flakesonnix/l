@@ -15,6 +15,7 @@
 #define L_MAX_FUNCTIONS 256u
 #define L_MAX_MODULES 256u
 #define L_MAX_IMPORTS 1024u
+#define L_MAX_CONSTANTS 1024u
 #define L_MAX_REGISTERS 4096u
 #define L_MAX_SLOTS 1024u
 #define L_MAX_ARRAY 65535u
@@ -55,6 +56,7 @@ typedef struct Module Module;
 typedef struct Import Import;
 typedef struct ImportName ImportName;
 typedef struct Namespace Namespace;
+typedef struct Constant Constant;
 struct ExprList { Expr *value; ExprList *next; };
 struct SwitchCase { Token token; int32_t value; bool is_default; Stmt *body; SwitchCase *next; };
 typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX } ExprKind;
@@ -68,6 +70,7 @@ struct Expr {
     int64_t integer;
     Expr *left, *right;
     ExprList *args;
+    Constant *constant;
 };
 struct Decl { Token name; Type type; bool immutable; uint32_t slot; uint32_t array; Expr *value; Decl *next; };
 typedef enum { ST_BLOCK, ST_DECL, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_EMPTY, ST_BREAK, ST_CONTINUE, ST_SWITCH } StmtKind;
@@ -92,6 +95,16 @@ struct Function {
     Stmt *body;
     Function *next;
 };
+struct Constant {
+    Token name, scope;
+    Module *module;
+    Type type;
+    bool exported;
+    Expr *value;
+    int32_t integer;
+    unsigned state;
+    Constant *parent, *next;
+};
 struct ImportName { Token name, binding; ImportName *next; };
 struct Import { Token name, qualifier, alias; ImportName *names; Module *target; Import *next; };
 struct Namespace { Token name; Namespace *next; };
@@ -101,10 +114,17 @@ struct Module {
     Import *imports;
     Namespace *namespaces;
     Function *functions;
+    Constant *constants;
     unsigned state;
     Module *next;
 };
-typedef struct { Function *functions; uint32_t function_count; Module *modules, *entry; Function *entrypoint; } Ast;
+typedef struct {
+    Function *functions;
+    uint32_t function_count, constant_count;
+    Module *modules, *entry;
+    Function *entrypoint;
+    Constant *constants;
+} Ast;
 typedef struct ModuleRoot ModuleRoot;
 typedef struct PackageDependency PackageDependency;
 struct ModuleRoot { char *package, *directory; Token prefix; ModuleRoot *next; };
@@ -156,6 +176,7 @@ char *relative_path(Context *, const char *, const char *);
 char *source_directory(Context *, const char *);
 Ast *load_modules(Context *, const ModuleConfig *, const char *, const unsigned char *, size_t);
 void analyze(Context *, Ast *);
+void evaluate_constants(Context *, Ast *);
 Program *lower(Context *, Ast *);
 void verify(Context *, const Program *);
 void write_bytecode(Context *, const Program *, const char *);

@@ -254,6 +254,178 @@ try {
     'app/a.l': `module app.a;${Array.from({ length: 128 }, (_, n) => `int f${n}(){return 0;}`).join('')}`,
     'app/b.l': `module app.b;${Array.from({ length: 128 }, (_, n) => `int f${n}(){return 0;}`).join('')}` }, /too many functions across modules/);
 
+  // Module constants share normal namespace, import and visibility rules.
+  const constantFiles = main => ({ 'app/main.l': `module app.main;${main}`,
+    'std/values.l': 'module std.values;const int seed=40;pub const int answer=seed+2;pub const bool ready=answer==42;' });
+  const constantProgram = body => program({ 'app/main.l': `module app.main;${body}` });
+  constantProgram('const int answer=42;int main(){return answer;}');
+  constantProgram('const bool ready=true;int main(){if(ready)return 42;return 1;}');
+  constantProgram('const int answer=base+2;const int base=40;int main(){return answer;}');
+  constantProgram('int main(){return answer;}const int answer=42;');
+  constantProgram('const int base=40;namespace n{pub const int answer=base+2;}int main(){return n::answer;}');
+  constantProgram('namespace n{const int a=b+2;}namespace n{const int b=40;}int main(){return n::a;}');
+  constantProgram('const int answer=7;int main(){int answer=answer+35;return answer;}');
+  constantProgram('const int answer=1;namespace n{const int answer=42;int f(){return answer;}}int main(){return n::f();}');
+  constantProgram('namespace n{namespace v{const int answer=42;}namespace use{const int answer=v::answer;int f(){return answer;}}}int main(){return n::use::f();}');
+  constantProgram('const int index=1;int main(){int a[2];a[index]=42;return a[index];}');
+  constantProgram('const int n=21;const bool active=true;int f(int v){return v*2;}int f(bool v){if(v)return 42;return 0;}int main(){return f(n)+f(active)-42;}');
+  constantProgram('const int answer=42;namespace n{int answer(){return 42;}}int main(){return answer+n::answer()-42;}');
+  constantProgram('const bool a=false&&1/0==0;const bool b=true||(-2147483648/-1)==0;int main(){if(!a&&b)return 42;return 1;}');
+  constantProgram('const bool a=false&&a;const bool b=true||b;int main(){if(!a&&b)return 42;return 1;}');
+  program(constantFiles('import std.values;int main(){if(std::values::ready)return std::values::answer;return 1;}'));
+  program(constantFiles('import std.values as v;int main(){return v::answer;}'));
+  program(constantFiles('import std.values::{answer,ready as active};int main(){if(active)return answer;return 1;}'));
+  program(constantFiles('import std.values::{answer as value};const int answer=value;int main(){return answer;}'));
+  program(constantFiles('import std.values::{answer};const int answer=21;int main(){return answer*2;}'));
+  program(constantFiles('import std.values::{answer};int twice(int answer){return answer*2;}int main(){return twice(21);}'));
+  program(constantFiles('import std.values::{answer};int main(){int answer=0;answer=42;return answer;}'));
+  program({ ...constantFiles('import std.values::{answer};int main(){return answer;}'),
+    'std/values.l': 'module std.values;namespace v{pub const int value=42;}pub const int answer=v::value;' });
+  const inlined = constantProgram('const int answer=42;int main(){return answer;}');
+  assert.match(source(inlined, 0, 'inspect').stdout, /0 parameters, 0 slots, 1 registers/);
+  const constantRelocation = constantFiles('import std.values;const int answer=std::values::answer;int main(){return answer;}');
+  const constantOriginal = program(constantRelocation), constantConfig = config(); constantConfig.module_roots.reverse();
+  const constantMoved = fixture(constantRelocation, constantConfig), constantOutput = resolve(constantMoved.directory, 'moved.lbc');
+  source(constantMoved, 0, 'compile', ['-o', constantOutput]);
+  assert.deepEqual(readFileSync(resolve(constantOriginal.directory, 'program.lbc')), readFileSync(constantOutput));
+  for (const [body, message] of [
+    ['const int answer;int main(){return 0;}', /require a scalar initializer/],
+    ['const int answer=42 int main(){return 0;}', /after module constant/],
+    ['const int =42;int main(){return 0;}', /module constant name/],
+    ['const auto answer=42;int main(){return 0;}', /explicit int or bool/],
+    ['const void answer=0;int main(){return 0;}', /explicit int or bool/],
+    ['const bool answer=42;int main(){return 0;}', /expected bool, got int/],
+    ['const int answer=true;int main(){return 0;}', /expected int, got bool/],
+    ['const int answer=42;const bool answer=true;int main(){return 0;}', /duplicate module constant/],
+    ['namespace n{const int answer=1;}namespace n{const int answer=2;}int main(){return 0;}', /duplicate module constant/],
+    ['const int answer=42;int answer(){return 0;}int main(){return 0;}', /conflicts with function/],
+    ['namespace n{const int answer=42;}namespace n{int answer(){return 0;}}int main(){return 0;}', /conflicts with function/],
+    ['namespace n{}const int n=42;int main(){return 0;}', /conflicts with namespace/],
+    ['const int answer=42;int main(){answer=1;return answer;}', /cannot modify module constant/],
+    ['const int answer=42;int main(){return answer++;}', /cannot modify module constant/],
+    ['namespace n{const int answer=42;}int main(){n::answer--;return 0;}', /cannot modify module constant/],
+    ['const int answer=42;int main(){return answer();}', /constant is not callable/],
+    ['int f(){return 42;}const int answer=f;int main(){return answer;}', /not a scalar constant/],
+    ['const int answer=n;int main(){int n=42;return n;}', /unknown local variable or constant/],
+    ['const int answer=1;const int value=(answer=42);int main(){return value;}', /assignment is not/],
+    ['const int answer=1;const int value=answer++;int main(){return value;}', /postfix update is not/],
+    ['const int answer=1;const int value=answer[0];int main(){return value;}', /array access is not/],
+    ['int f(){return 42;}const int answer=f();int main(){return answer;}', /function call is not/],
+    ['bool f(){return true;}const bool answer=false&&f();int main(){return 0;}', /function call is not/],
+    ['const bool answer=false&&missing;int main(){return 0;}', /unknown local variable or constant/],
+    ['const bool answer=true||42;int main(){return 0;}', /expected bool, got int/],
+    ['const int n=2;int main(){int a[n];return 0;}', /literal array length/],
+    ['const int a[2];int main(){return 0;}', /scalar initializer/],
+    ['const int answer=42;import std.values;int main(){return answer;}', /must precede/],
+    ['const int answer=42;int main(){return missing::answer;}', /no unqualified fallback/],
+    ['const int answer=42;namespace n{}int main(){return n::answer;}', /not a scalar constant/],
+    ['const int answer=42;namespace n{const bool answer=true;int f(){return answer;}}int main(){return n::f();}', /expected int, got bool/],
+  ]) rejected({ 'app/main.l': `module app.main;${body}` }, message);
+  for (const [body, message] of [
+    ['import std.values;int main(){return answer;}', /unknown local variable or constant/],
+    ['import std.values;int main(){return std::values::seed;}', /inaccessible symbol/],
+    ['import std.values::{seed};int main(){return 0;}', /requires pub/],
+    ['import std.values::{answer};int main(){return answer();}', /constant is not callable/],
+    ['import std.values;int main(){return std::values::seed();}', /inaccessible symbol/],
+    ['import std.values as v;const int v=42;int main(){return 0;}', /alias conflicts/],
+    ['import std.values::{answer};import std.values::{ready as answer};int main(){return 0;}', /ambiguous selective/],
+    ['import std.values as v;int main(){v::answer=0;return 0;}', /cannot modify module constant/],
+    ['import std.values as v;int main(){int v=42;return v::answer;}', /local binding/],
+    ['import std.values::{answer};int answer(){return 42;}int main(){return answer;}', /not a scalar constant/],
+  ]) rejected(constantFiles(body), message);
+  rejected(files('import std.math::{answer};const int answer=42;int main(){return answer();}'), /constant is not callable/);
+  rejected({ 'app/main.l': 'module app.main;import app.values;int main(){return app::values::answer;}',
+    'app/values.l': 'module app.values;const int answer=42;' }, /inaccessible symbol/);
+  rejected({ 'app/main.l': 'module app.main;import app.bridge;const int answer=42;int main(){return app::bridge::answer;}',
+    'app/bridge.l': 'module app.bridge;import std.values::{answer};', 'std/values.l': 'module std.values;pub const int answer=42;' }, /not a scalar constant/);
+  for (const [body, path] of [
+    ['const int a=a;', 'app::main::a -> app::main::a'],
+    ['const int a=b;const int b=a;', 'app::main::a -> app::main::b -> app::main::a'],
+    ['const int a=n::b;namespace n{const int b=c;const int c=a;}', 'app::main::a -> app::main::n::b -> app::main::n::c -> app::main::a'],
+    ['const bool a=true&&a;', 'app::main::a -> app::main::a'],
+  ]) {
+    const f = rejected({ 'app/main.l': `module app.main;${body}int main(){return 42;}` }, /constant dependency cycle/);
+    assert.ok(source(f, 65).stderr.includes(path));
+  }
+  const importedFailure = rejected({ ...constantFiles('import std.values;int main(){return 42;}'),
+    'std/values.l': 'module std.values;pub const int answer=2147483647+1;' }, /invalid constant expression: integer overflow/);
+  assert.ok(source(importedFailure, 65).stderr.includes('/std/values.l:'));
+  const runtimeFailure = fixture({ 'app/main.l': 'module app.main;const int minimum=-2147483648;int main(){return minimum/-1;}' });
+  assert.match(source(runtimeFailure, 70, 'run').stderr, /VM trap: integer overflow/);
+  const runtimeOutput = resolve(runtimeFailure.directory, 'runtime.lbc');
+  source(runtimeFailure, 0, 'compile', ['-o', runtimeOutput]);
+  assert.match(command(70, ['run', runtimeOutput]).stderr, /VM trap: integer overflow/);
+  const constantCycleConfig = config(); constantCycleConfig.dependencies.push({ from: 'stdlib', to: 'application' });
+  rejected({ 'app/main.l': 'module app.main;import std.values;const bool safe=true||std::values::value;int main(){return 42;}',
+    'std/values.l': 'module std.values;import app.main;pub const bool value=false;' }, /Module dependency cycle detected/, constantCycleConfig);
+  const constantChain = length => Array.from({ length }, (_, n) => `const int c${n}=${n + 1 < length ? `c${n + 1}` : '42'};`).join('');
+  constantProgram(`${constantChain(128)}int main(){return c0;}`);
+  rejected({ 'app/main.l': `module app.main;${constantChain(129)}int main(){return c0;}` }, /nesting limit/);
+  const constantLimit = Array.from({ length: 1024 }, (_, n) => `const int c${n}=42;`).join('');
+  constantProgram(`${constantLimit}int main(){return c1023;}`);
+  rejected({ 'app/main.l': `module app.main;${constantLimit}const int extra=0;int main(){return 42;}` }, /too many module constants/);
+  rejected({ 'app/main.l': `module app.main;import app.values;${constantLimit}int main(){return 42;}`,
+    'app/values.l': 'module app.values;pub const int value=42;' }, /too many module constants across modules/);
+
+  // Independent BigInt oracle: compare full-width folded values, not exit-code residues.
+  const edges = [-2147483648n, -2147483647n, -42n, -1n, 0n, 1n, 42n, 2147483646n, 2147483647n];
+  const folded = [];
+  let constantModels = 0;
+  function model(expression, type, value, error) {
+    ++constantModels;
+    if (error) rejected({ 'app/main.l': `module app.main;const ${type} value=${expression};int main(){return 42;}` }, error);
+    else folded.push({ expression, type, value: String(value) });
+  }
+  for (const a of edges) for (const b of edges) {
+    for (const op of ['+', '-', '*', '/', '%']) {
+      const expression = `(${a})${op}(${b})`;
+      if ((op === '/' || op === '%') && b === 0n) { model(expression, 'int', 0, /division by zero/); continue; }
+      if ((op === '/' || op === '%') && a === -2147483648n && b === -1n) { model(expression, 'int', 0, /integer overflow/); continue; }
+      const result = op === '+' ? a + b : op === '-' ? a - b : op === '*' ? a * b : op === '/' ? a / b : a % b;
+      model(expression, 'int', result, result < -2147483648n || result > 2147483647n ? /integer overflow/ : null);
+    }
+    for (const op of ['==', '!=', '<', '<=', '>', '>=']) {
+      const value = op === '==' ? a === b : op === '!=' ? a !== b : op === '<' ? a < b : op === '<=' ? a <= b : op === '>' ? a > b : a >= b;
+      model(`(${a})${op}(${b})`, 'bool', value);
+    }
+  }
+  for (const a of edges) {
+    model(`-(${a})`, 'int', -a, a === -2147483648n ? /integer overflow/ : null);
+    model(`+(${a})`, 'int', a);
+  }
+  for (const a of [false, true]) {
+    model(`!${a}`, 'bool', !a);
+    for (const b of [false, true]) {
+      model(`${a}&&${b}`, 'bool', a && b); model(`${a}||${b}`, 'bool', a || b);
+      model(`${a}==${b}`, 'bool', a === b); model(`${a}!=${b}`, 'bool', a !== b);
+    }
+  }
+  for (let first = 0; first < folded.length; first += 64) {
+    const batch = folded.slice(first, first + 64);
+    const declarations = batch.map((c, n) => `const ${c.type} c${n}=${c.expression};`).join('');
+    const assertions = batch.map((c, n) => `if(c${n}!=${c.value})return 1;`).join('');
+    constantProgram(`${declarations}int main(){${assertions}return 42;}`);
+  }
+  state = 0x434f4e53;
+  for (let test = 0; test < 32; ++test) {
+    const project = {}, values = [];
+    for (let n = 0; n < 8; ++n) {
+      let imports = '', expression = 'seed', value = BigInt(1 + random(100));
+      const seed = value;
+      for (let p = 0; p < n; ++p) if (random(3) === 0) {
+        const kind = random(3);
+        if (!kind) { imports += `import app.c${p};`; expression += `+app::c${p}::value`; }
+        else if (kind === 1) { imports += `import app.c${p} as m${p};`; expression += `+m${p}::value`; }
+        else { imports += `import app.c${p}::{value as v${p}};`; expression += `+v${p}`; }
+        value += values[p];
+      }
+      project[`app/c${n}.l`] = `module app.c${n};${imports}pub const int value=${expression};const int seed=${seed};`;
+      values.push(value);
+    }
+    project['app/main.l'] = `module app.main;import app.c7::{value};int main(){if(value==${values[7]})return 42;return 1;}`;
+    program(project);
+  }
+
   // Strict manifest schema, truncations, escaping and manifest-relative roots.
   const minimal = JSON.stringify(config());
   for (let cut = 0; cut < minimal.length; ++cut) assert.match(source(fixture({}, minimal.slice(0, cut)), 65).stderr, /invalid module manifest/);
@@ -325,7 +497,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 fixed-seed dependency DAGs)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 constant DAGs, ${constantModels} constant-expression models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

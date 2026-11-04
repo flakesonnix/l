@@ -250,6 +250,20 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
         }
         if (peek(p).kind == TK_MODULE || peek(p).kind == TK_IMPORT)
             token_fail(p->ctx, peek(p), "module and import declarations must precede other declarations");
+        if (take(p, TK_CONST)) {
+            if (ast->constant_count++ == L_MAX_CONSTANTS) token_fail(p->ctx, token, "too many module constants (maximum 1024)");
+            Constant *constant = allocate(p->ctx, sizeof(*constant));
+            constant->module = ast->entry; constant->scope = scope; constant->exported = exported;
+            constant->type = parse_type(p);
+            constant->name = expect(p, TK_NAME, "expected module constant name");
+            expect(p, '=', "module constants require a scalar initializer");
+            constant->value = expression(p, 1);
+            expect(p, ';', "expected ';' after module constant");
+            Constant **constants = &ast->constants;
+            while (*constants) constants = &(*constants)->next;
+            *constants = constant;
+            continue;
+        }
         if (ast->function_count++ >= L_MAX_FUNCTIONS) token_fail(p->ctx, peek(p), "too many functions (maximum 256)");
         Function *fn = allocate(p->ctx, sizeof(*fn));
         fn->module = ast->entry; fn->scope = scope; fn->exported = exported;
@@ -306,5 +320,6 @@ Ast *parse(Context *ctx, Token *tokens, size_t count) {
     }
     declarations(&p, ast, (Token){.text = ""}, false);
     ast->entry->functions = ast->functions;
+    ast->entry->constants = ast->constants;
     return ast;
 }

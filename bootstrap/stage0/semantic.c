@@ -6,7 +6,7 @@ typedef struct Binding Binding;
 struct Binding { Decl *decl; unsigned depth; Binding *next; };
 typedef struct Enclosing Enclosing;
 struct Enclosing { bool is_loop; unsigned breaks; Enclosing *parent; };
-typedef struct { Context *ctx; Ast *ast; Function *fn; Binding *bindings; unsigned depth; uint32_t elements; Enclosing *enclosing; bool reachable; } Semantic;
+typedef struct { Context *ctx; Ast *ast; Function *fn; Binding *bindings; unsigned depth; uint32_t elements; Enclosing *enclosing; bool reachable, constant_expression; } Semantic;
 static Type analyze_expr(Semantic *, Expr *);
 static bool analyze_stmt(Semantic *, Stmt *);
 
@@ -33,8 +33,17 @@ static void bind(Semantic *s, Decl *decl) {
 static bool function_named(const Function *fn, const Module *module, Token path) {
     return fn->module == module && token_equal(fn->scope, parent_scope(path)) && token_equal(fn->name, leaf_name(path));
 }
+static bool constant_named(const Constant *constant, const Module *module, Token path) {
+    return constant->module == module && token_equal(constant->scope, parent_scope(path)) && token_equal(constant->name, leaf_name(path));
+}
+static Constant *find_constant(const Ast *ast, const Module *module, Token path) {
+    for (Constant *constant = ast->constants; constant; constant = constant->next)
+        if (constant_named(constant, module, path)) return constant;
+    return NULL;
+}
 static bool symbol_named(const Ast *ast, const Module *module, Token path) {
     for (const Function *fn = ast->functions; fn; fn = fn->next) if (function_named(fn, module, path)) return true;
+    if (find_constant(ast, module, path)) return true;
     for (Namespace *ns = module->namespaces; ns; ns = ns->next) if (token_equal(ns->name, path)) return true;
     return false;
 }
@@ -62,7 +71,8 @@ static bool qualified_prefix(Token prefix, Token name) {
     return name.length > prefix.length + 2 && !memcmp(prefix.text, name.text, prefix.length) &&
         name.text[prefix.length] == ':';
 }
-static Function *resolve_call(Semantic *s, Token name, const Type *types, uint32_t count) {
+typedef struct { Module *module; Token path; } ResolvedName;
+static ResolvedName resolve_name(Semantic *s, Token name, bool callable) {
     bool qualified = memchr(name.text, ':', name.length) != NULL;
     Token first = name;
     if (qualified) first.length = (size_t)((const char *)memchr(name.text, ':', name.length) - name.text);
@@ -72,30 +82,47 @@ static Function *resolve_call(Semantic *s, Token name, const Type *types, uint32
     for (;;) {
         Token head = join_name(s->ctx, scope, first, "::");
         if (symbol_named(s->ast, module, head))
-            return overload(s, module, join_name(s->ctx, scope, name, "::"), types, count);
+            return (ResolvedName){module, join_name(s->ctx, scope, name, "::")};
         if (!scope.length) break;
         scope = parent_scope(scope);
     }
     if (!qualified) {
         for (Import *item = module->imports; item; item = item->next)
             for (ImportName *binding = item->names; binding; binding = binding->next)
-                if (token_equal(binding->binding, name)) return overload(s, item->target, binding->name, types, count);
+                if (token_equal(binding->binding, name)) return (ResolvedName){item->target, binding->name};
     } else {
         Import *best = NULL;
         for (Import *item = module->imports; item; item = item->next) {
             if (item->alias.length && token_equal(item->alias, first)) {
                 Token rest = name; rest.text += first.length + 2; rest.length -= first.length + 2;
-                return overload(s, item->target, rest, types, count);
+                return (ResolvedName){item->target, rest};
             }
             if (!item->alias.length && !item->names && qualified_prefix(item->qualifier, name) &&
                 (!best || item->qualifier.length > best->qualifier.length)) best = item;
         }
         if (best) {
             Token rest = name; rest.text += best->qualifier.length + 2; rest.length -= best->qualifier.length + 2;
-            return overload(s, best->target, rest, types, count);
+            return (ResolvedName){best->target, rest};
         }
     }
-    token_fail(s->ctx, name, qualified ? "unknown qualified name; no unqualified fallback" : "unknown function");
+    token_fail(s->ctx, name, qualified ? "unknown qualified name; no unqualified fallback" :
+               callable ? "unknown function" : "unknown local variable or constant");
+}
+static Constant *visible_constant(Semantic *s, ResolvedName name) {
+    Constant *constant = find_constant(s->ast, name.module, name.path);
+    if (constant && name.module != s->fn->module && !constant->exported)
+        token_fail(s->ctx, name.path, "inaccessible symbol: constant is private to its module");
+    return constant;
+}
+static Constant *resolve_constant(Semantic *s, Token name) {
+    Constant *constant = visible_constant(s, resolve_name(s, name, false));
+    if (!constant) token_fail(s->ctx, name, "declaration is not a scalar constant");
+    return constant;
+}
+static Function *resolve_call(Semantic *s, Token name, const Type *types, uint32_t count) {
+    ResolvedName resolved = resolve_name(s, name, true);
+    if (visible_constant(s, resolved)) token_fail(s->ctx, name, "module constant is not callable");
+    return overload(s, resolved.module, resolved.path, types, count);
 }
 static Decl *resolve_index(Semantic *s, Expr *e) {
     if (e->left->kind != EX_NAME) token_fail(s->ctx, e->left->token, "arrays must be indexed through a variable name");
@@ -118,7 +145,10 @@ static Decl *lvalue(Semantic *s, Expr *e) {
         return d;
     } else {
         b = lookup(s, e->token);
-        if (!b) token_fail(s->ctx, e->token, "unknown local variable");
+        if (!b) {
+            (void)resolve_constant(s, e->token);
+            token_fail(s->ctx, e->token, "cannot modify module constant");
+        }
         if (b->decl->array) token_fail(s->ctx, e->token, "cannot assign to a whole array");
         e->symbol = b->decl->slot; e->type = b->decl->type;
     }
@@ -134,18 +164,29 @@ static Type analyze_expr(Semantic *s, Expr *e) {
     case EX_BOOL: e->type = TY_BOOL; break;
     case EX_NAME: {
         Binding *b = lookup(s, e->token);
-        if (!b) token_fail(s->ctx, e->token, "unknown local variable");
+        if (!b) {
+            Constant *constant = resolve_constant(s, e->token);
+            e->type = constant->type; e->constant = constant;
+            if (!s->constant_expression) {
+                e->kind = e->type == TY_BOOL ? EX_BOOL : EX_INT;
+                e->integer = constant->integer;
+            }
+            break;
+        }
         if (b->decl->array) token_fail(s->ctx, e->token, "array used without an index");
         e->symbol = b->decl->slot; e->type = b->decl->type; break;
     }
     case EX_INDEX:
+        if (s->constant_expression) token_fail(s->ctx, e->token, "array access is not a module constant expression");
         (void)resolve_index(s, e); break;
     case EX_ASSIGN: {
+        if (s->constant_expression) token_fail(s->ctx, e->token, "assignment is not a module constant expression");
         Decl *d = lvalue(s, e->left);
         require(s, e->token, analyze_expr(s, e->right), d->type);
         e->type = d->type; break;
     }
     case EX_POSTFIX:
+        if (s->constant_expression) token_fail(s->ctx, e->token, "postfix update is not a module constant expression");
         require(s, e->token, lvalue(s, e->left)->type, TY_INT); e->type = TY_INT; break;
     case EX_UNARY:
         e->type = e->op == '!' ? TY_BOOL : TY_INT;
@@ -164,6 +205,7 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         break;
     }
     case EX_CALL: {
+        if (s->constant_expression) token_fail(s->ctx, e->token, "function call is not a module constant expression");
         if (e->left->kind != EX_NAME) token_fail(s->ctx, e->token, "Stage 0 supports direct function calls only");
         Type types[L_MAX_SLOTS]; uint32_t count = 0;
         for (ExprList *arg = e->args; arg; arg = arg->next) {
@@ -315,6 +357,8 @@ static void imports(Context *ctx, const Ast *ast, Module *module) {
             bool found = false, visible = false;
             for (Function *fn = ast->functions; fn; fn = fn->next)
                 if (function_named(fn, item->target, name->name)) { found = true; visible = visible || fn->exported; }
+            Constant *constant = find_constant(ast, item->target, name->name);
+            if (constant) { found = true; visible = constant->exported; }
             if (!found) token_fail(ctx, name->name, "unknown selectively imported declaration");
             if (!visible) token_fail(ctx, name->name, "inaccessible symbol: selective import requires pub");
             for (Import *other = module->imports; other; other = other->next)
@@ -330,6 +374,18 @@ static void imports(Context *ctx, const Ast *ast, Module *module) {
 }
 void analyze(Context *ctx, Ast *ast) {
     const char *saved = ctx->filename;
+    for (Constant *constant = ast->constants; constant; constant = constant->next) {
+        ctx->filename = constant->module->path;
+        if (constant->type != TY_INT && constant->type != TY_BOOL)
+            token_fail(ctx, constant->name, "module constant type must be explicit int or bool");
+        Token full = join_name(ctx, constant->scope, constant->name, "::");
+        for (Constant *other = ast->constants; other != constant; other = other->next)
+            if (constant_named(other, constant->module, full)) token_fail(ctx, constant->name, "duplicate module constant declaration");
+        for (Function *fn = ast->functions; fn; fn = fn->next)
+            if (function_named(fn, constant->module, full)) token_fail(ctx, constant->name, "module constant conflicts with function declaration");
+        for (Namespace *ns = constant->module->namespaces; ns; ns = ns->next)
+            if (token_equal(ns->name, full)) token_fail(ctx, constant->name, "module constant conflicts with namespace declaration");
+    }
     for (Module *module = ast->modules; module; module = module->next) imports(ctx, ast, module);
     bool main_found = false;
     for (Function *fn = ast->functions; fn; fn = fn->next) {
@@ -352,9 +408,16 @@ void analyze(Context *ctx, Ast *ast) {
         }
     }
     if (!main_found) { ctx->filename = ast->entry->path; fail(ctx, 0, 0, "missing entry point int main()"); }
+    for (Constant *constant = ast->constants; constant; constant = constant->next) {
+        ctx->filename = constant->module->path;
+        Function scope = {.module = constant->module, .scope = constant->scope};
+        Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope, .reachable = true, .constant_expression = true};
+        require(&s, constant->name, analyze_expr(&s, constant->value), constant->type);
+    }
+    evaluate_constants(ctx, ast);
     for (Function *fn = ast->functions; fn; fn = fn->next) {
         ctx->filename = fn->module->path;
-        Semantic s = { ctx, ast, fn, NULL, 0, 0, NULL, true };
+        Semantic s = { ctx, ast, fn, NULL, 0, 0, NULL, true, false };
         for (Decl *p = fn->parameters; p; p = p->next) bind(&s, p);
         /* Parameters and the outermost function block share one scope. */
         bool falls = analyze_sequence(&s, fn->body->body);

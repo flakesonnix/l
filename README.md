@@ -12,6 +12,7 @@ make
 ./build/l run build/answer.lbc                   # Exit code 42
 ./build/l inspect build/answer.lbc
 ./build/l run examples/modules.l --manifest examples/package.json
+./build/l run examples/constants.l --manifest examples/package.json
 make test                                      # Requires Node.js 22+
 make fuzz                                      # Deterministic mutation/model tests
 make sanitize
@@ -25,6 +26,8 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
 - Module imports, aliases, selective imports, private-by-default functions and
   explicit `pub` exports; qualification uses `::`, not `.`.
 - Nested/reopened namespaces and exact static `int`/`bool` function overloads.
+- Module/namespace `const int` and `const bool` declarations, compile-time checked
+  initializers, forward references and normal import/visibility rules.
 - `int` (exactly 32 bits), `bool`, `void` functions, local inference with `auto`.
 - Initialized local variables, `const`, lexical scopes and shadowing.
 - Fixed local `int`/`bool` arrays: `int values[10];`, indexing and element
@@ -81,8 +84,9 @@ management. The repository does not imply these subsystems have been implemented
 
 Module behavior follows [the normative module-system specification 0.1.1](spec/module-system-v0.1.1.md)
 for the currently implemented declaration and type subset. This does not add
-structs, classes, enums, type aliases, globals, generic constraints or runtime
-overload resolution. Public signatures currently contain only public primitives.
+structs, classes, enums, type aliases, mutable globals/static storage, generic
+constraints or runtime overload resolution. Public signatures currently contain
+only public primitives.
 
 Every source command requires an explicit `--manifest FILE.json`. No manifest,
 module directory, standard library or dependency is implicitly searched for.
@@ -117,10 +121,11 @@ a transitive one. Source locations must be canonical and declarations must match
 their root-relative module paths; source-file symlinks cannot alias module
 identities. Reachable units are registered before dependency-cycle detection and
 processed in dependency order. Diagnostics include the complete cycle path.
-The seed permits 256 reachable modules, 1024 imports per module and 256 functions
-across the whole linked program. Filesystem discovery/resolution, graph ordering
-and declaration lookup are separate compiler operations. The current filesystem
-implementation uses POSIX `realpath` and `access`.
+The seed permits 256 reachable modules, 1024 imports per module, 256 functions and
+1024 module constants across the whole linked program. Filesystem
+discovery/resolution, graph ordering and declaration lookup are separate compiler
+operations. The current filesystem implementation uses POSIX `realpath` and
+`access`.
 
 ```c
 module app.main;
@@ -133,15 +138,46 @@ int main() {
 ```
 
 Module imports expose qualified declarations only. Aliases are module-local;
-selective imports bind public function names or overload groups. Redundant module
-imports warn; conflicting aliases/bindings fail. Lexical bindings, enclosing
-namespaces and module declarations precede selective imports in lookup. Failed
+selective imports bind public constants, function names or overload groups.
+Redundant module imports warn; conflicting aliases/bindings fail. Lexical bindings,
+enclosing namespaces and module declarations precede selective imports in lookup. Failed
 qualified lookup never falls back to an unqualified name. Namespace reopening
-does not change function visibility; private helpers remain module-private.
+does not change declaration visibility; private helpers/constants remain
+module-private.
 Wildcard imports, re-exports, import cycles and executable module initialization
 are rejected. Dependencies do not supply a hidden entry point: imported functions
 named `main` are ordinary functions. Existing bytecode 1.2 remains readable without
 a manifest; mandatory module declarations and `--manifest` change source CLI usage.
+
+### Compile-time constants
+
+```c
+module app.values;
+
+const int base = 40;
+namespace numbers {
+    pub const int answer = base + increment;
+    const int increment = 2;
+    pub const bool ready = answer == 42;
+}
+```
+
+Module constants require explicit `int` or `bool` types and scalar initializers.
+Their initializer syntax permits literals, constant references, and the supported
+unary/binary operators. Function calls, assignments, postfix updates and indexing
+are rejected, including in unevaluated operands. All operands are name/type
+checked; evaluation honors short-circuiting and skips unevaluated operands.
+Forward references work, and evaluated constant-dependency cycles report their
+complete qualified-name path. Compilation also rejects overflow, division by zero,
+and `INT32_MIN / -1` or `% -1`, even in unused constant declarations.
+
+Imports, aliases, namespace lookup, private-by-default visibility and `pub` work
+as for functions. Locals/parameters may shadow constant names; module constants
+cannot be assigned or incremented. Constant values are inlined, without runtime
+storage or initialization instructions; bytecode stays **1.2**. Local `const`
+declarations keep their existing runtime-initializer behavior. Array lengths and
+case labels still require literals. Compile-time evaluation uses the existing
+256-level nesting limit.
 
 ## Pipeline and artifacts
 
@@ -186,6 +222,9 @@ Module tests exercise manifest validation, aliases, overloads, visibility, cycle
 paths, limits, imported-source diagnostics, root ordering, relocation and changes
 of working directory. They include 32 fixed-seed dependency DAGs (`0x4d4f4455`)
 whose source and bytecode results are checked against independent host-side sums.
+Constant tests compare 927 scalar expression cases against a host-side BigInt
+oracle and exercise 32 constant-import DAGs (seed `0x434f4e53`), visibility,
+forward references, cycles, short-circuiting, inlining, limits and defined errors.
 It also runs `make fuzz`: a fixed-seed bytecode mutation corpus plus generated
 array, switch and expression programs checked against independent host-side
 models. Mutations include truncation, bit/word replacement, insertion, deletion,

@@ -109,14 +109,21 @@ Ast *load_modules(Context *ctx, const ModuleConfig *config, const char *entry, c
     Module *stack[L_MAX_MODULES], *order[L_MAX_MODULES]; unsigned count = 0;
     visit(ctx, module, stack, 0, order, &count);
     Function **tail = &ast->functions;
+    Constant **constants = &ast->constants;
     for (unsigned n = 0; n < count; ++n) {
         ctx->filename = order[n]->path;
         for (Function *fn = order[n]->functions; fn;) {
             if (ast->function_count++ == L_MAX_FUNCTIONS) token_fail(ctx, fn->name, "too many functions across modules (maximum 256)");
             Function *next = fn->next; *tail = fn; tail = &fn->next; fn = next;
         }
+        for (Constant *constant = order[n]->constants; constant;) {
+            if (ast->constant_count++ == L_MAX_CONSTANTS)
+                token_fail(ctx, constant->name, "too many module constants across modules (maximum 1024)");
+            Constant *next = constant->next; *constants = constant; constants = &constant->next; constant = next;
+        }
     }
     *tail = NULL;
+    *constants = NULL;
     ctx->filename = saved;
     return ast;
 }

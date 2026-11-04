@@ -3,8 +3,9 @@ CPPFLAGS =
 CFLAGS = -std=c11 -O2 -g -Wall -Wextra -Wpedantic -Werror
 LDFLAGS =
 
-SOURCES = bootstrap/stage0/common.c bootstrap/stage0/config.c bootstrap/stage0/modules.c bootstrap/stage0/lexer.c \
-          bootstrap/stage0/parser.c bootstrap/stage0/semantic.c \
+SOURCES = bootstrap/stage0/common.c bootstrap/stage0/config.c \
+          bootstrap/stage0/constants.c bootstrap/stage0/modules.c \
+          bootstrap/stage0/lexer.c bootstrap/stage0/parser.c bootstrap/stage0/semantic.c \
           bootstrap/stage0/lir.c bootstrap/stage0/bytecode.c \
           bootstrap/stage0/vm.c bootstrap/stage0/main.c
 
