@@ -75,3 +75,4 @@ static int32_t constant_value(Context *ctx, Global *constant, Global *parent) {
 void evaluate_constants(Context *ctx, Ast *ast) {
     for (Global *constant = ast->globals; constant; constant = constant->next) (void)constant_value(ctx, constant, NULL);
 }
+int32_t evaluate_constant_expression(Context *ctx, Expr *expr) { return expression_value(ctx, expr, NULL); }

@@ -135,15 +135,12 @@ static Decl *declaration(Parser *p, bool parameter) {
     decl->type = parse_type(p, &decl->type_name);
     decl->name = expect(p, TK_NAME, "expected variable name");
     if (take(p, '[')) {
-        Token length = expect(p, TK_INTEGER, "expected a literal array length");
-        if (!length.integer || length.integer > L_MAX_ARRAY)
-            token_fail(p->ctx, length, "array length must be between 1 and 65535");
-        decl->array = (uint32_t)length.integer;
+        decl->length = expression(p, 1);
         expect(p, ']', "expected ']' after array length");
         if (parameter) token_fail(p->ctx, decl->name, "arrays are not supported as parameters");
     }
     if (!parameter) {
-        if (decl->array) {
+        if (decl->length) {
             if (peek(p).kind == '=') token_fail(p->ctx, peek(p), "arrays initialize to zero and cannot have an initializer");
             expect(p, ';', "expected ';' after array declaration");
         } else {
@@ -209,12 +206,7 @@ static Stmt *statement(Parser *p) {
             SwitchCase *label = allocate(p->ctx, sizeof(*label));
             label->token = peek(p);
             if (take(p, TK_CASE)) {
-                Token value = peek(p);
-                bool negative = take(p, '-');
-                value = expect(p, TK_INTEGER, "expected an integer literal after case");
-                if (value.integer > (negative ? INT64_C(2147483648) : INT32_MAX))
-                    token_fail(p->ctx, value, "case value is outside the int range");
-                label->value = (int32_t)(negative ? -value.integer : value.integer);
+                label->expr = expression(p, 1);
                 expect(p, ':', "expected ':' after case value");
             } else if (take(p, TK_DEFAULT)) {
                 label->is_default = true;

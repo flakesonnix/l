@@ -15,6 +15,7 @@ make
 ./build/l run examples/constants.l --manifest examples/package.json
 ./build/l run examples/static_demo.l --manifest examples/package.json
 ./build/l run examples/alias_demo.l --manifest examples/package.json
+./build/l run examples/constant_shapes.l --manifest examples/package.json
 make test                                      # Requires Node.js 22+
 make fuzz                                      # Deterministic mutation/model tests
 make sanitize
@@ -37,7 +38,7 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
 - `int` (exactly 32 bits), `bool`, `void` functions, local inference with `auto`.
 - Initialized local variables, `const`, lexical scopes and shadowing.
 - Fixed local `int`/`bool` arrays: `int values[10];`, indexing and element
-  assignment with runtime bounds checks.
+  assignment with runtime bounds checks; lengths may be compile-time expressions.
 - Direct calls, forward function references, recursion and value parameters.
 - Blocks, `if`/`else`, `while`, `for`, `return`, empty statements.
 - C-style `switch` over `int` with `case`/`default` labels, empty-case chaining
@@ -58,8 +59,8 @@ a `while` condition; in a `for` loop it executes the step expression first; insi
 a `switch` it targets the enclosing loop. Both statements require a semicolon and
 are compilation errors without a matching enclosing construct (`break` needs a
 loop or switch, `continue` needs a loop). Unreachable source is still type-checked.
-Case labels are decimal integer literals, optionally preceded by `-`; duplicate
-case values and duplicate `default` labels are compilation errors. Cases share
+Case labels are checked compile-time `int` expressions; duplicate folded case
+values and duplicate `default` labels are compilation errors. Cases share
 one switch scope; use explicit blocks for separate case scopes. Dispatch that
 skips a scalar or array initializer cannot read an uninitialized scalar or access
 an uninitialized array. Assignment before reading a scalar is allowed. The seed
@@ -69,8 +70,8 @@ case group returns and a `default` exists.
 Switch dispatch uses a case-entry table with `switch`/`trap` opcodes.
 
 Arrays initialize to `0` or `false` each time their declaration executes.
-Lengths must be decimal literals from 1 to 65535, with at most 65536 array elements
-per function. Index expressions must be `int`. Negative indexes and indexes at or
+Lengths must be compile-time `int` expressions from 1 to 65535, with at most 65536
+array elements per function. Index expressions must be `int`. Negative indexes and indexes at or
 above the array length produce a defined trap. Element assignment evaluates and
 checks the index exactly once, before evaluating the right-hand side. `const`
 arrays prohibit element mutation. Initializer lists, array parameters/returns,
@@ -224,10 +225,46 @@ and `INT32_MIN / -1` or `% -1`, even in unused constant declarations.
 Imports, aliases, namespace lookup, private-by-default visibility and `pub` work
 as for functions. Locals/parameters may shadow constant names; module constants
 cannot be assigned or incremented. Constant values are inlined, without runtime
-storage or initialization instructions. Local `const`
-declarations keep their existing runtime-initializer behavior. Array lengths and
-case labels still require literals. Compile-time evaluation uses the existing
+storage or initialization instructions. Local `const` declarations keep their
+existing runtime-initializer behavior. Compile-time evaluation uses the existing
 256-level nesting limit.
+
+### Constant array lengths and case labels
+
+Array lengths and non-default `case` labels accept the same checked pure
+expressions as module constant initializers, with an exact `int` result type.
+They may reference module/namespace constants, including forward declarations,
+qualified imports, module aliases and renamed selective imports.
+
+```c
+module app.shapes;
+
+const int width = 3;
+const int answer = 6 * 7;
+
+int main() {
+    int values[width * 2 / 2];
+    switch (answer) {
+        case answer - 1: return 0;
+        case answer: return values[width - 1] + answer;
+        default: return 0;
+    }
+}
+```
+
+Lengths must fold to 1..65535 and obey the existing 65536-element per-function
+limit. Case labels may use the full signed 32-bit range; labels that fold to the
+same value are duplicates, even when written differently. Overflow and division
+errors are compilation errors rather than runtime traps, including in unreachable
+declarations and unselected cases. Integer/boolean conversions are not implicit.
+
+Runtime locals, parameters and local `const` bindings are not compile-time
+constants. They shadow outer constants normally, without fallback. Mutable static
+storage, calls, assignments, postfix updates and indexing are forbidden in these
+expressions, including in unevaluated operands. Labels use the shared switch's
+lexical scope, so a preceding case's local can shadow a module constant.
+Folding emits only existing slot lengths and case-table values; it adds no
+runtime evaluation or format changes. IR/bytecode remains **1.3**.
 
 ### Mutable static storage
 
@@ -324,6 +361,10 @@ checked against independently tracked primitive types. They cover visibility,
 shadowing, cycles, limits, overload identity, all supported type positions and
 byte-for-byte erasure against equivalent primitive-only source with matching
 instruction locations.
+Storage/dispatch tests reuse 423 integer-expression BigInt models in lengths and
+labels, checking folded metadata, errors, duplicates, visibility and shadowing.
+The fuzz suite adds 128 bounded constant-shape programs checked against separate
+host-side length, dispatch and bounds models before and after serialization.
 Static tests cover shared state, visibility, initialization, recursion, aliasing,
 evaluation order, signed/boolean metadata, limits, traps and version rejection.
 They also compare 32 stateful import DAGs (seed `0x53544154`) against a BigInt

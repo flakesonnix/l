@@ -14,6 +14,7 @@ static uint32_t random_state = FUZZ_SEED;
 static size_t inputs, accepted, rejected, programs, executions;
 static size_t graphs, valid_graphs, invalid_graphs;
 static size_t lifecycle_programs;
+static size_t shape_programs;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -369,6 +370,29 @@ static void switch_limit_cases(void) {
     }
 }
 
+/* Independent lengths, indexes and dispatch outcomes for folded storage/label expressions. */
+static void shape_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        uint32_t length = 1 + random_number(16);
+        int32_t anchor = (int32_t)random_number(2001) - 1000;
+        int32_t factor = (int32_t)random_number(201) - 100;
+        int32_t delta = (int32_t)random_number(4) - 1;
+        uint32_t index = delta == -1 ? 0 : delta == 0 ? length - 1 : length / 2;
+        source_length = 0;
+        append("using Index=int;const Index span=limits::width;"
+               "namespace limits{const Index width=%u;const Index anchor=%d;}"
+               "const Index choice=limits::anchor+(%d);"
+               "Index pick(Index key){Index data[(span*3+2)/3];"
+               "for(Index i=0;i<span;i++)data[i]=(i+1)*(%d);"
+               "switch(key){case limits::anchor-1:return data[0];"
+               "case limits::anchor+0:return data[span-1];"
+               "case limits::anchor+1:return data[span/2];"
+               "default:return data[span];}}int main(){return pick(choice);}", length, anchor, delta, factor);
+        ++shape_programs;
+        semantic_case((int32_t)(index + 1) * factor, delta == 2 ? 70 : 0);
+    }
+}
+
 typedef struct { int32_t variable; int status; } ExpressionModel;
 static int32_t expression_checked(ExpressionModel *model, int64_t value) {
     if (model->status) return 0;
@@ -692,11 +716,13 @@ int main(void) {
     static_cases();
     static_lifecycle_cases();
     graph_cases();
+    shape_cases();
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
     printf("fuzz: %zu verifier graphs (%zu accepted, %zu rejected) matched the independent path model\n",
            graphs, valid_graphs, invalid_graphs);
     printf("fuzz: %zu static lifecycle programs preserved initializers across traps, cleanup and retries\n", lifecycle_programs);
+    printf("fuzz: %zu constant-shape programs matched independent lengths, dispatch and bounds models\n", shape_programs);
     return 0;
 }

@@ -61,7 +61,7 @@ typedef struct Namespace Namespace;
 typedef struct Global Global;
 typedef struct TypeAlias TypeAlias;
 struct ExprList { Expr *value; ExprList *next; };
-struct SwitchCase { Token token; int32_t value; bool is_default; Stmt *body; SwitchCase *next; };
+struct SwitchCase { Token token; int32_t value; bool is_default; Expr *expr; Stmt *body; SwitchCase *next; };
 typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX, EX_GLOBAL } ExprKind;
 struct Expr {
     ExprKind kind;
@@ -75,7 +75,7 @@ struct Expr {
     ExprList *args;
     Global *global;
 };
-struct Decl { Token name, type_name; Type type; bool immutable; uint32_t slot; uint32_t array; Expr *value; Decl *next; };
+struct Decl { Token name, type_name; Type type; bool immutable; uint32_t slot; uint32_t array; Expr *value, *length; Decl *next; };
 typedef enum { ST_BLOCK, ST_DECL, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_EMPTY, ST_BREAK, ST_CONTINUE, ST_SWITCH } StmtKind;
 struct Stmt {
     StmtKind kind;
@@ -198,6 +198,7 @@ char *source_directory(Context *, const char *);
 Ast *load_modules(Context *, const ModuleConfig *, const char *, const unsigned char *, size_t);
 void analyze(Context *, Ast *);
 void evaluate_constants(Context *, Ast *);
+int32_t evaluate_constant_expression(Context *, Expr *);
 Program *lower(Context *, Ast *);
 void verify(Context *, const Program *);
 void write_bytecode(Context *, const Program *, const char *);

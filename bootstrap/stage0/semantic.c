@@ -229,20 +229,21 @@ static Type analyze_expr(Semantic *s, Expr *e) {
             }
             break;
         }
+        if (s->constant_expression) token_fail(s->ctx, e->token, "local binding is not a compile-time constant");
         if (b->decl->array) token_fail(s->ctx, e->token, "array used without an index");
         e->symbol = b->decl->slot; e->type = b->decl->type; break;
     }
     case EX_INDEX:
-        if (s->constant_expression) token_fail(s->ctx, e->token, "array access is not a module constant expression");
+        if (s->constant_expression) token_fail(s->ctx, e->token, "array access is not a constant expression");
         (void)resolve_index(s, e); break;
     case EX_ASSIGN: {
-        if (s->constant_expression) token_fail(s->ctx, e->token, "assignment is not a module constant expression");
+        if (s->constant_expression) token_fail(s->ctx, e->token, "assignment is not a constant expression");
         Type type = lvalue(s, e->left);
         require(s, e->token, analyze_expr(s, e->right), type);
         e->type = type; break;
     }
     case EX_POSTFIX:
-        if (s->constant_expression) token_fail(s->ctx, e->token, "postfix update is not a module constant expression");
+        if (s->constant_expression) token_fail(s->ctx, e->token, "postfix update is not a constant expression");
         require(s, e->token, lvalue(s, e->left), TY_INT); e->type = TY_INT; break;
     case EX_UNARY:
         e->type = e->op == '!' ? TY_BOOL : TY_INT;
@@ -261,7 +262,7 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         break;
     }
     case EX_CALL: {
-        if (s->constant_expression) token_fail(s->ctx, e->token, "function call is not a module constant expression");
+        if (s->constant_expression) token_fail(s->ctx, e->token, "function call is not a constant expression");
         if (e->left->kind != EX_NAME) token_fail(s->ctx, e->token, "Stage 0 supports direct function calls only");
         Type types[L_MAX_SLOTS]; uint32_t count = 0;
         for (ExprList *arg = e->args; arg; arg = arg->next) {
@@ -277,6 +278,13 @@ static Type analyze_expr(Semantic *s, Expr *e) {
     }
     leave(s->ctx);
     return e->type;
+}
+static int32_t integer_constant(Semantic *s, Expr *expr) {
+    bool saved = s->constant_expression;
+    s->constant_expression = true;
+    require(s, expr->token, analyze_expr(s, expr), TY_INT);
+    s->constant_expression = saved;
+    return evaluate_constant_expression(s->ctx, expr);
 }
 static bool scoped_stmt(Semantic *s, Stmt *stmt) {
     Binding *saved = s->bindings;
@@ -308,9 +316,13 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
     case ST_DECL: {
         Decl *d = stmt->decl;
         d->type = resolve_type(s, d->type, d->type_name, NULL);
-        if (d->array) {
+        if (d->length) {
             if (d->type != TY_INT && d->type != TY_BOOL)
                 token_fail(s->ctx, d->name, "array element type must be int or bool");
+            int32_t length = integer_constant(s, d->length);
+            if (length < 1 || (uint32_t)length > L_MAX_ARRAY)
+                token_fail(s->ctx, d->length->token, "array length must be between 1 and 65535");
+            d->array = (uint32_t)length;
             bind(s, d); break;
         }
         Type init = analyze_expr(s, d->value);
@@ -376,6 +388,7 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
                 if (has_default) token_fail(s->ctx, label->token, "duplicate default label");
                 has_default = true;
             } else {
+                label->value = integer_constant(s, label->expr);
                 for (SwitchCase *other = stmt->cases; other != label; other = other->next)
                     if (!other->is_default && other->value == label->value)
                         token_fail(s->ctx, label->token, "duplicate case value");

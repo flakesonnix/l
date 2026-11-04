@@ -449,6 +449,7 @@ try {
   constantProgram('const int answer=1;namespace n{const int answer=42;int f(){return answer;}}int main(){return n::f();}');
   constantProgram('namespace n{namespace v{const int answer=42;}namespace use{const int answer=v::answer;int f(){return answer;}}}int main(){return n::use::f();}');
   constantProgram('const int index=1;int main(){int a[2];a[index]=42;return a[index];}');
+  constantProgram('const int n=2;int main(){int a[n];return a[0]+42;}');
   constantProgram('const int n=21;const bool active=true;int f(int v){return v*2;}int f(bool v){if(v)return 42;return 0;}int main(){return f(n)+f(active)-42;}');
   constantProgram('const int answer=42;namespace n{int answer(){return 42;}}int main(){return answer+n::answer()-42;}');
   constantProgram('const bool a=false&&1/0==0;const bool b=true||(-2147483648/-1)==0;int main(){if(!a&&b)return 42;return 1;}');
@@ -495,7 +496,6 @@ try {
     ['bool f(){return true;}const bool answer=false&&f();int main(){return 0;}', /function call is not/],
     ['const bool answer=false&&missing;int main(){return 0;}', /unknown local variable or constant/],
     ['const bool answer=true||42;int main(){return 0;}', /expected bool, got int/],
-    ['const int n=2;int main(){int a[n];return 0;}', /literal array length/],
     ['const int a[2];int main(){return 0;}', /scalar initializer/],
     ['const int answer=42;import std.values;int main(){return answer;}', /must precede/],
     ['const int answer=42;int main(){return missing::answer;}', /no unqualified fallback/],
@@ -551,11 +551,21 @@ try {
   // Independent BigInt oracle: compare full-width folded values, not exit-code residues.
   const edges = [-2147483648n, -2147483647n, -42n, -1n, 0n, 1n, 42n, 2147483646n, 2147483647n];
   const folded = [];
-  let constantModels = 0;
+  let constantModels = 0, shapeModels = 0;
+  const lengthBody = expression => `int main(){int a[${expression}];return 42;}`;
+  const labelBody = expression => `int main(){switch(0){case ${expression}:return 42;default:return 1;}}`;
   function model(expression, type, value, error) {
     ++constantModels;
     if (error) rejected({ 'app/main.l': `module app.main;const ${type} value=${expression};int main(){return 42;}` }, error);
     else folded.push({ expression, type, value: String(value) });
+    if (type === 'int') {
+      ++shapeModels;
+      if (error) {
+        for (const body of [lengthBody, labelBody]) rejected({ 'app/main.l': `module app.main;${body(expression)}` }, error);
+      } else if (value < 1n || value > 65535n) {
+        rejected({ 'app/main.l': `module app.main;${lengthBody(expression)}` }, /array length must be between/);
+      }
+    }
   }
   for (const a of edges) for (const b of edges) {
     for (const op of ['+', '-', '*', '/', '%']) {
@@ -587,6 +597,21 @@ try {
     const assertions = batch.map((c, n) => `if(c${n}!=${c.value})return 1;`).join('');
     constantProgram(`${declarations}int main(){${assertions}return 42;}`);
   }
+  const integerShapes = folded.filter(value => value.type === 'int');
+  for (let first = 0; first < integerShapes.length; first += 64) {
+    const batch = integerShapes.slice(first, first + 64);
+    const functions = batch.map((value, n) => {
+      const array = BigInt(value.value) >= 1n && BigInt(value.value) <= 65535n;
+      return `int check${n}(){${array ? `int a[${value.expression}];a[${BigInt(value.value) - 1n}]=42;` : ''}`
+        + `switch(${value.value}){case ${value.expression}:return ${array ? `a[${BigInt(value.value) - 1n}]` : '42'};default:return 1;}}`;
+    }).join('');
+    const assertions = batch.map((_, n) => `if(check${n}()!=42)return 1;`).join('');
+    const f = constantProgram(`${functions}int main(){${assertions}return 42;}`);
+    const ir = command(0, ['inspect', resolve(f.directory, 'program.lbc')]).stdout;
+    const lengths = [...ir.matchAll(/slot s0: int length=(\d+)/g)].map(match => BigInt(match[1]));
+    assert.deepEqual(lengths, batch.map(value => BigInt(value.value)).filter(value => value >= 1n && value <= 65535n));
+    assert.deepEqual([...ir.matchAll(/  case (-?\d+) ->/g)].map(match => match[1]), batch.map(value => value.value));
+  }
   state = 0x434f4e53;
   for (let test = 0; test < 32; ++test) {
     const project = {}, values = [];
@@ -606,6 +631,75 @@ try {
     project['app/main.l'] = `module app.main;import app.c7::{value};int main(){if(value==${values[7]})return 42;return 1;}`;
     program(project);
   }
+
+  // Lengths and labels use module-constant rules, never runtime locals or mutable storage.
+  constantProgram('int main(){int a[(1+2)*2/3];a[1]=42;return a[1];}');
+  constantProgram('const int n=3;int main(){int a[n+0];a[n-1]=42;switch(a[n-1]){case 6*7:return a[n-1];default:return 0;}}');
+  constantProgram('int main(){int a[n];a[n-1]=42;switch(42){case answer:return a[n-1];default:return 1;}}const int n=3;const int answer=42;');
+  constantProgram('namespace sizes{const int n=3;}namespace use{int value(){int a[sizes::n];a[2]=42;return a[2];}}int main(){return use::value();}');
+  constantProgram('using Count=int;const Count n=2;int main(){Count a[n];bool flags[n*2/2];flags[1]=true;if(flags[1])return a[0]+42;return 1;}');
+  constantProgram('const int n=2;int main(){const int a[n];return a[n-1]+42;}');
+  constantProgram('const int a=3;int main(){int a[a];return a[2]+42;}');
+  constantProgram('const int n=65535;int main(){int a[n];int b[65536-n];return a[n-1]+b[0]+42;}');
+  constantProgram('const int n=3;int main(){int sum=0;for(int i=0;i<2;i++){int a[n];if(a[n-1]!=0)return 1;a[n-1]=42;sum=sum+a[n-1];}return sum/2;}');
+  constantProgram('const int low=-2147483648;const int high=2147483647;int main(){switch(low){case high:return 1;case -2147483647-1:return 42;default:return 0;}}');
+  constantProgram('const int a=1;const int b=2;int main(){int n=0;switch(a){case a:n=20;case b:n=n+22;}return n;}');
+  constantProgram('const int key=2;int main(){switch(2){case 0:{int key=0;}case key:return 42;default:return 0;}}');
+  constantProgram('const int key=2;int main(){int n=0;for(int i=0;i<3;i++){switch(i){case key-1:continue;case key:n=n+42;break;default:break;}}return n;}');
+  program(constantFiles('import std.values;int main(){int a[std::values::answer/14];a[2]=42;switch(a[2]){case std::values::answer:return a[2];default:return 1;}}'));
+  program(constantFiles('import std.values as v;int main(){int a[v::answer/14];switch(42){case v::answer+0:return a[0]+42;default:return 1;}}'));
+  program(constantFiles('import std.values::{answer as n};int main(){int a[n/14];switch(42){case n:return a[0]+42;default:return 1;}}'));
+  const shapeSource = 'module app.main;const int n=3;int main(){int a[n+0];a[2]=42;switch(a[2]){case (6*7):return a[2];default:return 0;}}';
+  const shapeOriginal = program({ 'app/main.l': shapeSource });
+  const shapeLiteral = program({ 'app/main.l': shapeSource.replace('[n+0]', '[3  ]').replace('(6*7)', '(42 )') });
+  assert.deepEqual(readFileSync(resolve(shapeOriginal.directory, 'program.lbc')), readFileSync(resolve(shapeLiteral.directory, 'program.lbc')));
+  for (const [declarations, locals, expression, message] of [
+    ['', '', 'true', /expected int, got bool/],
+    ['', '', 'false', /expected int, got bool/],
+    ['', '', '1<2', /expected int, got bool/],
+    ['', 'int n=3;', 'n', /local binding is not a compile-time constant/],
+    ['', 'const int n=3;', 'n', /local binding is not a compile-time constant/],
+    ['const int n=3;', 'int n=2;', 'n', /local binding is not a compile-time constant/],
+    ['', 'int a[1];', 'a', /local binding is not a compile-time constant/],
+    ['static int n=3;', '', 'n', /mutable static storage is not a constant expression/],
+    ['int value(){return 3;}', '', 'value()', /function call is not/],
+    ['const int n=3;', '', '(n=4)', /assignment is not/],
+    ['const int n=3;', '', 'n++', /postfix update is not/],
+    ['', 'int a[1];', 'a[0]', /array access is not/],
+    ['bool value(){return true;}', '', 'false&&value()', /function call is not/],
+    ['static bool active=true;', '', 'true||active', /mutable static storage is not/],
+    ['', 'bool active=true;', 'false&&active', /local binding is not a compile-time constant/],
+    ['', '', 'false&&missing', /unknown/],
+    ['using Count=int;', '', 'Count', /type alias is not a value/],
+  ]) {
+    for (const body of [expr => `int main(){${locals}int data[${expr}];return 42;}`,
+      expr => `int main(){${locals}switch(0){case ${expr}:return 42;default:return 1;}}`])
+      rejected({ 'app/main.l': `module app.main;${declarations}${body(expression)}` }, message);
+  }
+  for (const [body, message] of [
+    [lengthBody('2-2'), /array length must be between/],
+    [lengthBody('-1'), /array length must be between/],
+    [lengthBody('65535+1'), /array length must be between/],
+    ['const int n=65535;int main(){int a[n];int b[2];return 42;}', /too many array elements/],
+    ['int f(int n){int a[n];return 42;}int main(){return 42;}', /local binding is not a compile-time constant/],
+    ['int f(int n){switch(0){case n:return 42;default:return 0;}}int main(){return 42;}', /local binding is not a compile-time constant/],
+    ['const int n=3;int f(int n){int a[n];return 42;}int main(){return 42;}', /local binding is not a compile-time constant/],
+    ['int main(){return 42;int a[1/0];}', /division by zero/],
+    ['static int n=3;int main(){if(false){int a[n];}return 42;}', /mutable static storage is not/],
+    ['int main(){switch(0){case 0:return 42;case 1/0:return 1;}}', /division by zero/],
+    ['int main(){switch(0){case 6*7:return 42;case 42:return 0;}return 1;}', /duplicate case value/],
+    ['const int n=42;int main(){switch(0){case n:return 42;case 40+2:return 0;}return 1;}', /duplicate case value/],
+    ['int main(){switch(0){case -2147483648:return 42;case -2147483647-1:return 0;}return 1;}', /duplicate case value/],
+    ['const int n=3;int main(){switch(0){case 0:int n=1;case n:return 42;default:return 1;}}', /local binding is not a compile-time constant/],
+    ['int main(){int a[2+];return 42;}', /expected expression/],
+    ['int main(){switch(0){case 2+:return 42;}}', /expected expression/],
+  ]) rejected({ 'app/main.l': `module app.main;${body}` }, message);
+  for (const body of [lengthBody('std::values::seed'), labelBody('std::values::seed')])
+    rejected(constantFiles(`import std.values;${body}`), /inaccessible symbol/);
+  rejected(constantFiles('import std.values;int main(){switch(0){case std::values::answer:return 42;case 6*7:return 0;}return 1;}'), /duplicate case value/);
+  const shapeFailure = rejected({ 'app/main.l': 'module app.main;import app.bad;int main(){return 42;}',
+    'app/bad.l': 'module app.bad;int value(){int a[1/0];return 42;}' }, /division by zero/);
+  assert.ok(source(shapeFailure, 65).stderr.includes('/app/bad.l:'));
 
   // Static globals have compile-time initial values but shared mutable runtime cells.
   const staticProgram = body => program({ 'app/main.l': `module app.main;${body}` });
@@ -875,7 +969,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 alias DAGs, 32 constant DAGs, 32 static DAGs in two import orders, ${constantModels} constant-expression models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 alias DAGs, 32 constant DAGs, 32 static DAGs in two import orders, ${constantModels} constant-expression models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

@@ -193,7 +193,19 @@ int main(void) {
         {"using Count=Missing;int main(){return 42;}", false},
         {"using Count=Count;int main(){return 42;}", false},
         {"using Count=int;int f(Count n){return n;}int f(int n){return n;}int main(){return 42;}", false},
-        {"using Count=int;int main(){int Count=0;Count n=42;return n;}", false}
+        {"using Count=int;int main(){int Count=0;Count n=42;return n;}", false},
+        {"const int n=3;int main(){int a[n];a[n-1]=42;return a[n-1];}", true},
+        {"int main(){int a[n*2-1];return a[0]+42;}const int n=2;", true},
+        {"const int n=42;int main(){switch(n){case n-1:return 0;case n:return 42;default:return 1;}}", true},
+        {"int main(){switch(-2147483648){case -2147483647-1:return 42;default:return 0;}}", true},
+        {"const int n=3;int f(int n){int a[n];return 42;}int main(){return 42;}", false},
+        {"int main(){const int n=3;int a[n];return 42;}", false},
+        {"static int n=3;int main(){int a[n];return 42;}", false},
+        {"int main(){int a[true];return 42;}", false},
+        {"int main(){switch(0){case true:return 42;default:return 0;}}", false},
+        {"int main(){switch(0){case 6*7:return 42;case 42:return 0;}return 1;}", false},
+        {"int main(){int a[2147483647+1];return 42;}", false},
+        {"int main(){switch(0){case 1/0:return 42;default:return 0;}}", false}
     };
     int failures = 0;
     for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); ++i) failures += check(cases[i].source, cases[i].valid);
