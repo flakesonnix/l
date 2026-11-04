@@ -171,7 +171,8 @@ void inspect(const Program *p, FILE *file) {
     static const char *const names[] = {
         "const", "load", "store", "add.checked", "sub.checked", "mul.checked", "div.checked", "rem.checked",
         "neg.checked", "not", "eq", "ne", "lt", "le", "gt", "ge", "jump", "branch", "call", "return",
-        "bounds_check", "clear", "switch", "trap", "global.load", "global.store", "struct.make", "field.load", "field.store"
+        "bounds_check", "clear", "switch", "trap", "global.load", "global.store", "struct.make", "field.load", "field.store",
+        "byte.checked", "byte.to_int"
     };
     fprintf(file, "LIR %u.%u; bytecode %u.%u; entry f%u\n", L_IR_MAJOR, L_IR_MINOR, L_BC_MAJOR, L_BC_MINOR, p->entry);
     for (uint32_t n = 0; n < p->enum_count; ++n) {

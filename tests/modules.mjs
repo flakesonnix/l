@@ -282,6 +282,163 @@ try {
     'app/a.l': `module app.a;${Array.from({ length: 128 }, (_, n) => `int f${n}(){return 0;}`).join('')}`,
     'app/b.l': `module app.b;${Array.from({ length: 128 }, (_, n) => `int f${n}(){return 0;}`).join('')}` }, /too many functions across modules/);
 
+  // Bytes are distinct scalar values; narrowing is checked, widening is explicit.
+  const byteProgram = body => program({ 'app/main.l': `module app.main;${body}` });
+  const byteFiles = main => ({ 'app/main.l': `module app.main;${main}`,
+    'std/octets.l': 'module std.octets;using Internal=byte;pub using Octet=Internal;'
+      + 'pub const Octet first=byte(base);const int base=41;pub static Octet current=first;'
+      + 'pub struct Packet{Octet value;bool ready;};'
+      + 'pub Octet swap(Octet value){Octet old=current;current=value;return old;}' });
+  byteProgram('int main(){byte b=byte(42);return int(b);}');
+  byteProgram('int main(){auto b=byte(42);const byte copy=b;b=byte(0);return int(copy);}');
+  byteProgram('byte id(const byte value){return value;}int main(){return int(id(byte(42)));}');
+  byteProgram('using Octet=byte;using Value=Octet;int main(){Value b=byte(42);Octet data[2];data[1]=b;return int(data[0])+int(data[1]);}');
+  byteProgram('const byte b=byte(base);const int base=21*2;static byte cell=b;int main(){byte old=cell;cell=byte(0);return int(old);}');
+  byteProgram('const bool ok=false&&(int(byte(256))==0);const bool yes=true||(int(byte(-1))==0);int main(){if(!ok&&yes)return 42;return 0;}');
+  byteProgram('enum K{A=int(byte(42))};const byte size=byte(2);int main(){byte a[int(size)];switch(K::A){case K::A:a[1]=byte(42);break;default:return 1;}return int(a[0])+int(a[1]);}');
+  byteProgram('struct P{byte x;byte y;bool ready;};P change(P p){p.x=byte(int(p.x)+2);p.y=byte(0);return p;}int main(){P p=P{byte(40),byte(255),true};P q=change(p);if(p.x!=byte(40)||p.y!=byte(255)||q.y!=byte(0))return 1;return int(q.x);}');
+  byteProgram('enum K{A};struct P{byte b;int x;};byte f(byte a,P p,bool b,K k,int n){if(b&&k==K::A)return byte(int(a)+int(p.b)+p.x+n);return byte(0);}int main(){return int(f(byte(10),P{byte(20),5},true,K::A,7));}');
+  byteProgram('int f(byte b){return 20;}int f(int n){return 22;}int main(){return f(byte(0))+f(0);}');
+  byteProgram('void change(byte b){b=byte(0);return;}int main(){byte b=byte(42);change(b);return int(b);}');
+  byteProgram('int main(){byte(42);int(byte(1));for(byte(0);false;int(byte(1))){}return 42;}');
+  byteProgram('int main(){int n=40;byte a=byte(n++);byte b=byte(n++);if(n!=42||int(a)!=40||int(b)!=41)return 1;return n;}');
+  byteProgram('int pair(byte a,int n,byte b){return int(a)+n+int(b);}int main(){int n=13;return pair(byte(n++),n++,byte(n++));}');
+  byteProgram('int main(){int n=0;byte a[3];a[n++]=byte(n++);if(n!=2||a[0]!=byte(1)||a[1]!=byte(0))return 1;return 42;}');
+  byteProgram('int main(){int n=0;byte b=byte(0);if(false&&((b=byte(n++))==byte(0)))return 1;if(true||int(byte(n++))>0){}if(n==0&&b==byte(0))return 42;return 1;}');
+  byteProgram('const byte a=byte(7);int main(){byte b=a;switch(b){case byte(0):return 0;case a:return 42;default:return 1;}}');
+  byteProgram('int main(){int n=0;switch(byte(1)){case byte(0):n=1;case byte(1):n=n+40;case byte(255):n=n+2;break;default:n=0;}return n;}');
+  byteProgram('int main(){int sum=0;for(int n=0;n<2;n++){byte a[2];sum=sum+int(a[0]);a[0]=byte(42);}return sum+42;}');
+  byteProgram('int main(){const byte a[65535];byte b[1];if(int(a[65534])+int(b[0])==0)return 42;return 1;}');
+  byteProgram('pub using Octet=byte;pub struct P{Octet b;};pub const byte initial=byte(42);pub static Octet cell=initial;pub byte id(Octet b){return b;}int main(){P p=P{id(cell)};return int(p.b);}');
+  for (const [imports, type, first] of [
+    ['import std.octets;', 'std::octets::Octet', 'std::octets::first'],
+    ['import std.octets as o;', 'o::Octet', 'o::first'],
+    ['import std.octets::{Octet as B,first};', 'B', 'first'],
+  ]) program(byteFiles(`${imports}int main(){${type} b=${first};return int(b)+1;}`));
+  const byteInspection = program(byteFiles('import std.octets::{Packet,swap,current};int main(){Packet p=Packet{swap(byte(42)),true};if(p.value==byte(41))return int(current);return 0;}'));
+  const byteIR = source(byteInspection, 0, 'inspect').stdout;
+  assert.match(byteIR, /LIR 1\.6; bytecode 1\.6/); assert.match(byteIR, /byte\.checked/); assert.match(byteIR, /byte\.to_int/);
+  assert.match(byteIR, /field 0 value: byte/); assert.match(byteIR, /global g0 .*current: byte initial=41/);
+  const allBytes = Array.from({ length: 256 }, (_, n) => `case byte(${n}):return ${n};`).join('');
+  byteProgram(`int read(byte b){switch(b){${allBytes}default:return -1;}}int main(){for(int n=0;n<256;n++){byte b=byte(n);if(int(b)!=n||read(b)!=n)return 1;}return 42;}`);
+  for (const [body, message] of [
+    ['int main(){byte b=42;return 42;}', /expected byte, got int/],
+    ['int main(){int b=byte(42);return 42;}', /expected int, got byte/],
+    ['int main(){bool b=byte(0);return 42;}', /expected bool, got byte/],
+    ['int main(){byte b=true;return 42;}', /expected byte, got bool/],
+    ['int main(){return byte(42);}', /expected int, got byte/],
+    ['int main(){byte b;return 42;}', /require an initializer/],
+    ['int main(){byte b=byte();return 42;}', /expected expression/],
+    ['int main(){return int();}', /expected expression/],
+    ['int main(){byte b=byte(1,2);return 42;}', /after conversion operand/],
+    ['int main(){return int(byte(1),byte(2));}', /after conversion operand/],
+    ['int main(){return int byte(42);}', /after conversion type/],
+    ['int main(){return int(byte 42);}', /after conversion type/],
+    ['int main(){return int(42);}', /expected byte, got int/],
+    ['int main(){byte b=byte(byte(42));return 42;}', /expected int, got byte/],
+    ['int main(){byte b=byte(true);return 42;}', /expected int, got bool/],
+    ['int main(){return int(false);}', /expected byte, got bool/],
+    ['enum K{A};int main(){byte b=byte(K::A);return 42;}', /expected int, got enum/],
+    ['enum K{A};int main(){return int(K::A);}', /expected byte, got enum/],
+    ['struct P{int x;};int main(){byte b=byte(P{42});return 42;}', /expected int, got struct/],
+    ['struct P{int x;};int main(){return int(P{42});}', /expected byte, got struct/],
+    ['int main(){byte b=byte(1);b++;return 42;}', /expected int, got byte/],
+    ['int main(){return -byte(1);}', /expected int, got byte/],
+    ['int main(){byte b=byte(1)+byte(2);return 42;}', /expected int, got byte/],
+    ['int main(){if(byte(1)<byte(2))return 42;return 0;}', /expected int, got byte/],
+    ['int main(){if(byte(1))return 42;return 0;}', /expected bool, got byte/],
+    ['int main(){if(byte(1)==1)return 42;return 0;}', /matching scalar types/],
+    ['int main(){byte a[2];a[0]=42;return 42;}', /expected byte, got int/],
+    ['int main(){byte a[byte(2)];return 42;}', /expected int, got byte/],
+    ['int main(){byte a[2];return int(a[byte(0)]);}', /expected int, got byte/],
+    ['int main(){const byte a[2];a[0]=byte(42);return 42;}', /cannot modify const/],
+    ['int main(){const byte b=byte(0);b=byte(42);return 42;}', /cannot modify const/],
+    ['int main(){byte a[2]=byte(0);return 42;}', /cannot have an initializer/],
+    ['int main(){byte b=byte(0);return b.x;}', /requires a struct value/],
+    ['int main(){byte b=byte(1);switch(b){case 1:return 42;default:return 0;}}', /expected byte, got int/],
+    ['int main(){switch(1){case byte(1):return 42;default:return 0;}}', /expected int, got byte/],
+    ['const byte b=byte(1);int main(){switch(b){case b:return 42;case byte(1):return 0;default:return 1;}}', /duplicate case value/],
+    ['int main(){switch(byte(0)){case byte(256):return 42;default:return 0;}}', /byte conversion out of range/],
+    ['int main(){const byte b=byte(0);switch(b){case b:return 42;default:return 0;}}', /local binding is not a compile-time/],
+    ['static byte b=byte(0);int main(){switch(b){case b:return 42;default:return 0;}}', /mutable static/],
+    ['const byte b=0;int main(){return 42;}', /expected byte, got int/],
+    ['static byte b=0;int main(){return 42;}', /expected byte, got int/],
+    ['const byte a=byte(int(b));const byte b=a;int main(){return 42;}', /constant dependency cycle/],
+    ['static int n=0;const byte b=byte(n);int main(){return 42;}', /mutable static/],
+    ['int f(){return 0;}const byte b=byte(f());int main(){return 42;}', /function call/],
+    ['const bool b=true||(int(byte(missing))==0);int main(){return 42;}', /unknown local/],
+    ['const bool b=true||(int(byte(true))==0);int main(){return 42;}', /expected int, got bool/],
+    ['using Octet=byte;int main(){Octet b=Octet(42);return 42;}', /type alias is not callable/],
+    ['using Octet=byte;int f(Octet b){return 1;}int f(byte b){return 2;}int main(){return 42;}', /duplicate function signature/],
+    ['byte main(){return byte(42);}', /entry point/],
+    ['enum K{A=byte(0)};int main(){return 42;}', /expected int, got byte/],
+  ]) rejected({ 'app/main.l': `module app.main;${body}` }, message);
+  for (const value of [-2147483648, -1, 256, 2147483647]) {
+    for (const kind of ['const', 'static'])
+      rejected({ 'app/main.l': `module app.main;${kind} byte b=byte(${value});int main(){return 42;}` }, /byte conversion out of range/);
+    const f = fixture({ 'app/main.l': `module app.main;byte narrow(int n){return byte(n);}int main(){return int(narrow(${value}));}` });
+    assert.match(source(f, 70, 'run').stderr, /byte conversion out of range/);
+    const output = resolve(f.directory, 'trap.lbc'); source(f, 0, 'compile', ['-o', output]);
+    assert.match(command(70, ['run', output]).stderr, /byte conversion out of range/);
+  }
+  for (const body of [
+    'int main(){byte b=byte(256);return int(b);}',
+    'int main(){byte a[2];int n=-1;return int(a[n]);}',
+    'int main(){byte a[2];int n=2;a[n]=byte(42);return 42;}',
+    'int main(){byte a[1];int n=1;a[n]=byte(256);return 42;}',
+  ]) {
+    const f = fixture({ 'app/main.l': `module app.main;${body}` }), output = resolve(f.directory, 'trap.lbc');
+    const message = body.startsWith('int main(){byte b') ? /byte conversion/ : /array index out of bounds/;
+    assert.match(source(f, 70, 'run').stderr, message);
+    source(f, 0, 'compile', ['-o', output]); assert.match(command(70, ['run', output]).stderr, message);
+  }
+  let byteConstantModels = 0;
+  for (let batch = 0; batch < 8; ++batch) {
+    let declarations = 'using Octet=byte;', comparisons = '';
+    for (let n = batch * 32; n < (batch + 1) * 32; ++n) {
+      const a = BigInt(n), b = BigInt(255 - n), expected = (a * 17n + b * 3n) % 256n;
+      declarations += `const Octet c${n}=byte((${a}*17+${b}*3)%256);static byte s${n}=c${n};`;
+      comparisons += `if(int(c${n})!=${expected}||int(s${n})!=${expected})return 1;`;
+      ++byteConstantModels;
+    }
+    byteProgram(`${declarations}int main(){${comparisons}return 42;}`);
+  }
+  state = 0x42595445;
+  for (let test = 0; test < 32; ++test) {
+    const initial = BigInt(random(256)), start = BigInt(random(256)), nodes = [];
+    const project = { 'std/bytes.l': `module std.bytes;pub using Octet=byte;pub const Octet initial=byte(${initial});pub static Octet cell=initial;` };
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.b${n}`, delta = BigInt(random(256)), parents = [], form = (test + n) % 3;
+      let imports = form === 0 ? 'import std.bytes;' : form === 1 ? 'import std.bytes as b;' : 'import std.bytes::{Octet as B,cell};';
+      const type = form === 0 ? 'std::bytes::Octet' : form === 1 ? 'b::Octet' : 'B';
+      const cell = form === 0 ? 'std::bytes::cell' : form === 1 ? 'b::cell' : 'cell';
+      let body = `value=byte((int(value)+int(${cell})+${delta})%256);${cell}=value;`;
+      for (let p = 0; p < n; ++p) if (p >= n - 2 || random(3) === 0) {
+        parents.push(p);
+        const parent = nodes[p].name, style = (test + p) % 3;
+        if (!style) { imports += `import ${parent};`; body += `value=${parent.replaceAll('.', '::')}::work::run(value);`; }
+        else if (style === 1) { imports += `import ${parent} as m${p};`; body += `value=m${p}::work::run(value);`; }
+        else { imports += `import ${parent}::{work::run as f${p}};`; body += `value=f${p}(value);`; }
+      }
+      nodes.push({ name, delta, parents });
+      project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${imports}namespace work{pub ${type} run(${type} value){${body}return value;}}`;
+    }
+    let cell = initial;
+    function simulate(n, value) {
+      value = (value + cell + nodes[n].delta) % 256n; cell = value;
+      for (const parent of nodes[n].parents) value = simulate(parent, value);
+      return value;
+    }
+    const a = simulate(7, start), b = simulate(6, start);
+    const imports = ['import std.bytes::{Octet,cell};', 'import app.b7 as top;', 'import app.b6 as next;'];
+    if (test % 2) imports.reverse();
+    project['app/main.l'] = `module app.main;${imports.join('')}int main(){Octet start=byte(${start});Octet a=top::work::run(start);Octet b=next::work::run(start);`
+      + `if(int(start)!=${start}||int(a)!=${a}||int(b)!=${b}||int(cell)!=${cell})return 1;return 42;}`;
+    const settings = config(); if (test % 2) settings.module_roots.reverse();
+    const f = program(project, 42, settings);
+    assert.equal(readFileSync(resolve(f.directory, 'program.lbc')).readUInt32LE(16), 1, 'shared byte cell must not be duplicated');
+  }
+
   // Scoped enum members retain nominal types through constants, storage and calls.
   const enumProgram = body => program({ 'app/main.l': `module app.main;${body}` });
   const enumFiles = main => ({ 'app/main.l': `module app.main;${main}`,
@@ -1031,7 +1188,7 @@ try {
   source(staticMoved, 0, 'compile', ['-o', staticOutput], { cwd: '/' });
   assert.deepEqual(readFileSync(resolve(staticOriginal.directory, 'program.lbc')), readFileSync(staticOutput));
   const staticIR = source(staticOriginal, 0, 'inspect').stdout;
-  assert.match(staticIR, /LIR 1\.5; bytecode 1\.5/);
+  assert.match(staticIR, /LIR 1\.6; bytecode 1\.6/);
   assert.match(staticIR, /global g\d+ stdlib::std::state::hidden: int initial=40/);
   assert.match(staticIR, /global g\d+ stdlib::std::state::flags::active: bool initial=1/);
   assert.match(staticIR, /global\.load/); assert.match(staticIR, /global\.store/);
@@ -1260,7 +1417,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 enum DAGs, 32 struct DAGs, 32 alias DAGs, 32 constant DAGs, 32 static DAGs in two import orders, ${constantModels} constant-expression models, ${shapeModels} integer shape models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 byte DAGs, 32 enum DAGs, 32 struct DAGs, 32 alias DAGs, 32 constant DAGs, 32 static DAGs in two import orders, ${constantModels} constant-expression models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

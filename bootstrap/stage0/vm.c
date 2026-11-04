@@ -54,6 +54,10 @@ static void run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, Ins
             break;
         case OP_FIELD: R(i.dst) = registers[reg_offsets[i.a] + i.b]; break;
         case OP_FIELD_STORE: elements[offsets[i.dst] + i.b] = R(i.a); break;
+        case OP_TO_BYTE:
+            if ((uint32_t)R(i.a) > 255) trap(vm, i, "byte conversion out of range (0..255)");
+            R(i.dst) = R(i.a); break;
+        case OP_TO_INT: R(i.dst) = R(i.a); break;
         case OP_LOAD:
             if (!i.c) {
                 memcpy(&R(i.dst), elements + offsets[i.a], width(vm->program, f->registers[i.dst]) * sizeof(int32_t));

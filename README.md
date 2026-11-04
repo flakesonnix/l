@@ -18,6 +18,7 @@ make
 ./build/l run examples/constant_shapes.l --manifest examples/package.json
 ./build/l run examples/struct_demo.l --manifest examples/package.json
 ./build/l run examples/enum_demo.l --manifest examples/package.json
+./build/l run examples/byte_demo.l --manifest examples/package.json
 make test                                      # Requires Node.js 22+
 make fuzz                                      # Deterministic mutation/model tests
 make sanitize
@@ -37,24 +38,28 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
   copying and by-value function parameters/returns. Fields are public by default.
 - Scoped nominal enums, checked explicit/implicit values, enum constants/statics,
   struct fields, value parameters/returns, equality and same-enum switches.
-- Module/namespace `const` declarations with `int`, `bool` or enum types, compile-time checked
-  initializers, forward references and normal import/visibility rules.
-- Module/namespace `static` storage with `int`, `bool` or enum types, with compile-time
-  initializers and shared runtime values across calls, recursion and imports.
+- Module/namespace `const` declarations with `int`, `bool`, `byte` or enum types,
+  checked initializers, forward references and normal import/visibility rules.
+- Module/namespace `static` storage with `int`, `bool`, `byte` or enum types,
+  compile-time initializers and shared runtime values across calls and imports.
 - `int` (exactly 32 bits), `bool`, `void` functions, local inference with `auto`.
+- `byte` (0..255), explicit checked `byte(intExpr)` narrowing and lossless
+  `int(byteExpr)` widening, including in compile-time expressions.
 - Initialized local variables, `const`, lexical scopes and shadowing.
-- Fixed local `int`/`bool` arrays: `int values[10];`, indexing and element
+- Fixed local `int`/`bool`/`byte` arrays: `int values[10];`, indexing and element
   assignment with runtime bounds checks; lengths may be compile-time expressions.
 - Direct calls, forward function references, recursion and value parameters.
 - Blocks, `if`/`else`, `while`, `for`, `return`, empty statements.
-- C-style `switch` over `int` or an enum with `case`/`default` labels, empty-case chaining
-  and fallthrough; unmatched selectors without `default` continue past the switch.
+- C-style `switch` over `int`, `byte` or an enum with `case`/`default` labels,
+  empty-case chaining and fallthrough; unmatched selectors without `default`
+  continue past the switch.
 - `break` and `continue` targeting the innermost loop or switch (`continue`
   binds to the innermost loop only).
 - `=`, postfix `++`/`--`, unary `+`/`-`/`!`, `+ - * / %`, comparisons,
   short-circuit `&&`/`||` and C operator precedence.
 
-No implicit conversions between `int`, `bool` or nominal enums. Conditions must be `bool`.
+No implicit conversions between `int`, `bool`, `byte` or nominal enums.
+Conditions must be `bool`.
 Scalar local declarations require initializers; parameters and function returns
 require explicit types. Entry point: module-scope `int main()` in the entry file.
 Non-`void` functions must structurally return on all paths; a loop alone is not
@@ -75,7 +80,7 @@ function. A non-void function proves its return through a switch only when every
 case group returns and a `default` exists.
 Switch dispatch uses a case-entry table with `switch`/`trap` opcodes.
 
-Arrays initialize to `0` or `false` each time their declaration executes.
+Arrays initialize to `0`, `false` or `byte(0)` each time their declaration executes.
 Lengths must be compile-time `int` expressions from 1 to 65535, with at most 65536
 array elements per function. Index expressions must be `int`. Negative indexes and indexes at or
 above the array length produce a defined trap. Element assignment evaluates and
@@ -164,7 +169,7 @@ and type aliases remain module-private.
 Wildcard imports, re-exports, import cycles and executable module initialization
 are rejected. Dependencies do not supply a hidden entry point: imported functions
 named `main` are ordinary functions. Bytecode requires no manifest. Artifact
-version **1.5** rejects older versions, including **1.4**; recompile from source.
+version **1.6** rejects older versions, including **1.5**; recompile from source.
 
 `compile -o` rejects an existing output that aliases the manifest or any source in
 the reachable module graph, including relative-path variants, symlinks and hard
@@ -185,7 +190,7 @@ namespace flags {
 ```
 
 `using Name = Type;` declares a transparent alias at module or namespace scope.
-The target must resolve to `int` or `bool`, directly or through other aliases.
+The target must resolve to `int`, `bool` or `byte`, directly or through other aliases.
 Forward references and namespace reopening work; every alias is checked, including
 unused declarations. Alias cycles report the complete qualified-name path, and
 resolution uses the existing 256-level nesting limit.
@@ -206,8 +211,60 @@ Aliases cannot be called, used as values or used as casts.
 Local aliases, `using namespace`, generic aliases, aliases to `void`/`auto`, and
 array/function aliases are not supported. `using` is now a reserved keyword.
 Aliases disappear before IR lowering and add no runtime objects or bytecode
-metadata. The current IR/bytecode version is **1.5**; the exact-version policy is
+metadata. The current IR/bytecode version is **1.6**; the exact-version policy is
 unchanged.
+
+### Byte values and conversions
+
+```c
+module app.bytes;
+
+using Octet = byte;
+const Octet initial = byte(20);
+static byte current = initial;
+
+byte add(byte a, byte b) {
+    return byte(int(a) + int(b));
+}
+
+int main() {
+    byte data[2];
+    data[0] = current;
+    data[1] = byte(22);
+    current = add(data[0], data[1]);
+    switch (current) {
+        case byte(42): return int(current);
+        default: return 0;
+    }
+}
+```
+
+`byte` is a distinct scalar type with values 0..255. It works in locals, `auto`,
+`const`, module constants/statics, transparent aliases, struct fields, parameters,
+returns, overloads, equality and same-byte switches. `byte` is a reserved keyword.
+Decimal literals still have type `int`; initializing a byte requires a byte value.
+
+`byte(intExpr)` evaluates its operand once and traps if the result is outside
+0..255; it never truncates or wraps. `int(byteExpr)` widens without loss. These
+are the only conversions in this slice, each taking exactly one operand.
+Same-type conversions, boolean/enum/struct conversions and calls through aliases
+are rejected. Arithmetic, ordering and postfix updates require `int`; byte
+arithmetic must explicitly widen operands and, when needed, narrow the result.
+Assignments, field writes and call arguments preserve left-to-right evaluation.
+
+Conversions are also pure constant expressions: evaluated out-of-range narrowing
+is a compilation error in module initializers, lengths and labels. Evaluation
+honors short-circuiting; all operands are still name/type checked. Runtime locals,
+including local `const`, keep runtime conversion/trap behavior. Case labels must
+have exactly the selector's type, so `case byte(42)` matches a byte selector while
+`case 42` does not. Duplicate folded values remain errors.
+
+Fixed byte arrays initialize to zero on each declaration, use integer lengths and
+indices, and obey the same bounds, initialization and `const` rules as other
+arrays. The existing limits count elements, not packed octets. Stage 0 currently
+stores every byte value/array element in one 32-bit VM cell; it exposes no packed
+memory layout. Strings, character literals, I/O, slices and lifetime rules remain
+separate future language slices.
 
 ### Value structs
 
@@ -249,7 +306,8 @@ postfix updates require a mutable local/parameter root; `const` bindings protect
 all fields. Whole-value assignment also respects `const`. Struct equality and
 implicit conversions between nominal types are not supported.
 
-This slice supports 1..64 `int`/`bool`/enum fields and at most 256 linked struct types.
+This slice supports 1..64 `int`/`bool`/`byte`/enum fields and at most 256 linked
+struct types.
 Empty structs, nested/array fields, field initializers, methods, inheritance,
 aggregate statics/constants, struct arrays and aliases to structs are deferred.
 Constructor inputs share the existing 2048-entry per-function argument-vector
@@ -317,11 +375,11 @@ namespace numbers {
 }
 ```
 
-Module constants require explicit `int`/`bool` types (or transparent aliases to
+Module constants require explicit `int`/`bool`/`byte` types (or transparent aliases to
 them) or enum types, and scalar initializers.
 Their initializer syntax permits literals, constant references, and the supported
-unary/binary operators. Function calls, assignments, postfix updates and indexing
-are rejected, including in unevaluated operands. All operands are name/type
+unary/binary operators and byte/integer conversions. Function calls, assignments,
+postfix updates and indexing are rejected, including in unevaluated operands. All operands are name/type
 checked; evaluation honors short-circuiting and skips unevaluated operands.
 Forward references work, and evaluated constant-dependency cycles report their
 complete qualified-name path. Compilation also rejects overflow, division by zero,
@@ -337,7 +395,8 @@ existing runtime-initializer behavior. Compile-time evaluation uses the existing
 ### Constant array lengths and case labels
 
 Array lengths and non-default `case` labels accept the same checked pure
-expressions as module constant initializers, with an exact `int` result type.
+expressions as module constant initializers. Lengths require an exact `int`
+result; case labels require exactly the selector's `int`, `byte` or enum type.
 They may reference module/namespace constants, including forward declarations,
 qualified imports, module aliases and renamed selective imports.
 
@@ -358,7 +417,7 @@ int main() {
 ```
 
 Lengths must fold to 1..65535 and obey the existing 65536-element per-function
-limit. Case labels may use the full signed 32-bit range; labels that fold to the
+limit. Integer case labels may use the full signed 32-bit range; labels that fold to the
 same value are duplicates, even when written differently. Overflow and division
 errors are compilation errors rather than runtime traps, including in unreachable
 declarations and unselected cases. Integer/boolean conversions are not implicit.
@@ -369,7 +428,7 @@ storage, calls, assignments, postfix updates and indexing are forbidden in these
 expressions, including in unevaluated operands. Labels use the shared switch's
 lexical scope, so a preceding case's local can shadow a module constant.
 Folding emits only existing slot lengths and case-table values; it adds no
-runtime evaluation or additional format changes. Current IR/bytecode is **1.5**.
+runtime evaluation or additional format changes. Current IR/bytecode is **1.6**.
 
 ### Mutable static storage
 
@@ -386,9 +445,11 @@ pub int next() {
 ```
 
 `static` declarations are scalar, module/namespace-scoped bindings with explicit
-`int`/`bool` types (or transparent aliases) or enum types, and required compile-time initializers.
+`int`/`bool`/`byte` types (or transparent aliases) or enum types, and required
+compile-time initializers.
 Initializers follow the constant-expression rules above: literals, constant
-references and checked pure operators only. They cannot read mutable static storage, call functions, assign,
+references, checked pure operators and byte/integer conversions only. They cannot
+read mutable static storage, call functions, assign,
 update or index anything, even in unevaluated operands. Unused declarations are
 checked too. Initial values are stored as data; no module initialization function
 or arbitrary code runs before `main`.
@@ -413,14 +474,15 @@ verification → bytecode → VM.
 The seed does not materialize separate HIR, Typed IR and MIR representations yet.
 The implemented subset has no ownership model yet.
 
-IR and bytecode are versioned independently, currently both **1.5**.
+IR and bytecode are versioned independently, currently both **1.6**.
 Bytecode 1.1 added a 32-bit length per slot (0 for scalars), `bounds_check` and
 `clear`; 1.2 added a per-function `switch` case-entry table and the `switch`/`trap`
 opcodes. Version 1.3 added a global-data table and `global.load`/`global.store`.
 Version 1.4 added nominal struct metadata, 32-bit type IDs and the `struct.make`,
 `field.load` and `field.store` opcodes, with full-width by-value calls/returns.
-Version 1.5 adds nominal enum metadata, permits enum-typed scalar storage and
-fields, and extends equality and switches to enum types without adding opcodes.
+Version 1.5 added nominal enum metadata, enum-typed scalar storage and
+fields, and enum equality/switches without adding opcodes. Version 1.6 adds the
+`byte` type, byte arrays and `byte.checked`/`byte.to_int` conversion opcodes.
 The loader accepts only the exact format version; recompile older
 artifacts from source. The verifier checks instruction types, jump targets, unique
 register definitions, dominance, slot initialization, array metadata, addressing
@@ -439,6 +501,10 @@ are valid. Enum IDs must reference a declared type. Enum constants, global
 initializers and switch-table values must belong to that type's declared value
 set. Typed loads/stores, constructors, fields, calls/returns and equality preserve
 nominal identity; arithmetic and integer/enum conversions remain invalid.
+Byte constants, global initializers and switch values must be in 0..255.
+Conversions require exact source/destination types and dominating source values.
+The VM checks narrowing before producing a byte register; widening preserves its
+value. Typed storage and zero-initialized byte arrays preserve the byte range.
 The `switch` operands are `a` = selector register, `b` = table offset, `c` = entry
 count and `dst` = fallback PC. A low-level `dst == L_NONE` traps on an unmatched
 value; source switches without `default` instead continue after the switch.
@@ -447,13 +513,15 @@ The VM additionally checks bounds at each element access, so manipulated bytecod
 cannot bypass safety by omitting a preceding `bounds_check`.
 `inspect` displays the IR, not an ABI-stable text representation.
 
-The 1.5 header is magic (4 bytes), major/minor (2 bytes each), function count,
+The 1.6 header retains the 1.5 layout: magic (4 bytes), major/minor (2 bytes each),
+function count,
 entry function index, global count, struct count and enum count (4 bytes each).
 Global, struct and enum counts start at byte offsets 16, 20 and 24. Struct entries
 come first: name length/name bytes, field count, then each field's name length,
 name bytes and scalar type ID. Lengths, counts and type IDs are 32-bit. Type IDs
-are 0 = `void`, 1 = `int`, 2 = `bool`, 5+n = struct-table entry n, and 261+n =
-enum-table entry n (each nominal table permits indices 0..255). Frontend
+are 0 = `void`, 1 = `int`, 2 = `bool`, 5+n = struct-table entry n, 261+n =
+enum-table entry n (each nominal table permits indices 0..255), and 517 = `byte`.
+The byte ID follows the reserved nominal ranges to preserve existing IDs. Frontend
 placeholder IDs 3/4 and undeclared IDs are invalid artifacts. Function result,
 slot, register and global types also use 32-bit IDs. Enum entries follow structs:
 name length/name bytes, member count, then each member's name length/name bytes
@@ -469,8 +537,13 @@ register. Constant-only programs have an empty global table.
 register and `b` = field index. `field.store` uses `dst` = initialized struct slot,
 `a` = scalar register and `b` = field index. Non-array `load`/`store` and
 calls/returns copy all cells of a struct value. Each field occupies one VM cell;
-enum values also occupy one cell. This is a VM representation, not a native ABI
-or exposed reference layout.
+enum and byte values also occupy one cell. This is a VM representation, not a
+native ABI or exposed reference layout.
+
+`byte.checked` (opcode 29) uses `dst` = byte register and `a` = int register;
+`byte.to_int` (opcode 30) uses `dst` = int register and `a` = byte register.
+Both use the existing instruction layout and ignore `b`/`c`. The bytecode table
+layout is unchanged; the exact-version rule still requires recompiling 1.5 artifacts.
 
 Artifacts contain no timestamps or absolute source paths. Identical source
 dependency closures and package identities produce identical bytecode after
@@ -506,6 +579,13 @@ against independent nominal-value/state models, and 128 generated value,
 duplicate-value dispatch, field/copy/call and shared-state models. Malformed
 IR/bytecode cases cover metadata, type ranges, membership, conversions,
 constructors, fields, globals, switches and exact-version rejection.
+Byte tests add 256 BigInt constant-expression models and 32 cross-package
+shared-cell DAGs (seed `0x42595445`). The fuzz suite adds 128 independent byte
+array/field/copy/call/state models plus 262 conversion programs covering every
+representable value, adjacent failures and signed extremes. Verifier tests check
+byte metadata ranges, exact conversion types, dominance and malformed storage,
+call, field and switch operations before and after serialization. Another 512
+potentially cyclic graphs exercise byte-conversion dominance without execution.
 Storage/dispatch tests reuse 423 integer-expression BigInt models in lengths and
 labels, checking folded metadata, errors, duplicates, visibility and shadowing.
 The fuzz suite adds 128 bounded constant-shape programs checked against separate
@@ -521,9 +601,9 @@ The fuzz suite adds 128 independent shared-state models, runs each source and
 bytecode program twice, and tests global-store dominance in generated verifier
 graphs. Arbitrary bytecode mutants and potentially cyclic verifier graphs are
 still verified, not executed.
-Eleven additional static-lifecycle programs check arithmetic/bounds traps,
-enum-controlled dispatch and the call-depth/instruction budgets after mutating
-integer, boolean and enum cells. Source
+Fourteen additional static-lifecycle programs check arithmetic/bounds and byte
+conversion traps, enum-controlled dispatch and the call-depth/instruction budgets
+after mutating integer, boolean, byte and enum cells. Source
 and deserialized IR alternate trapped and successful executions using the same
 execution context, with caller cleanup after traps. Every retry starts fresh,
 successful executions release their memory, and neither initializer metadata nor
@@ -534,7 +614,7 @@ array, switch and expression programs checked against independent host-side
 models. Mutations include truncation, bit/word replacement, insertion, deletion,
 splicing and random data.
 The semantic tests compare full 32-bit results before and after serialization and
-check signed index boundaries for integer/boolean array reads and writes. Switch
+check signed index boundaries for integer/boolean/byte array reads and writes. Switch
 models check signed boundary labels, default placement, unmatched selectors,
 fallthrough, returns, nested breaks/continues and single selector evaluation.
 Expression models check full-width arithmetic, overflow and division traps,

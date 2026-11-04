@@ -61,6 +61,9 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
     uint32_t a, b, r;
     switch (e->kind) {
     case EX_INT: case EX_BOOL: return constant(l, e->token, e->type, (int32_t)e->integer);
+    case EX_CONVERT:
+        a = lower_expr(l, e->left); r = reg(l, e->type);
+        emit(l, e->token, e->type == TY_BYTE ? OP_TO_BYTE : OP_TO_INT, r, a, 0, 0); return r;
     case EX_NAME:
         r = reg(l, e->type); emit(l, e->token, OP_LOAD, r, e->symbol, 0, 0); return r;
     case EX_GLOBAL:
@@ -310,7 +313,7 @@ static Type global_type(Context *ctx, const Program *p, uint32_t index) {
     return p->globals[index].type;
 }
 static bool scalar_type(const Program *p, Type type) {
-    return type == TY_INT || type == TY_BOOL || (IS_ENUM(type) && (uint32_t)(type - TY_ENUM) < p->enum_count);
+    return type == TY_INT || type == TY_BOOL || type == TY_BYTE || (IS_ENUM(type) && (uint32_t)(type - TY_ENUM) < p->enum_count);
 }
 static bool value_type(const Program *p, Type type) {
     return scalar_type(p, type) || (IS_STRUCT(type) && (uint32_t)(type - TY_STRUCT) < p->struct_count);
@@ -340,7 +343,8 @@ static void access_mode(Context *ctx, const IrFunction *f, uint32_t slot, Instru
     if (i.c) same(ctx, register_type(ctx, f, i.b), TY_INT);
 }
 static bool defines(Opcode op) {
-    return op <= OP_LOAD || (op >= OP_ADD && op <= OP_GE) || op == OP_CALL || op == OP_GLOBAL_LOAD || op == OP_STRUCT || op == OP_FIELD;
+    return op <= OP_LOAD || (op >= OP_ADD && op <= OP_GE) || op == OP_CALL || op == OP_GLOBAL_LOAD ||
+        op == OP_STRUCT || op == OP_FIELD || op == OP_TO_BYTE || op == OP_TO_INT;
 }
 static unsigned successors(Context *ctx, const IrFunction *f, uint32_t pc, uint32_t next[L_MAX_CASES + 1]) {
     Instruction i = f->code[pc];
@@ -412,7 +416,7 @@ static void dataflow(Context *ctx, const IrFunction *f, bool **seen_out) {
         case OP_STRUCT:
             for (uint32_t j = 0; j < i.b; ++j) use(ctx, bits, f->arguments[i.a + j]);
             break;
-        case OP_NEG: case OP_NOT: case OP_BRANCH: use(ctx, bits, i.a); break;
+        case OP_NEG: case OP_NOT: case OP_BRANCH: case OP_TO_BYTE: case OP_TO_INT: use(ctx, bits, i.a); break;
         case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_REM:
         case OP_EQ: case OP_NE: case OP_LT: case OP_LE: case OP_GT: case OP_GE:
             use(ctx, bits, i.a); use(ctx, bits, i.b); break;
@@ -458,6 +462,7 @@ void verify(Context *ctx, const Program *p) {
         const IrGlobal *g = &p->globals[n];
         if (!scalar_type(p, g->type)) invalid(ctx, "invalid global type");
         if (g->type == TY_BOOL && (uint32_t)g->initial > 1) invalid(ctx, "invalid bool global initializer");
+        if (g->type == TY_BYTE && (uint32_t)g->initial > 255) invalid(ctx, "invalid byte global initializer");
         enum_value(ctx, p, g->type, (uint32_t)g->initial);
     }
     for (uint32_t n = 0; n < p->function_count; ++n) {
@@ -473,7 +478,8 @@ void verify(Context *ctx, const Program *p) {
         uint32_t elements = 0;
         for (uint32_t j = 0; j < f->slot_count; ++j) {
             if (f->slot_lengths[j] > L_MAX_ARRAY) invalid(ctx, "array length out of range");
-            if (f->slot_lengths[j] && f->slots[j] != TY_INT && f->slots[j] != TY_BOOL) invalid(ctx, "struct/enum arrays are not supported");
+            if (f->slot_lengths[j] && f->slots[j] != TY_INT && f->slots[j] != TY_BOOL && f->slots[j] != TY_BYTE)
+                invalid(ctx, "struct/enum arrays are not supported");
             if (j < f->parameter_count && f->slot_lengths[j]) invalid(ctx, "array parameters are not supported");
             if (elements > L_MAX_SLOTS_ELEMENTS - f->slot_lengths[j])
                 invalid(ctx, "too many array elements");
@@ -494,8 +500,12 @@ void verify(Context *ctx, const Program *p) {
             case OP_CONST:
                 if (IS_STRUCT(f->registers[i.dst])) invalid(ctx, "struct value requires struct.make");
                 if (f->registers[i.dst] == TY_BOOL && i.a > 1) invalid(ctx, "invalid bool constant");
+                if (f->registers[i.dst] == TY_BYTE && i.a > 255) invalid(ctx, "invalid byte constant");
                 enum_value(ctx, p, f->registers[i.dst], i.a);
                 break;
+            case OP_TO_BYTE: case OP_TO_INT:
+                same(ctx, register_type(ctx, f, i.dst), i.op == OP_TO_BYTE ? TY_BYTE : TY_INT);
+                same(ctx, register_type(ctx, f, i.a), i.op == OP_TO_BYTE ? TY_INT : TY_BYTE); break;
             case OP_STRUCT: {
                 const IrStruct *s = struct_type(ctx, p, register_type(ctx, f, i.dst));
                 if (i.b != s->field_count || i.a > f->argument_count || i.b > f->argument_count - i.a)
@@ -559,10 +569,11 @@ void verify(Context *ctx, const Program *p) {
                 break;
             case OP_SWITCH: {
                 Type selector = register_type(ctx, f, i.a);
-                if (selector != TY_INT && !IS_ENUM(selector)) invalid(ctx, "switch selector must be int or enum");
+                if (selector != TY_INT && selector != TY_BYTE && !IS_ENUM(selector)) invalid(ctx, "switch selector must be int, byte or enum");
                 if (i.b > f->switch_count || i.c > f->switch_count - i.b) invalid(ctx, "invalid switch case vector");
                 if (i.dst != L_NONE && i.dst >= f->code_count) invalid(ctx, "switch default target out of range");
                 for (uint32_t j = i.b; j < i.b + i.c; ++j) {
+                    if (selector == TY_BYTE && (uint32_t)f->switch_entries[j].value > 255) invalid(ctx, "invalid byte switch value");
                     enum_value(ctx, p, selector, (uint32_t)f->switch_entries[j].value);
                     for (uint32_t k = i.b; k < j; ++k)
                         if (f->switch_entries[k].value == f->switch_entries[j].value)

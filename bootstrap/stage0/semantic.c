@@ -212,7 +212,8 @@ static Type resolve_alias(Context *ctx, Ast *ast, TypeAlias *alias, TypeAlias *p
     Function scope = {.module = alias->module, .scope = alias->scope};
     Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope};
     alias->type = resolve_type(&s, alias->type, alias->target_name, alias);
-    if (alias->type != TY_INT && alias->type != TY_BOOL) token_fail(ctx, alias->name, "type alias target must be int or bool");
+    if (alias->type != TY_INT && alias->type != TY_BOOL && alias->type != TY_BYTE)
+        token_fail(ctx, alias->name, "type alias target must be int or bool or byte");
     alias->state = 2; alias->parent = NULL;
     leave(ctx); ctx->filename = saved;
     return alias->type;
@@ -292,6 +293,8 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         if (e->integer > INT32_MAX || e->integer < INT32_MIN) token_fail(s->ctx, e->token, "integer literal exceeds int range");
         e->type = TY_INT; break;
     case EX_BOOL: e->type = TY_BOOL; break;
+    case EX_CONVERT:
+        require(s, e->token, analyze_expr(s, e->left), e->type == TY_BYTE ? TY_INT : TY_BYTE); break;
     case EX_STRUCT: {
         if (s->constant_expression) token_fail(s->ctx, e->token, "struct literal is not a constant expression");
         if (e->left->kind != EX_NAME) token_fail(s->ctx, e->token, "struct literal requires a named struct type");
@@ -410,8 +413,8 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
         Decl *d = stmt->decl;
         d->type = resolve_type(s, d->type, d->type_name, NULL);
         if (d->length) {
-            if (d->type != TY_INT && d->type != TY_BOOL)
-                token_fail(s->ctx, d->name, "array element type must be int or bool");
+            if (d->type != TY_INT && d->type != TY_BOOL && d->type != TY_BYTE)
+                token_fail(s->ctx, d->name, "array element type must be int or bool or byte");
             int32_t length = typed_constant(s, d->length, TY_INT);
             if (length < 1 || (uint32_t)length > L_MAX_ARRAY)
                 token_fail(s->ctx, d->length->token, "array length must be between 1 and 65535");
@@ -467,7 +470,7 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
         break;
     case ST_SWITCH: {
         Type selector = analyze_expr(s, stmt->expr);
-        if (selector != TY_INT && !IS_ENUM(selector)) token_fail(s->ctx, stmt->expr->token, "switch selector must be int or enum");
+        if (selector != TY_INT && selector != TY_BYTE && !IS_ENUM(selector)) token_fail(s->ctx, stmt->expr->token, "switch selector must be int, byte or enum");
         Binding *saved = s->bindings;
         ++s->depth;
         Enclosing sw = { false, 0, s->enclosing };
@@ -609,7 +612,8 @@ void analyze(Context *ctx, Ast *ast) {
         Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope};
         for (Field *field = record->fields; field; field = field->next) {
             field->type = resolve_type(&s, field->type, field->type_name, NULL);
-            if (field->type != TY_INT && field->type != TY_BOOL && !IS_ENUM(field->type)) token_fail(ctx, field->name, "struct fields must be scalar int or bool or enum");
+            if (field->type != TY_INT && field->type != TY_BOOL && field->type != TY_BYTE && !IS_ENUM(field->type))
+                token_fail(ctx, field->name, "struct fields must be scalar int or bool or byte or enum");
             if (record->exported) public_type(&s, field->name, field->type);
             for (Field *other = record->fields; other != field; other = other->next)
                 if (token_equal(other->name, field->name)) token_fail(ctx, field->name, "duplicate struct field");
@@ -620,8 +624,8 @@ void analyze(Context *ctx, Ast *ast) {
         Function scope = {.module = constant->module, .scope = constant->scope};
         Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope};
         constant->type = resolve_type(&s, constant->type, constant->type_name, NULL);
-        if (constant->type != TY_INT && constant->type != TY_BOOL && !IS_ENUM(constant->type))
-            token_fail(ctx, constant->name, "module constant/static type must be explicit int or bool or enum");
+        if (constant->type != TY_INT && constant->type != TY_BOOL && constant->type != TY_BYTE && !IS_ENUM(constant->type))
+            token_fail(ctx, constant->name, "module constant/static type must be explicit int or bool or byte or enum");
         if (constant->exported) public_type(&s, constant->name, constant->type);
     }
     bool main_found = false;
@@ -635,7 +639,7 @@ void analyze(Context *ctx, Ast *ast) {
         for (Decl *p = fn->parameters; p; p = p->next) {
             p->type = resolve_type(&s, p->type, p->type_name, NULL);
             if (fn->exported) public_type(&s, p->name, p->type);
-            if (p->type == TY_VOID || p->type == TY_AUTO) token_fail(ctx, p->name, "parameter type must be int, bool, enum or struct");
+            if (p->type == TY_VOID || p->type == TY_AUTO) token_fail(ctx, p->name, "parameter type must be int, bool, byte, enum or struct");
             else parameters[count++] = p->type;
             Binding *binding = allocate(ctx, sizeof(*binding));
             *binding = (Binding){p, 0, s.bindings}; s.bindings = binding;

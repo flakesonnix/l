@@ -71,7 +71,7 @@ static void type_names(Context *ctx) {
     if (strcmp(type_name(TY_AUTO), "auto") || strcmp(type_name(TY_NAMED), "unresolved type") ||
         strcmp(type_name(TY_STRUCT), "struct") || strcmp(type_name((Type)(TY_STRUCT + 1)), "struct") ||
         strcmp(type_name(TY_ENUM), "enum") || strcmp(type_name((Type)(TY_ENUM + 1)), "enum") ||
-        strcmp(type_name((Type)UINT32_MAX), "invalid")) exit(1);
+        strcmp(type_name(TY_BYTE), "byte") || strcmp(type_name((Type)UINT32_MAX), "invalid")) exit(1);
 }
 static void syntax_depth(Context *ctx) { ctx->nesting = L_MAX_DEPTH; enter(ctx, (Token){0}); }
 static void nul_source(Context *ctx) { size_t count; (void)lex(ctx, "\0", 1, &count); }

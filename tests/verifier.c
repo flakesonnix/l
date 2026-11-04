@@ -659,6 +659,109 @@ static void enum_bytes(void) {
     }
     cleanup(ctx); free(ctx); remove("build/verifier-enum.lbc");
 }
+static void byte_fixture(Fixture *x) {
+    reset(x);
+    x->program.global_count = 1; x->globals[0] = (IrGlobal){"b", TY_BYTE, 42};
+    x->program.struct_count = 1; x->program.structs = x->structs;
+    x->structs[0] = (IrStruct){"P", 1, x->fields[0]}; x->fields[0][0] = (IrField){"b", TY_BYTE};
+    IrFunction *f = &x->functions[0];
+    f->slot_count = 2; x->slots[0][0] = x->slots[0][1] = TY_BYTE; x->slot_lengths[0][1] = 2;
+    f->register_count = 5;
+    x->registers[0][0] = x->registers[0][3] = x->registers[0][4] = TY_INT;
+    x->registers[0][1] = x->registers[0][2] = TY_BYTE;
+    f->code_count = 10;
+    x->code[0][0] = ins(OP_CONST, 0, 42, 0, 0);
+    x->code[0][1] = ins(OP_TO_BYTE, 1, 0, 0, 0);
+    x->code[0][2] = ins(OP_STORE, 0, 1, 0, 0);
+    x->code[0][3] = ins(OP_CLEAR, 1, 0, 0, 0);
+    x->code[0][4] = ins(OP_CONST, 4, 0, 0, 0);
+    x->code[0][5] = ins(OP_STORE, 1, 1, 4, 1);
+    x->code[0][6] = ins(OP_LOAD, 2, 1, 4, 1);
+    x->code[0][7] = ins(OP_GLOBAL_STORE, 0, 2, 0, 0);
+    x->code[0][8] = ins(OP_TO_INT, 3, 2, 0, 0);
+    x->code[0][9] = ins(OP_RETURN, 0, 3, 0, 0);
+}
+enum {
+    B_VALID, B_ZERO, B_MAX, B_CONSTANT, B_GLOBAL, B_CALL, B_SCALAR, B_FIELD, B_SWITCH,
+    B_NARROW_HIGH_TRAP, B_NARROW_NEGATIVE_TRAP, B_LOAD_BOUNDS_TRAP, B_STORE_BOUNDS_TRAP,
+    B_CONST_HIGH, B_CONST_NEGATIVE, B_GLOBAL_HIGH, B_GLOBAL_NEGATIVE,
+    B_NARROW_SOURCE, B_NARROW_DEST, B_WIDEN_SOURCE, B_WIDEN_DEST, B_SOURCE_INDEX, B_DEST_INDEX,
+    B_NARROW_UNDEFINED, B_WIDEN_UNDEFINED, B_DUPLICATE, B_ARRAY_UNINITIALIZED,
+    B_ARRAY_TYPE, B_GLOBAL_TYPE, B_SWITCH_HIGH, B_SWITCH_NEGATIVE, B_SWITCH_DUPLICATE,
+    B_FIELD_TYPE, B_CALL_TYPE, B_RETURN_TYPE, B_COUNT
+};
+static void mutate_byte(Fixture *x, int which) {
+    IrFunction *f = &x->functions[0], *g = &x->functions[1];
+    if (which == B_CALL || which == B_CALL_TYPE || which == B_RETURN_TYPE) {
+        f->argument_count = 1; x->arguments[0] = 1; x->code[0][6] = ins(OP_CALL, 2, 1, 0, 1);
+        g->result = TY_BYTE; g->parameter_count = g->slot_count = g->register_count = 1; g->code_count = 2;
+        x->slots[1][0] = x->registers[1][0] = TY_BYTE;
+        x->code[1][0] = ins(OP_LOAD, 0, 0, 0, 0); x->code[1][1] = ins(OP_RETURN, 0, 0, 0, 0);
+    }
+    if (which == B_FIELD || which == B_FIELD_TYPE) {
+        f->register_count = 6; x->registers[0][5] = TY_STRUCT; f->argument_count = 1; x->arguments[0] = 1;
+        x->code[0][5] = ins(OP_STRUCT, 5, 0, 1, 0); x->code[0][6] = ins(OP_FIELD, 2, 5, 0, 0);
+    }
+    if (which == B_SWITCH || (which >= B_SWITCH_HIGH && which <= B_SWITCH_DUPLICATE)) {
+        f->switch_count = 2; x->entries[0] = (SwitchEntry){0, 11}; x->entries[1] = (SwitchEntry){42, 10};
+        f->code_count = 12; x->code[0][9] = ins(OP_SWITCH, 11, 2, 0, 2);
+        x->code[0][10] = ins(OP_RETURN, 0, 3, 0, 0); x->code[0][11] = ins(OP_TRAP, 0, 0, 0, 0);
+    }
+    switch (which) {
+    case B_VALID: case B_CALL: case B_FIELD: case B_SWITCH: break;
+    case B_ZERO: case B_MAX:
+        x->code[0][0].a = which == B_ZERO ? 0 : 255; x->globals[0].initial = (int32_t)x->code[0][0].a; break;
+    case B_CONSTANT: x->code[0][1] = ins(OP_CONST, 1, 42, 0, 0); break;
+    case B_GLOBAL: x->code[0][1] = ins(OP_GLOBAL_LOAD, 1, 0, 0, 0); break;
+    case B_SCALAR: x->code[0][6] = ins(OP_LOAD, 2, 0, 0, 0); break;
+    case B_NARROW_HIGH_TRAP: x->code[0][0].a = 256; break;
+    case B_NARROW_NEGATIVE_TRAP: x->code[0][0].a = UINT32_MAX; break;
+    case B_LOAD_BOUNDS_TRAP: x->code[0][6].b = 0; break;
+    case B_STORE_BOUNDS_TRAP: x->code[0][5].b = 0; break;
+    case B_CONST_HIGH: case B_CONST_NEGATIVE:
+        x->code[0][1] = ins(OP_CONST, 1, which == B_CONST_HIGH ? 256 : UINT32_MAX, 0, 0); break;
+    case B_GLOBAL_HIGH: case B_GLOBAL_NEGATIVE: x->globals[0].initial = which == B_GLOBAL_HIGH ? 256 : -1; break;
+    case B_NARROW_SOURCE: x->code[0][1].a = 2; break;
+    case B_NARROW_DEST: x->registers[0][1] = TY_INT; break;
+    case B_WIDEN_SOURCE: x->code[0][8].a = 0; break;
+    case B_WIDEN_DEST: x->registers[0][3] = TY_BYTE; break;
+    case B_SOURCE_INDEX: x->code[0][1].a = L_NONE; break;
+    case B_DEST_INDEX: x->code[0][8].dst = L_NONE; break;
+    case B_NARROW_UNDEFINED: x->code[0][1].a = 3; break;
+    case B_WIDEN_UNDEFINED:
+        x->code[0][0] = ins(OP_TO_INT, 0, 2, 0, 0); break;
+    case B_DUPLICATE: x->code[0][8] = ins(OP_TO_BYTE, 1, 0, 0, 0); break;
+    case B_ARRAY_UNINITIALIZED: x->code[0][3] = ins(OP_JUMP, 0, 4, 0, 0); break;
+    case B_ARRAY_TYPE: x->slots[0][1] = TY_INT; break;
+    case B_GLOBAL_TYPE: x->code[0][7].a = 0; break;
+    case B_SWITCH_HIGH: case B_SWITCH_NEGATIVE: x->entries[0].value = which == B_SWITCH_HIGH ? 256 : -1; break;
+    case B_SWITCH_DUPLICATE: x->entries[0].value = 42; break;
+    case B_FIELD_TYPE: x->fields[0][0].type = TY_INT; break;
+    case B_CALL_TYPE: x->arguments[0] = 0; break;
+    case B_RETURN_TYPE: g->result = TY_INT; x->registers[0][2] = TY_INT; x->code[0][7].a = 1; x->code[0][8].a = 1; break;
+    }
+}
+static void check_byte(int which, bool serialized) {
+    Context *ctx = calloc(1, sizeof(*ctx)); if (!ctx) exit(1);
+    ctx->filename = "byte-verifier-test";
+    if (!setjmp(ctx->failure)) {
+        Fixture x; byte_fixture(&x); mutate_byte(&x, which);
+        Program *p = &x.program;
+        if (serialized) {
+            write_bytecode(ctx, p, "build/verifier-byte.lbc");
+            size_t size; unsigned char *bytes = read_file(ctx, "build/verifier-byte.lbc", &size);
+            p = read_bytecode(ctx, bytes, size);
+        } else verify(ctx, p);
+        if (which > B_STORE_BOUNDS_TRAP) { fprintf(stderr, "byte verifier accepted invalid case %d\n", which); exit(1); }
+        size_t allocated = ctx->allocated;
+        int32_t value = which == B_ZERO ? 0 : which == B_MAX ? 255 : 42, initial = p->globals[0].initial;
+        for (unsigned repeat = 0; repeat < 3; ++repeat)
+            if (execute_program(ctx, p) != value || ctx->allocated != allocated || p->globals[0].initial != initial) exit(1);
+    }
+    int expected = which <= B_SWITCH ? 0 : which <= B_STORE_BOUNDS_TRAP ? 70 : 65;
+    if (ctx->status != expected) { fprintf(stderr, "byte verifier case %d: expected %d, got %d\n", which, expected, ctx->status); exit(1); }
+    cleanup(ctx); free(ctx);
+}
 static void global_bytes(void) {
     Context *ctx = calloc(1, sizeof(*ctx)); if (!ctx) exit(1);
     ctx->filename = "global-format-test"; if (setjmp(ctx->failure)) exit(1);
@@ -707,6 +810,8 @@ int main(void) {
     for (int which = 0; which < CASE_COUNT; ++which) check(which);
     for (int which = 0; which < S_COUNT; ++which) check_struct(which);
     for (int which = 0; which < E_COUNT; ++which) check_enum(which);
+    for (int which = 0; which < B_COUNT; ++which) { check_byte(which, false); check_byte(which, true); }
+    remove("build/verifier-byte.lbc");
     global_bytes();
     struct_bytes();
     enum_bytes();
@@ -722,7 +827,7 @@ int main(void) {
     check_bytes(original, size, true);
     for (size_t length = 0; length < size; ++length) check_bytes(original, length, false);
     static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
-        {0, 0, 1}, {4, 2, 2}, {6, L_BC_MINOR + 1, 2}, {6, 0, 2}, {6, 1, 2}, {6, 2, 2}, {6, 3, 2}, {6, 4, 2}, {8, 0, 4}, {8, L_MAX_FUNCTIONS + 1, 4},
+        {0, 0, 1}, {4, 2, 2}, {6, L_BC_MINOR + 1, 2}, {6, 0, 2}, {6, 1, 2}, {6, 2, 2}, {6, 3, 2}, {6, 4, 2}, {6, 5, 2}, {8, 0, 4}, {8, L_MAX_FUNCTIONS + 1, 4},
         {12, 2, 4}, {16, L_MAX_GLOBALS + 1, 4}, {20, L_MAX_STRUCTS + 1, 4}, {24, L_MAX_ENUMS + 1, 4}, {28, 0, 4}, {28, UINT32_MAX, 4}, {32, 0, 1},
         {44, L_MAX_SLOTS + 1, 4}, {48, L_MAX_REGISTERS + 1, 4},
         {52, L_MAX_CODE + 1, 4}, {56, L_MAX_ARGS + 1, 4}, {60, L_MAX_CASES + 1, 4},
@@ -740,6 +845,6 @@ int main(void) {
     memcpy(bytes, original, size); bytes[size] = 0;
     check_bytes(bytes, size + 1, false);
     free(bytes); cleanup(ctx); free(ctx); remove("build/verifier.lbc"); remove("build/verifier-case.lbc");
-    printf("verifier: %d IR cases plus truncation/format mutations passed\n", CASE_COUNT + S_COUNT + E_COUNT);
+    printf("verifier: %d IR cases plus truncation/format mutations passed\n", CASE_COUNT + S_COUNT + E_COUNT + B_COUNT);
     return 0;
 }

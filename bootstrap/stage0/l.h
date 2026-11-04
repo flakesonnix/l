@@ -8,9 +8,9 @@
 #include <setjmp.h>
 
 #define L_IR_MAJOR 1
-#define L_IR_MINOR 5
+#define L_IR_MINOR 6
 #define L_BC_MAJOR 1
-#define L_BC_MINOR 5
+#define L_BC_MINOR 6
 #define L_NONE UINT32_MAX
 #define L_MAX_FUNCTIONS 256u
 #define L_MAX_MODULES 256u
@@ -43,7 +43,10 @@ typedef struct {
 } Context;
 
 typedef struct { const char *text; size_t length; uint32_t line, column; int kind; int64_t integer; } Token;
-typedef enum { TY_VOID, TY_INT, TY_BOOL, TY_AUTO, TY_NAMED, TY_STRUCT, TY_ENUM = TY_STRUCT + L_MAX_STRUCTS } Type;
+typedef enum {
+    TY_VOID, TY_INT, TY_BOOL, TY_AUTO, TY_NAMED, TY_STRUCT,
+    TY_ENUM = TY_STRUCT + L_MAX_STRUCTS, TY_BYTE = TY_ENUM + L_MAX_ENUMS
+} Type;
 #define IS_STRUCT(t) ((uint32_t)(t) - TY_STRUCT < L_MAX_STRUCTS)
 #define IS_ENUM(t) ((uint32_t)(t) - TY_ENUM < L_MAX_ENUMS)
 enum {
@@ -51,7 +54,7 @@ enum {
     TK_CONST, TK_TRUE, TK_FALSE, TK_IF, TK_ELSE, TK_WHILE, TK_FOR, TK_RETURN,
     TK_MODULE, TK_EQ, TK_NE, TK_LE, TK_GE, TK_AND, TK_OR, TK_INC, TK_DEC,
     TK_BREAK, TK_CONTINUE, TK_SWITCH, TK_CASE, TK_DEFAULT,
-    TK_IMPORT, TK_AS, TK_PUB, TK_NAMESPACE, TK_SCOPE, TK_STATIC, TK_USING, TK_STRUCT, TK_ENUM
+    TK_IMPORT, TK_AS, TK_PUB, TK_NAMESPACE, TK_SCOPE, TK_STATIC, TK_USING, TK_STRUCT, TK_ENUM, TK_BYTE
 };
 
 typedef struct Expr Expr;
@@ -71,7 +74,7 @@ typedef struct Field Field;
 typedef struct Enum Enum;
 struct ExprList { Expr *value; ExprList *next; };
 struct SwitchCase { Token token; int32_t value; bool is_default; Expr *expr; Stmt *body; SwitchCase *next; };
-typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX, EX_GLOBAL, EX_STRUCT, EX_FIELD } ExprKind;
+typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX, EX_GLOBAL, EX_STRUCT, EX_FIELD, EX_CONVERT } ExprKind;
 struct Expr {
     ExprKind kind;
     Token token;
@@ -180,7 +183,7 @@ typedef enum {
     OP_CONST, OP_LOAD, OP_STORE, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_REM,
     OP_NEG, OP_NOT, OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE,
     OP_JUMP, OP_BRANCH, OP_CALL, OP_RETURN, OP_BOUNDS, OP_CLEAR, OP_SWITCH, OP_TRAP,
-    OP_GLOBAL_LOAD, OP_GLOBAL_STORE, OP_STRUCT, OP_FIELD, OP_FIELD_STORE, OP_COUNT
+    OP_GLOBAL_LOAD, OP_GLOBAL_STORE, OP_STRUCT, OP_FIELD, OP_FIELD_STORE, OP_TO_BYTE, OP_TO_INT, OP_COUNT
 } Opcode;
 typedef struct { Opcode op; uint32_t dst, a, b, c, line, column; } Instruction;
 typedef struct { int32_t value; uint32_t target; } SwitchEntry;

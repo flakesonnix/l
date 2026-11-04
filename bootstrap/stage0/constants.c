@@ -11,6 +11,10 @@ static int32_t expression_value(Context *ctx, Expr *e, Global *owner) {
     switch (e->kind) {
     case EX_INT: case EX_BOOL: value = (int32_t)e->integer; break;
     case EX_NAME: value = constant_value(ctx, e->global, owner); break;
+    case EX_CONVERT:
+        value = expression_value(ctx, e->left, owner);
+        if (e->type == TY_BYTE && (uint32_t)value > 255) token_fail(ctx, e->token, "invalid constant expression: byte conversion out of range (0..255)");
+        break;
     case EX_UNARY: {
         int32_t a = expression_value(ctx, e->left, owner);
         switch (e->op) {
