@@ -63,7 +63,8 @@ enum {
     GLOBAL_LOAD_VALID, GLOBAL_STORE_VALID, GLOBAL_CALL_SHARED, GLOBAL_RESET, GLOBAL_SIGNED, GLOBAL_BOOL, GLOBAL_MAX,
     GLOBAL_LIMIT, GLOBAL_TYPE, GLOBAL_BOOL_HIGH, GLOBAL_BOOL_NEGATIVE, GLOBAL_LOAD_INDEX, GLOBAL_STORE_INDEX,
     GLOBAL_LOAD_REGISTER, GLOBAL_STORE_REGISTER, GLOBAL_LOAD_TYPE, GLOBAL_STORE_TYPE, GLOBAL_BOOL_STORE_TYPE,
-    GLOBAL_STORE_UNDEFINED, GLOBAL_DUPLICATE,
+    GLOBAL_STORE_UNDEFINED, GLOBAL_DUPLICATE, GLOBAL_STORE_LOCAL_UNINITIALIZED, GLOBAL_STORE_ARRAY_UNINITIALIZED,
+    GLOBAL_LOAD_LOCAL_UNINITIALIZED, GLOBAL_STORE_NOT_DOMINATING,
     CASE_COUNT
 };
 
@@ -334,6 +335,31 @@ static void mutate(Fixture *x, int which) {
     case GLOBAL_DUPLICATE:
         f->code_count = 3; x->code[0][1] = x->code[0][0];
         x->code[0][2] = ins(OP_RETURN, 0, 0, 0, 0); break;
+    case GLOBAL_STORE_LOCAL_UNINITIALIZED: case GLOBAL_LOAD_LOCAL_UNINITIALIZED:
+        f->register_count = 2; x->registers[0][1] = TY_INT; f->code_count = 4;
+        x->code[0][1] = ins(OP_GLOBAL_STORE, 0, 0, 0, 0);
+        if (which == GLOBAL_LOAD_LOCAL_UNINITIALIZED) x->code[0][1] = ins(OP_JUMP, 0, 2, 0, 0);
+        x->code[0][2] = ins(OP_LOAD, 1, 0, 0, 0);
+        x->code[0][3] = ins(OP_RETURN, 0, 1, 0, 0); break;
+    case GLOBAL_STORE_ARRAY_UNINITIALIZED:
+        x->slot_lengths[0][0] = 1; f->register_count = 3; f->code_count = 5;
+        x->registers[0][1] = x->registers[0][2] = TY_INT;
+        x->code[0][1] = ins(OP_CONST, 1, 0, 0, 0);
+        x->code[0][2] = ins(OP_GLOBAL_STORE, 0, 0, 0, 0);
+        x->code[0][3] = ins(OP_LOAD, 2, 0, 1, 1);
+        x->code[0][4] = ins(OP_RETURN, 0, 2, 0, 0); break;
+    case GLOBAL_STORE_NOT_DOMINATING:
+        f->register_count = 4; f->code_count = 9; x->registers[0][0] = TY_BOOL;
+        for (unsigned j = 1; j < 4; ++j) x->registers[0][j] = TY_INT;
+        x->code[0][0] = ins(OP_CONST, 0, 1, 0, 0);
+        x->code[0][1] = ins(OP_BRANCH, 0, 0, 2, 4);
+        x->code[0][2] = ins(OP_CONST, 1, 41, 0, 0);
+        x->code[0][3] = ins(OP_JUMP, 0, 6, 0, 0);
+        x->code[0][4] = ins(OP_CONST, 2, 43, 0, 0);
+        x->code[0][5] = ins(OP_JUMP, 0, 6, 0, 0);
+        x->code[0][6] = ins(OP_GLOBAL_STORE, 0, 1, 0, 0);
+        x->code[0][7] = ins(OP_CONST, 3, 42, 0, 0);
+        x->code[0][8] = ins(OP_RETURN, 0, 3, 0, 0); break;
     }
 }
 

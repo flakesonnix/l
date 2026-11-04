@@ -274,10 +274,22 @@ oracle and exercise 32 constant-import DAGs (seed `0x434f4e53`), visibility,
 forward references, cycles, short-circuiting, inlining, limits and defined errors.
 Static tests cover shared state, visibility, initialization, recursion, aliasing,
 evaluation order, signed/boolean metadata, limits, traps and version rejection.
+They also compare 32 stateful import DAGs (seed `0x53544154`) against a BigInt
+model, checking every cell and private visit counter after each operation.
+Every graph includes diamonds and cross-package dependencies, uses all import
+forms, and runs in two import orders. Initializer tables must contain exactly one
+cell per declaration, independent of the number of importing paths.
 The fuzz suite adds 128 independent shared-state models, runs each source and
 bytecode program twice, and tests global-store dominance in generated verifier
 graphs. Arbitrary bytecode mutants and potentially cyclic verifier graphs are
 still verified, not executed.
+Ten additional static-lifecycle programs check arithmetic/bounds traps and the
+call-depth/instruction budgets after mutating integer and boolean cells. Source
+and deserialized IR alternate trapped and successful executions using the same
+execution context, with caller cleanup after traps. Every retry starts fresh,
+successful executions release their memory, and neither initializer metadata nor
+serialized bytecode changes. Targeted verifier cases ensure global loads/stores
+cannot initialize local scalars/arrays or bypass source-register dominance.
 It also runs `make fuzz`: a fixed-seed bytecode mutation corpus plus generated
 array, switch and expression programs checked against independent host-side
 models. Mutations include truncation, bit/word replacement, insertion, deletion,

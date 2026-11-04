@@ -537,6 +537,91 @@ try {
   rejected({ 'app/main.l': `module app.main;import app.state;${staticLimit}int main(){return 42;}`,
     'app/state.l': 'module app.state;static int other=0;' }, /too many static globals across modules/);
 
+  // Stateful DAG oracle: every graph has diamonds, crosses packages and uses all import forms.
+  state = 0x53544154;
+  const stateImport = (name, n, kind) => {
+    const prefix = kind === 0 ? name.replaceAll('.', '::') : `d${n}`;
+    if (kind !== 2) return { text: `import ${name}${kind ? ` as ${prefix}` : ''};`,
+      count: `${prefix}::cells::count`, active: `${prefix}::cells::active`,
+      step: `${prefix}::step`, visits: `${prefix}::visits` };
+    return { text: `import ${name}::{cells::count as count${n},cells::active as active${n},step as step${n},visits as visits${n}};`,
+      count: `count${n}`, active: `active${n}`, step: `step${n}`, visits: `visits${n}` };
+  };
+  for (let test = 0; test < 32; ++test) {
+    const nodes = [], units = [], metadata = [];
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.s${n}`, seed = BigInt(random(100001) - 50000), active = random(2) !== 0;
+      const imports = [], edges = [];
+      let body = 'int previous=cells::count++;cells::visits++;cells::count=cells::count+delta;'
+        + 'cells::active=!cells::active;int total=previous;';
+      for (let p = 0; p < n; ++p) if (p >= n - 2 || random(3) === 0) {
+        const binding = stateImport(nodes[p].name, p, (test + n + p) % 3);
+        const shift = BigInt(random(21) - 10), argument = BigInt(random(21) - 10);
+        edges.push({ target: p, shift, argument }); imports.push(binding.text);
+        body += `if(${binding.active})${binding.count}=${binding.count}+(${shift});else ${binding.active}=true;`
+          + `total=total+${binding.step}(${argument});`;
+      }
+      body += 'return total+cells::count;';
+      const declarations = `const int seed=${seed};namespace cells{pub static int count=seed;`
+        + `pub static bool active=${active};static int visits=0;}`
+        + `pub int visits(){return cells::visits;}pub int step(int delta){${body}}`;
+      nodes.push({ name, seed, active, edges }); units.push({ name, imports, declarations });
+      const symbol = `${n < 4 ? 'stdlib' : 'application'}::${name.replaceAll('.', '::')}::cells`;
+      metadata.push(`global ${symbol}::count: int initial=${seed}`, `global ${symbol}::active: bool initial=${Number(active)}`,
+        `global ${symbol}::visits: int initial=0`);
+    }
+    const cells = nodes.map(node => ({ count: node.seed, active: node.active, visits: 0n }));
+    const checked = value => {
+      assert.ok(value >= -2147483648n && value <= 2147483647n, `static DAG ${test}: model overflow`);
+      return value;
+    };
+    function step(n, delta) {
+      const cell = cells[n], previous = cell.count;
+      cell.count = checked(cell.count + 1n); cell.visits = checked(cell.visits + 1n);
+      cell.count = checked(cell.count + delta); cell.active = !cell.active;
+      let total = previous;
+      for (const { target, shift, argument } of nodes[n].edges) {
+        if (cells[target].active) cells[target].count = checked(cells[target].count + shift);
+        else cells[target].active = true;
+        total = checked(total + step(target, argument));
+      }
+      return checked(total + cell.count);
+    }
+    const bindings = nodes.map((node, n) => stateImport(node.name, n, (test + n) % 3));
+    const snapshot = () => cells.map((cell, n) => `if(${bindings[n].count}!=${cell.count}`
+      + `||${bindings[n].active}!=${cell.active}||${bindings[n].visits}()!=${cell.visits})return 1;`).join('');
+    let main = `int main(){${snapshot()}`;
+    for (let op = 0; op < 12; ++op) {
+      const n = op % 4 === 0 ? 7 : random(8), delta = BigInt(random(41) - 20), binding = bindings[n], cell = cells[n];
+      switch (op % 4) {
+      case 0: main += `if(${binding.step}(${delta})!=${step(n, delta)})return 1;`; break;
+      case 1:
+        main += `${binding.count}=${binding.count}+(${delta});${binding.active}=!${binding.active};`;
+        cell.count = checked(cell.count + delta); cell.active = !cell.active; break;
+      case 2:
+        main += `if(${binding.count}++!=${cell.count})return 1;`; cell.count = checked(cell.count + 1n); break;
+      case 3: {
+        const taken = cell.active && step(n, delta) !== 0n;
+        main += `bool taken${op}=${binding.active}&&${binding.step}(${delta})!=0;if(taken${op}!=${taken})return 1;`;
+        break;
+      }
+      }
+      main += snapshot();
+    }
+    units.push({ name: 'app.main', imports: bindings.map(binding => binding.text), declarations: `${main}return 42;}` });
+    for (const reversed of [false, true]) {
+      const project = {};
+      for (const unit of units) project[`${unit.name.replaceAll('.', '/')}.l`] = `module ${unit.name};`
+        + (reversed ? [...unit.imports].reverse() : unit.imports).join('') + unit.declarations;
+      const settings = config(); if (reversed) settings.module_roots.reverse();
+      const f = program(project, 42, settings), output = resolve(f.directory, 'program.lbc');
+      assert.equal(readFileSync(output).readUInt32LE(16), 24, `static DAG ${test}: duplicate or missing cells`);
+      const actual = command(0, ['inspect', output]).stdout.split('\n').filter(line => line.startsWith('global '))
+        .map(line => line.replace(/^global g\d+ /, 'global ')).sort();
+      assert.deepEqual(actual, [...metadata].sort(), `static DAG ${test}: incorrect initializer table`);
+    }
+  }
+
   // Strict manifest schema, truncations, escaping and manifest-relative roots.
   const minimal = JSON.stringify(config());
   for (let cut = 0; cut < minimal.length; ++cut) assert.match(source(fixture({}, minimal.slice(0, cut)), 65).stderr, /invalid module manifest/);
@@ -608,7 +693,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 constant DAGs, ${constantModels} constant-expression models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 constant DAGs, 32 static DAGs in two import orders, ${constantModels} constant-expression models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

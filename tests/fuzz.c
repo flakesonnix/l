@@ -13,6 +13,7 @@ typedef struct { const unsigned char *bytes; size_t size; } Seed;
 static uint32_t random_state = FUZZ_SEED;
 static size_t inputs, accepted, rejected, programs, executions;
 static size_t graphs, valid_graphs, invalid_graphs;
+static size_t lifecycle_programs;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -508,6 +509,75 @@ static void static_cases(void) {
     }
 }
 
+/* Programs live in a separate arena: a caller can clean up a trapped execution and retry. */
+static void reuse_execution(Context *ctx, const Program *p, int status) {
+    ctx->filename = "static-lifecycle"; ctx->status = 0;
+    ++executions;
+    if (!setjmp(ctx->failure)) {
+        if (execute_program(ctx, p) != 42) failed("static cells were not reset before execution");
+    }
+    if (ctx->status != status) failed("static lifecycle execution returned an unexpected status");
+    if (!status && (ctx->allocated || ctx->allocations)) failed("successful static execution leaked memory");
+    cleanup(ctx);
+    if (ctx->allocated || ctx->allocations) failed("trapped static execution could not be cleaned up");
+}
+static void static_lifecycle_case(size_t test, const char *trap) {
+    source_length = 0;
+    append("static int count=41;static bool ready=true;"
+           "int descend(int n){count++;if(n>0)return descend(n-1);return count;}"
+           "int fail(){count=42;ready=false;%s}"
+           "int main(){if(count!=41||!ready)return 1;return fail();}"
+           "int recover(){if(count!=41||!ready)return 1;count=99;ready=false;return 42;}", trap);
+    ++programs; ++lifecycle_programs;
+    fprintf(stderr, "static lifecycle case %zu:\nmodule test;\n%s\n", test, source);
+    Context *owner = context("static-lifecycle-source");
+    if (setjmp(owner->failure)) failed("static lifecycle program was rejected");
+    Program *compiled = compile(owner, source), *loaded = roundtrip(owner, compiled);
+    const Program *versions[] = {compiled, loaded};
+    for (unsigned version = 0; version < 2; ++version) {
+        const Program *p = versions[version];
+        Program recovery = *p;
+        recovery.entry = L_NONE;
+        for (uint32_t j = 0; j < p->function_count; ++j)
+            if (!strcmp(p->functions[j].name, "test::recover")) recovery.entry = j;
+        verify(owner, &recovery);
+        if (p->global_count != 2) failed("static lifecycle program has the wrong cell count");
+        IrGlobal initial[2]; memcpy(initial, p->globals, sizeof(initial));
+        write_bytecode(owner, p, "build/fuzz-roundtrip.lbc");
+        size_t before_size;
+        const unsigned char *before = read_file(owner, "build/fuzz-roundtrip.lbc", &before_size);
+        Context *execution = context("static-lifecycle");
+        for (unsigned attempt = 0; attempt < 4; ++attempt) {
+            reuse_execution(execution, p, 70);
+            if (memcmp(initial, p->globals, sizeof(initial))) failed("trap mutated the initializer table");
+            reuse_execution(execution, &recovery, 0);
+            reuse_execution(execution, &recovery, 0);
+            if (memcmp(initial, p->globals, sizeof(initial))) failed("return mutated the initializer table");
+        }
+        dispose(execution);
+        write_bytecode(owner, p, "build/fuzz-roundtrip.lbc");
+        size_t after_size;
+        const unsigned char *after = read_file(owner, "build/fuzz-roundtrip.lbc", &after_size);
+        if (after_size != before_size || memcmp(before, after, before_size)) failed("execution changed serialized bytecode");
+    }
+    dispose(owner);
+}
+static void static_lifecycle_cases(void) {
+    static const char *const traps[] = {
+        "return count+2147483647;",
+        "count=-2147483648;return -count;",
+        "count=0;return 1/count;",
+        "count=0;return 1%count;",
+        "count=-2147483648;return count/-1;",
+        "count=-2147483648;return count%-1;",
+        "int data[1];return data[count];",
+        "int data[1];data[count]=1;return 0;",
+        "return descend(256);",
+        "for(int n=0;n<2000000;n++){count++;}return count;"
+    };
+    for (size_t test = 0; test < sizeof(traps) / sizeof(*traps); ++test) static_lifecycle_case(test, traps[test]);
+}
+
 /* Enumerate (PC, defined-value set) states instead of using the verifier's meet algorithm. */
 enum { GRAPH_REGISTERS = 6, GRAPH_SLOTS = 2, GRAPH_CODE = 13, GRAPH_STATES = 1u << (GRAPH_REGISTERS + GRAPH_SLOTS) };
 static bool graph_model(const IrFunction *f) {
@@ -620,11 +690,13 @@ int main(void) {
     switch_limit_cases();
     expression_cases();
     static_cases();
+    static_lifecycle_cases();
     graph_cases();
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
     printf("fuzz: %zu verifier graphs (%zu accepted, %zu rejected) matched the independent path model\n",
            graphs, valid_graphs, invalid_graphs);
+    printf("fuzz: %zu static lifecycle programs preserved initializers across traps, cleanup and retries\n", lifecycle_programs);
     return 0;
 }
