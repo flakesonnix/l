@@ -1695,6 +1695,121 @@ try {
     }
   }
 
+  // Static-buffer DAG oracle: independent heaps, mixed element types and adjacent scalar guards.
+  state = 0x42554646;
+  const bufferImport = (name, n, kind) => {
+    const prefix = kind === 0 ? name.replaceAll('.', '::') : `b${n}`;
+    if (kind !== 2) return { text: `import ${name}${kind ? ` as ${prefix}` : ''};`,
+      size: `${prefix}::size`, positions: `${prefix}::buffers::positions`, marks: `${prefix}::buffers::marks`,
+      bytes: `${prefix}::buffers::bytes`, step: `${prefix}::step`, visits: `${prefix}::visits` };
+    return { text: `import ${name}::{size as size${n},buffers::positions as positions${n},buffers::marks as marks${n},`
+        + `buffers::bytes as bytes${n},step as step${n},visits as visits${n}};`,
+      size: `size${n}`, positions: `positions${n}`, marks: `marks${n}`, bytes: `bytes${n}`, step: `step${n}`, visits: `visits${n}` };
+  };
+  for (let test = 0; test < 32; ++test) {
+    const nodes = [], units = [], metadata = [];
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.b${n}`, length = 1 + random(3), imports = [], edges = [];
+      const guard = `if(low!=${17 + n}||high!=${-17 - n})1/0;`;
+      let size = `${length}`, body = guard + 'int previous=buffers::positions[index]++;buffers::visits++;'
+        + 'buffers::positions[index]=buffers::positions[index]+delta;buffers::marks[index]=!buffers::marks[index];'
+        + 'buffers::bytes[index]=byte((int(buffers::bytes[index])+delta+256)%256);int total=previous;';
+      for (let p = 0; p < n; ++p) if (p >= n - 2 || random(3) === 0) {
+        const binding = bufferImport(nodes[p].name, p, (test + n + p) % 3);
+        const offset = random(7), shift = BigInt(random(19) - 9), octet = random(256);
+        edges.push({ target: p, offset, shift, octet }); imports.push(binding.text);
+        if (edges.length === 1) size = `${binding.size}-${binding.size}+${length}`;
+        body += `int picked${p}=(index+${offset})%${binding.size};`
+          + `if(${binding.marks}[picked${p}])${binding.positions}[picked${p}]=${binding.positions}[picked${p}]+(${shift});`
+          + `else ${binding.marks}[picked${p}]=true;`
+          + `${binding.bytes}[picked${p}]=byte((int(${binding.bytes}[picked${p}])+${octet})%256);`
+          + `total=total+${binding.step}(picked${p},${shift});`;
+      }
+      body += guard + 'total=total+buffers::positions[index]+int(buffers::bytes[index]);'
+        + 'if(buffers::marks[index])total++;return total;';
+      const declarations = `pub const int size=${size};pub using Position=int;pub using Mark=bool;pub using Octet=byte;`
+        + `static int low=${17 + n};namespace buffers{pub static Position positions[size];static int visits=0;`
+        + `pub static Mark marks[size];pub static Octet bytes[size];}static int high=${-17 - n};`
+        + `pub int visits(){return buffers::visits;}pub int step(int index,int delta){${body}}`;
+      nodes.push({ name, length, edges }); units.push({ name, imports, declarations });
+      const symbol = `${n < 4 ? 'stdlib' : 'application'}::${name.replaceAll('.', '::')}`;
+      for (const [field, type] of [['positions', 'int'], ['marks', 'bool'], ['bytes', 'byte']])
+        metadata.push(`global ${symbol}::buffers::${field}: ${type} initial=0 length=${length} (0=scalar)`);
+      metadata.push(`global ${symbol}::buffers::visits: int initial=0 length=0 (0=scalar)`,
+        `global ${symbol}::low: int initial=${17 + n} length=0 (0=scalar)`,
+        `global ${symbol}::high: int initial=${-17 - n} length=0 (0=scalar)`);
+    }
+    const heaps = nodes.map(node => ({ positions: Array(node.length).fill(0n), marks: Array(node.length).fill(false),
+      bytes: Array(node.length).fill(0n), visits: 0n }));
+    const checked = value => {
+      assert.ok(value >= -2147483648n && value <= 2147483647n, `buffer DAG ${test}: model overflow`);
+      return value;
+    };
+    function step(n, index, delta) {
+      const heap = heaps[n], previous = heap.positions[index];
+      heap.positions[index] = checked(checked(previous + 1n) + delta); heap.visits = checked(heap.visits + 1n);
+      heap.marks[index] = !heap.marks[index]; heap.bytes[index] = (heap.bytes[index] + delta + 256n) % 256n;
+      let total = previous;
+      for (const { target, offset, shift, octet } of nodes[n].edges) {
+        const dependency = heaps[target], picked = (index + offset) % nodes[target].length;
+        if (dependency.marks[picked]) dependency.positions[picked] = checked(dependency.positions[picked] + shift);
+        else dependency.marks[picked] = true;
+        dependency.bytes[picked] = (dependency.bytes[picked] + BigInt(octet)) % 256n;
+        total = checked(total + step(target, picked, shift));
+      }
+      return checked(checked(checked(total + heap.positions[index]) + heap.bytes[index]) + (heap.marks[index] ? 1n : 0n));
+    }
+    const bindings = nodes.map((node, n) => bufferImport(node.name, n, (test + n) % 3));
+    const snapshot = (selected = nodes.map((_, n) => n)) => selected.map(n => {
+      const heap = heaps[n], binding = bindings[n];
+      return `if(${binding.visits}()!=${heap.visits})return 1;` + heap.positions.map((value, index) =>
+        `if(${binding.positions}[${index}]!=${value})return 1;if(${binding.marks}[${index}]!=${heap.marks[index]})return 1;`
+        + `if(${binding.bytes}[${index}]!=byte(${heap.bytes[index]}))return 1;`).join('');
+    }).join('');
+    let main = `int main(){${snapshot()}`;
+    for (let op = 0; op < 12; ++op) {
+      const n = op % 4 === 0 ? 7 : random(8), index = random(nodes[n].length), other = random(nodes[n].length);
+      const delta = BigInt(random(19) - 9), binding = bindings[n], heap = heaps[n];
+      switch (op % 6) {
+      case 0: main += `if(${binding.step}(${index},${delta})!=${step(n, index, delta)})return 1;`; break;
+      case 1:
+        main += `${binding.positions}[${index}]=${binding.positions}[${index}]+(${delta});`
+          + `${binding.marks}[${index}]=!${binding.marks}[${index}];`;
+        heap.positions[index] = checked(heap.positions[index] + delta); heap.marks[index] = !heap.marks[index]; break;
+      case 2:
+        main += `if(${binding.positions}[${index}]++!=${heap.positions[index]})return 1;`;
+        heap.positions[index] = checked(heap.positions[index] + 1n); break;
+      case 3: {
+        const taken = heap.marks[index] && step(n, index, delta) !== 0n;
+        main += `bool taken${op}=${binding.marks}[${index}]&&${binding.step}(${index},${delta})!=0;`
+          + `if(taken${op}!=${taken})return 1;`; break;
+      }
+      case 4: {
+        const value = step(n, index, delta);
+        main += `${binding.positions}[${index}]=${binding.step}(${index},${delta});`;
+        heap.positions[index] = value; break;
+      }
+      case 5: {
+        const inner = step(n, other, delta), value = step(n, index, inner % 17n);
+        main += `if(${binding.step}(${index},${binding.step}(${other},${delta})%17)!=${value})return 1;`; break;
+      }
+      }
+      main += snapshot(op % 4 === 3 ? undefined : [n]);
+    }
+    units.push({ name: 'app.main', imports: bindings.map(binding => binding.text), declarations: `${main}${snapshot()}return 42;}` });
+    for (const reversed of [false, true]) {
+      const project = {};
+      for (const unit of units) project[`${unit.name.replaceAll('.', '/')}.l`] = `module ${unit.name};`
+        + (reversed ? [...unit.imports].reverse() : unit.imports).join('') + unit.declarations;
+      const settings = config(); if (reversed) settings.module_roots.reverse();
+      const f = program(project, 42, settings), output = resolve(f.directory, 'program.lbc');
+      assert.equal(readFileSync(output).readUInt32LE(16), 48, `buffer DAG ${test}: duplicate or missing storage`);
+      const actual = command(0, ['inspect', output]).stdout.split('\n').filter(line => line.startsWith('global '))
+        .map(line => line.replace(/^global g\d+ /, 'global ')).sort();
+      assert.deepEqual(actual, [...metadata].sort(), `buffer DAG ${test}: wrong shape or initializer metadata`);
+    }
+  }
+
   // Strict manifest schema, truncations, escaping and manifest-relative roots.
   const minimal = JSON.stringify(config());
   for (let cut = 0; cut < minimal.length; ++cut) assert.match(source(fixture({}, minimal.slice(0, cut)), 65).stderr, /invalid module manifest/);
@@ -1766,7 +1881,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 struct DAGs, 32 alias DAGs, 32 constant DAGs, 32 static DAGs in two import orders, ${constantModels} constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 struct DAGs, 32 alias DAGs, 32 constant DAGs, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }
