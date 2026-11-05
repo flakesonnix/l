@@ -232,6 +232,10 @@ typedef struct {
     IrString *strings;
 } Program;
 
+typedef enum { VM_INSTRUCTION, VM_BRANCH } VmEventKind;
+typedef struct { VmEventKind kind; uint32_t function, pc, arm; } VmEvent;
+typedef void (*VmObserver)(void *, VmEvent);
+
 _Noreturn void fail(Context *, uint32_t, uint32_t, const char *, ...);
 _Noreturn void token_fail(Context *, Token, const char *);
 void *allocate(Context *, size_t);
@@ -266,6 +270,7 @@ Program *read_bytecode(Context *, const unsigned char *, size_t);
 void inspect(const Program *, FILE *);
 int32_t execute_program(Context *, const Program *);
 int32_t execute_program_io(Context *, const Program *, FILE *, FILE *, FILE *);
+int32_t execute_program_observed(Context *, const Program *, FILE *, FILE *, FILE *, VmObserver, void *);
 int l_main(int, char **);
 
 #endif

@@ -6,8 +6,13 @@ typedef struct {
     Context *ctx; const Program *program; uint64_t steps; int32_t *globals;
     uint32_t *global_offsets;
     FILE *input, *output, *error;
+    VmObserver observer;
+    void *observer_data;
 } Vm;
 
+static void observe(Vm *vm, VmEventKind kind, uint32_t function, uint32_t pc, uint32_t arm) {
+    if (vm->observer) vm->observer(vm->observer_data, (VmEvent){kind, function, pc, arm});
+}
 static _Noreturn void trap(Vm *vm, Instruction i, const char *message) {
     vm->ctx->status = 70;
     fail(vm->ctx, i.line, i.column, "VM trap: %s", message);
@@ -51,6 +56,7 @@ static void run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, Ins
     for (;;) {
         Instruction i = f->code[pc++];
         if (++vm->steps > L_MAX_STEPS) trap(vm, i, "instruction limit exceeded (10000000)");
+        observe(vm, VM_INSTRUCTION, index, pc - 1, L_NONE);
         int32_t a, b;
         switch (i.op) {
         case OP_CONST:
@@ -144,7 +150,11 @@ static void run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, Ins
         case OP_GT: R(i.dst) = R(i.a) > R(i.b); break;
         case OP_GE: R(i.dst) = R(i.a) >= R(i.b); break;
         case OP_JUMP: pc = i.a; break;
-        case OP_BRANCH: pc = R(i.a) ? i.b : i.c; break;
+        case OP_BRANCH: {
+            bool condition = R(i.a) != 0;
+            observe(vm, VM_BRANCH, index, pc - 1, condition ? 0 : 1);
+            pc = condition ? i.b : i.c; break;
+        }
         case OP_CALL: {
             uint32_t cells = 0;
             for (uint32_t j = 0; j < i.c; ++j) cells += width(vm->program, f->registers[f->arguments[i.b + j]]);
@@ -172,10 +182,11 @@ static void run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, Ins
             break;
         case OP_SWITCH: {
             int32_t value = R(i.a);
-            uint32_t target = i.dst;
+            uint32_t target = i.dst, arm = i.c;
             for (uint32_t j = i.b; j < i.b + i.c; ++j) {
-                if (f->switch_entries[j].value == value) { target = f->switch_entries[j].target; break; }
+                if (f->switch_entries[j].value == value) { target = f->switch_entries[j].target; arm = j - i.b; break; }
             }
+            observe(vm, VM_BRANCH, index, pc - 1, arm);
             if (target == L_NONE) trap(vm, i, "unhandled switch value");
             pc = target;
             break;
@@ -192,9 +203,14 @@ int32_t execute_program(Context *ctx, const Program *p) {
 }
 
 int32_t execute_program_io(Context *ctx, const Program *p, FILE *input, FILE *output, FILE *error) {
+    return execute_program_observed(ctx, p, input, output, error, NULL, NULL);
+}
+
+int32_t execute_program_observed(Context *ctx, const Program *p, FILE *input, FILE *output, FILE *error,
+                               VmObserver observer, void *observer_data) {
     Vm vm = {.ctx = ctx, .program = p,
         .global_offsets = allocate(ctx, p->global_count * sizeof(uint32_t)),
-        .input = input, .output = output, .error = error};
+        .input = input, .output = output, .error = error, .observer = observer, .observer_data = observer_data};
     uint32_t cells = 0;
     for (uint32_t n = 0; n < p->global_count; ++n) {
         vm.global_offsets[n] = cells; cells += p->globals[n].length ? p->globals[n].length : 1;
