@@ -21,6 +21,7 @@ make
 ./build/l run examples/byte_demo.l --manifest examples/package.json
 ./build/l run examples/string_demo.l --manifest examples/package.json
 printf 'hello\n' | ./build/l run examples/io_demo.l --manifest examples/package.json
+printf 'hello' | ./build/l run examples/static_buffers.l --manifest examples/package.json
 make test                                      # Requires Node.js 22+
 make fuzz                                      # Deterministic mutation/model tests
 make sanitize
@@ -44,6 +45,8 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
   checked initializers, forward references and normal import/visibility rules.
 - Module/namespace `static` storage with `int`, `bool`, `byte`, `string` or enum types,
   compile-time initializers and shared runtime values across calls and imports.
+- Zero-initialized module/namespace `static int`/`bool`/`byte` arrays with checked
+  element access and shared storage across calls and imports.
 - `int` (exactly 32 bits), `bool`, `void` functions, local inference with `auto`.
 - `byte` (0..255), explicit checked `byte(intExpr)` narrowing and lossless
   `int(byteExpr)` widening, including in compile-time expressions.
@@ -147,7 +150,7 @@ their root-relative module paths; source-file symlinks cannot alias module
 identities. Reachable units are registered before dependency-cycle detection and
 processed in dependency order. Diagnostics include the complete cycle path.
 The seed permits 256 reachable modules, 1024 imports per module, 256 functions,
-1024 module constants, 1024 scalar static globals and 1024 type aliases across the
+1024 module constants, 1024 static declarations and 1024 type aliases across the
 linked program, plus 256 structs with 1..64 scalar fields each and 256 enums with
 1..1024 members each. Enum members do not consume module-constant slots. Filesystem
 discovery/resolution, graph ordering and declaration lookup are separate compiler
@@ -175,8 +178,8 @@ and type aliases remain module-private.
 Wildcard imports, re-exports, import cycles and executable module initialization
 are rejected. Dependencies do not supply a hidden entry point: imported functions
 named `main` are ordinary functions. Bytecode requires no manifest. Artifact
-version **1.8** rejects older versions, including **1.7**; recompile from source.
-`extern` is now reserved; rename existing identifiers using it.
+version **1.9** rejects older versions, including **1.8**; recompile from source.
+No new keywords are introduced by static arrays (`extern` remains reserved).
 
 `compile -o` rejects an existing output that aliases the manifest or any source in
 the reachable module graph, including relative-path variants, symlinks and hard
@@ -219,7 +222,7 @@ Aliases cannot be called, used as values or used as casts.
 Local aliases, `using namespace`, generic aliases, aliases to `void`/`auto`, and
 array/function aliases are not supported. `using` is now a reserved keyword.
 Aliases disappear before IR lowering and add no runtime objects or bytecode
-metadata. The current IR/bytecode version is **1.8**; the exact-version policy is
+metadata. The current IR/bytecode version is **1.9**; the exact-version policy is
 unchanged.
 
 ### Byte values and conversions
@@ -546,7 +549,7 @@ forbidden in these expressions, including in unevaluated operands. String length
 and string indexing are permitted. Labels use the shared switch's
 lexical scope, so a preceding case's local can shadow a module constant.
 Folding emits only existing slot lengths and case-table values; it adds no
-runtime evaluation or additional format changes. Current IR/bytecode is **1.8**.
+runtime evaluation or additional format changes. Current IR/bytecode is **1.9**.
 
 ### Mutable static storage
 
@@ -562,7 +565,7 @@ pub int next() {
 }
 ```
 
-`static` declarations are scalar, module/namespace-scoped bindings with explicit
+Scalar `static` declarations are module/namespace-scoped bindings with explicit
 `int`/`bool`/`byte`/`string` types (or transparent aliases) or enum types, and required
 compile-time initializers.
 Initializers follow the constant-expression rules above: literals, constant
@@ -579,20 +582,60 @@ executing it does not mutate the IR initializer table. Runtime assignment and
 integer postfix updates preserve left-to-right evaluation and checked-overflow behavior.
 `pub` permits cross-module reads and writes; private cells remain module-private.
 Aliases/selective imports refer to the same cell, not copies. Locals/parameters
-may shadow static names. Function-local statics, static functions, global arrays
+may shadow static names. Function-local statics, static functions
 and implicit mutable module variables are not supported by this seed.
+
+### Static arrays
+
+```c
+module app.buffers;
+
+pub const int capacity = 65535;
+pub static byte source[capacity];
+static int positions[256];
+namespace tokens {
+    pub static bool active[256];
+}
+```
+
+`static Type name[length];` declares fixed, zero-initialized storage at module or
+namespace scope. Element types must resolve to `int`, `bool` or `byte`; existing
+scalar aliases can name element types, but arrays are not first-class alias or
+value types. Lengths are compile-time `int` expressions in 1..65535, with forward
+constant references and the same checked folding rules as local arrays. A linked
+program permits 1048576 static array elements in total, in addition to scalar
+statics. Each array counts once toward the existing 1024-static-declaration limit.
+
+Arrays initialize once per VM execution, not per call or loop iteration. Every
+function and importer refers to the same storage; repeated executions start with
+fresh zeroes, even after a previous execution trapped. They obey normal visibility,
+namespace, selective-import, module-alias and lexical-shadowing rules. Public
+arrays permit cross-module element reads and writes.
+
+Indexes require `int`; negative and out-of-range indexes trap. Assignment evaluates
+and checks the index once, before evaluating its value. Integer element `++`/`--`
+returns the old value, checks overflow and does not reevaluate the index. Boolean
+and byte elements retain exact typing and canonical ranges. Static array accesses
+are not constant expressions, including in lengths and unused/unevaluated operands.
+
+Array initializers, whole-array reads/assignments, array parameters/returns,
+multidimensional arrays and arrays of strings, enums or structs are unsupported.
+There is no array `.length` property; retain the declared capacity as a constant.
+Static arrays do not add pointers, borrowing, GC or dynamic allocation. The shared
+input buffer in `examples/static_buffers.l` demonstrates source storage accessible
+from separate L functions using the existing stream intrinsics.
 
 ## Pipeline and artifacts
 
 Manifest → source-module discovery/registration → import resolution → cycle
 detection/dependency ordering → namespace/visibility/name resolution/type checking
 → typed SSA register IR with explicit
-local storage slots, nominal struct/enum metadata, a binary string pool and a scalar global-data table →
+local storage slots, nominal struct/enum metadata, a binary string pool and a global-data table →
 verification → bytecode → VM.
 The seed does not materialize separate HIR, Typed IR and MIR representations yet.
 The implemented subset has no ownership model yet.
 
-IR and bytecode are versioned independently, currently both **1.8**.
+IR and bytecode are versioned independently, currently both **1.9**.
 Bytecode 1.1 added a 32-bit length per slot (0 for scalars), `bounds_check` and
 `clear`; 1.2 added a per-function `switch` case-entry table and the `switch`/`trap`
 opcodes. Version 1.3 added a global-data table and `global.load`/`global.store`.
@@ -603,7 +646,9 @@ fields, and enum equality/switches without adding opcodes. Version 1.6 added the
 `byte` type, byte arrays and `byte.checked`/`byte.to_int` conversion opcodes.
 Version 1.7 added `string`, a binary string-pool table, `string.length` and
 `string.index`; equality compares string bytes.
-Version 1.8 adds four stream opcodes without changing the table/instruction layout.
+Version 1.8 added four stream opcodes without changing the table/instruction layout.
+Version 1.9 adds a 32-bit global length and indexed `global.load`/`global.store`
+addressing modes; no type or opcode IDs change.
 The loader accepts only the exact format version; recompile older
 artifacts from source. The verifier checks instruction types, jump targets, unique
 register definitions, dominance, slot initialization, array metadata, addressing
@@ -613,6 +658,12 @@ load/store register types. Global stores require dominating source definitions;
 global loads define SSA registers and need no local-slot initialization proof. Index
 register definitions must also dominate their uses; element accesses require an
 initialized array. Loaded bytecode is fully verified before execution.
+Static arrays have bounded lengths and total elements, primitive element types
+and zero initializers. Global access modes must match the scalar/array shape.
+Indexed global accesses require a dominating integer index; stores also require
+a dominating, exactly typed value. Globals are already initialized and do not
+initialize local slots or arrays. The VM checks bounds independently at each
+indexed global access, even when a preceding `bounds_check` is absent.
 Struct metadata must have bounded, nonempty, uniquely named scalar fields.
 Verification checks nominal type IDs, constructor vectors, field bounds/types,
 source-register dominance and whole-value initialization before field stores.
@@ -646,7 +697,7 @@ cannot bypass safety by omitting a preceding `bounds_check`.
 `inspect` displays the IR, including string lengths and hexadecimal contents,
 not an ABI-stable text representation.
 
-The 1.8 header is magic (4 bytes), major/minor (2 bytes each), function count,
+The 1.9 header is magic (4 bytes), major/minor (2 bytes each), function count,
 entry function index, global count, struct count, enum count and string count
 (4 bytes each). Global, struct, enum and string counts start at byte offsets
 16, 20, 24 and 28; the complete header is 32 bytes. Struct entries
@@ -661,11 +712,17 @@ name length/name bytes, member count, then each member's name length/name bytes
 and signed 32-bit value. String entries follow enums: a 32-bit byte length and
 exactly that many raw bytes, without padding or a terminator. Zero length is valid.
 Global entries follow strings and precede functions: name length
-(4 bytes), name bytes, scalar type ID (4 bytes), initial signed 32-bit value
-(4 bytes). Integers use little-endian encoding; negative initializers
+(4 bytes), name bytes, element/scalar type ID (4 bytes), initial signed 32-bit value
+(4 bytes), and length (4 bytes: 0 for a scalar, 1..65535 for an array). Array
+initializers must be zero; elements themselves are not serialized. Integers use
+little-endian encoding; negative scalar initializers
 use their 32-bit bit patterns. `global.load` uses `dst` = destination register and
 `a` = global index; `global.store` uses `dst` = global index and `a` = value
-register. String initializers are pool indices; string `const` instructions use
+register. For both operations, `c == 0` selects scalar access (ignoring `b`), while
+`c == 1` selects indexed array access with `b` = integer index register; other modes
+are invalid. Array storage uses disjoint regions of 32-bit VM cells, including
+byte arrays, with an internal offset table not exposed to L or serialized.
+String initializers are pool indices; string `const` instructions use
 `a` as the pool index. Constant-only programs have an empty global table.
 
 `struct.make` uses `dst` = aggregate register, `a` = initializer-vector offset and
@@ -689,9 +746,9 @@ operation performs its own runtime bounds check.
 `io.write_byte` (34) uses `a` = byte register; `io.write_string` (35) and
 `io.write_error` (36) use `a` = string register. All three writes require
 `dst == L_NONE` and ignore `b`/`c`. Existing type/opcode IDs are preserved.
-**Migration:** recompile all older artifacts, including 1.7. Even artifacts
-without I/O require the exact 1.8 version header. Rename source identifiers
-called `extern` because it is now a keyword (`string` remains reserved).
+**Migration:** recompile all older artifacts, including 1.8. Even scalar-only
+artifacts require the exact 1.9 version header and the new global-entry layout.
+No new keywords are introduced; `extern` and `string` remain reserved.
 
 Artifacts contain no timestamps or absolute source paths. Identical source
 dependency closures and package identities produce identical bytecode after
@@ -755,6 +812,15 @@ The fuzz suite adds 128 independent stream-state models, checking input position
 exact stdout/stderr bytes, return values, short-circuit/nested-call order and
 output retained before traps. Each source/deserialized program runs three times
 on caller-owned streams, with trap cleanup and fresh statics between executions.
+Static array tests cover all three element types, folded lengths, limits, imports,
+shared diamond dependencies, shadowing, exact index/value types and forbidden
+whole-array operations. The stream-buffer example handles empty, full and oversized
+binary inputs before and after serialization. Twenty-nine IR cases exercise
+metadata, scalar/array mode mismatches, index dominance, unguarded bounds and
+storage reset. The fuzz suite adds 128 independent array/state/order models,
+10 mutation/trap/cleanup lifecycle programs and 512 additional verification-only
+graphs for indexed global accesses. Arbitrary mutants and cyclic graphs are
+still never executed.
 Storage/dispatch tests reuse 423 integer-expression BigInt models in lengths and
 labels, checking folded metadata, errors, duplicates, visibility and shadowing.
 The fuzz suite adds 128 bounded constant-shape programs checked against separate
@@ -800,9 +866,9 @@ model-based testing, not an exhaustive or coverage-guided fuzzing campaign.
 `make coverage` measures all stage-0 C files without source exclusions and fails
 below 100% line, function **or branch coverage**. It also runs fault-injection,
 verifier and bytecode-mutation tests. The report is `build/coverage/report.json`.
-The 1.8 slice measures 2528/2528 lines, 161/161 functions and 2561/2561 branches.
-Its suites pass 842 integration checks, 8015 module checks, 182 frontend cases,
-52 fault cases and 290 verifier cases plus format mutations. Deterministic fuzzing
-covers 28139 bytecode inputs, 2977 semantic programs, 7881 VM executions and 2048
+The 1.9 slice measures 2586/2586 lines, 161/161 functions and 2658/2658 branches.
+Its suites pass 842 integration checks, 8232 module checks, 182 frontend cases,
+52 fault cases and 319 verifier cases plus format mutations. Deterministic fuzzing
+covers 31966 bytecode inputs, 3115 semantic programs, 8555 VM executions and 2560
 verification-only control-flow graphs.
 100% coverage does not establish correctness or full language conformance.

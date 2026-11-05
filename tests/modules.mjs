@@ -77,6 +77,79 @@ async function brokenPipe(args, stream) {
 }
 
 try {
+  const ga = body => ({ 'app/main.l': `module app.main;${body}` });
+  program(ga('static int a[2];static bool flags[2];static byte bytes[256];'
+    + 'void fill(){a[1]=40;flags[1]=true;for(int n=0;n<256;n++)bytes[n]=byte(n);}'
+    + 'int main(){if(a[1]!=0||flags[1]||bytes[255]!=byte(0))return 1;fill();'
+    + 'if(!flags[1]||int(bytes[255])!=255||a[0]!=0)return 1;return a[1]+2;}'));
+  program(ga('static int a["abc".length+width];const int width=2;'
+    + 'int main(){a[4]=42;{int a[1];a[0]=7;if(a[0]!=7)return 1;}return a[4];}'));
+  program(ga('using B=byte;namespace n{pub static B data[1];int set(){data[0]=byte(42);return int(data[0]);}}'
+    + 'int main(){if(n::data[0]!=byte(0))return 1;return n::set();}'));
+  program(ga('static int a[3];static int index=0;int pick(){return index++;}'
+    + 'int value(){a[2]=2;return 40;}int main(){a[pick()]=value();int old=a[pick()]++;'
+    + 'a[1]--;return a[0]+a[2]+old+index-2;}'));
+  program(ga('static int a[1];int next(){return a[0]++;}int main(){for(int i=0;i<3;i++){int local[1];'
+    + 'if(local[0]!=0)return 1;local[0]=next();}return a[0]+39;}'));
+  for (const expression of ['a[-1]', 'a[2]', 'a[-1]=1/0', 'a[2]=1/0', 'a[-1]++', 'a[2]--']) {
+    const f = program(ga(`static int a[2];int main(){${expression};return 0;}`), 70);
+    assert.match(source(f, 70, 'run').stderr, /array index out of bounds/);
+  }
+  for (const body of ['return a;', 'a=1;return 0;', 'a=a;return 0;', 'return a==a;',
+    'return f(a);', 'a();return 0;', 'a.length;return 0;']) {
+    rejected(ga(`static int a[1];int f(int n){return n;}int main(){${body}}`), /array|not callable/);
+  }
+  for (const [declarations, message] of [
+    ['static int a[0];', /length must be 1..65535/], ['static int a[-1];', /length must be 1..65535/],
+    ['static int a[65536];', /length must be 1..65535/], ['static int a[2147483647];', /length must be 1..65535/],
+    ['static int a[-2147483648];', /length must be 1..65535/], ['static int a[true];', /expected int/],
+    ['static int a[byte(1)];', /expected int/], ['static int a[1/0];', /division by zero/],
+    ['static int a[2147483647+1];', /overflow/], ['static int a[n];static int n=1;', /mutable static/],
+    ['static int a[f()];int f(){return 1;}', /not a constant expression/],
+    ['static int a[b[0]];static int b[1];', /array access is not a constant expression/],
+    ['const int n=a[0];static int a[1];', /array access is not a constant expression/],
+    ['static int a[unknown];', /unknown/], ['static int a[];', /expected expression/],
+    ['static int a[1;', /expected '\]'/], ['static int a[1]=0;', /cannot have an initializer/],
+    ['const int a[1];', /require a scalar initializer/], ['static void a[1];', /element type/],
+    ['static auto a[1];', /element type/], ['static string a[1];', /element type/],
+    ['enum E{A};static E a[1];', /element type/], ['struct P{int n;};static P a[1];', /element type/],
+  ]) rejected(ga(`${declarations}int main(){return 0;}`), message);
+  for (const expression of ['a[true]=1', 'a[byte(0)]=1', 'a[0]=true', 'a[0][0]', 'a[0].n=1'])
+    rejected(ga(`static int a[1];int main(){${expression};return 0;}`), /expected|array|field/);
+  rejected(ga('static bool a[1];int main(){a[0]++;return 0;}'), /expected int/);
+  rejected(ga('static byte a[1];int main(){a[0]--;return 0;}'), /expected int/);
+  rejected(ga('static int a[1];int main(){int a=0;return a[0];}'), /expected string/);
+  rejected(ga('static int a=0;int main(){a[0]=1;return 0;}'), /variable is not an array/);
+  const gaLimit = Array.from({ length: 16 }, (_, n) => `static int a${n}[65535];`).join('');
+  program(ga(`${gaLimit}static byte tail[16];int main(){a15[65534]=42;return a15[65534]+int(tail[15]);}`));
+  rejected(ga(`${gaLimit}static int tail[17];int main(){return 0;}`), /too many static array elements/);
+  const gaProject = {
+    'std/buffers.l': 'module std.buffers;pub const int size=3;pub static int data[size];'
+      + 'namespace flags{pub static bool bits[1];}static byte hidden[1];'
+      + 'pub int bump(){hidden[0]=byte(int(hidden[0])+1);return int(hidden[0]);}',
+    'app/left.l': 'module app.left;import std.buffers as b;pub int step(){b::data[1]=40;b::flags::bits[0]=true;return b::bump();}',
+    'app/right.l': 'module app.right;import std.buffers::{data,flags::bits,bump};'
+      + 'pub int step(){if(!bits[0])return 0;data[1]++;return bump();}',
+    'app/main.l': 'module app.main;import app.left;import app.right;import std.buffers;'
+      + 'int main(){if(std::buffers::data[1]!=0)return 1;app::left::step();app::right::step();return std::buffers::data[1]+1;}',
+  };
+  const gaLinked = program(gaProject);
+  const gaIR = source(gaLinked, 0, 'inspect').stdout;
+  assert.equal(gaIR.split('\n').filter(line => /^global /.test(line)).length, 3);
+  assert.match(gaIR, /data: int initial=0 length=3/);
+  rejected({ ...gaProject, 'app/main.l': 'module app.main;import std.buffers;int main(){return int(std::buffers::hidden[0]);}' }, /inaccessible symbol/);
+  rejected({ ...gaProject, 'app/main.l': 'module app.main;int main(){return std::buffers::data[0];}' }, /unknown qualified name/);
+  const gaDemo = resolve('examples/static_buffers.l'), gaManifest = resolve('examples/package.json');
+  const gaArtifact = resolve(work, 'static-buffers.lbc');
+  command(0, ['compile', gaDemo, '--manifest', gaManifest, '-o', gaArtifact]);
+  for (const size of [0, 256, 65535, 65536]) {
+    const input = Buffer.from(Array.from({ length: size }, (_, n) => n % 256));
+    for (const args of [['run', gaDemo, '--manifest', gaManifest], ['run', gaArtifact]]) {
+      const result = command(size > 65535 ? 1 : 0, args, { input, encoding: null });
+      assert.deepEqual(result.stdout, size > 65535 ? Buffer.alloc(0) : Buffer.from(input).reverse());
+      assert.deepEqual(result.stderr, Buffer.from(size > 65535 ? 'Input exceeds the 65535-byte source buffer.\n' : ''));
+    }
+  }
   // Explicit imports expose only the four declared stream intrinsics; bytes are never text-decoded.
   const ioBytes = Buffer.from(Array.from({ length: 256 }, (_, n) => n));
   for (const [imports, read, write, text, error] of [
@@ -423,7 +496,7 @@ try {
   ]) program(stringFiles(`${imports}const int n=${first}.length;int main(){${type} s=${first};if(n==3&&int(s[1])==0&&int(s[2])==255)return 42;return 1;}`));
   const stringInspection = program(stringFiles('import std.text::{P,swap,current};int main(){P p=P{swap("*"),42};if(p.text.length==3&&current=="*")return int(current[0]);return 1;}'));
   const stringIR = source(stringInspection, 0, 'inspect').stdout;
-  assert.match(stringIR, /LIR 1\.8; bytecode 1\.8/); assert.match(stringIR, /string\.length/); assert.match(stringIR, /string\.index/);
+  assert.match(stringIR, /LIR 1\.9; bytecode 1\.9/); assert.match(stringIR, /string\.length/); assert.match(stringIR, /string\.index/);
   assert.match(stringIR, /string k0 length=3 hex=4100ff/); assert.match(stringIR, /field 0 text: string/);
   assert.equal(readFileSync(resolve(stringInspection.directory, 'program.lbc')).readUInt32LE(28), 2);
   const octets = literal(Array.from({ length: 256 }, (_, n) => n));
@@ -593,7 +666,7 @@ try {
   ]) program(byteFiles(`${imports}int main(){${type} b=${first};return int(b)+1;}`));
   const byteInspection = program(byteFiles('import std.octets::{Packet,swap,current};int main(){Packet p=Packet{swap(byte(42)),true};if(p.value==byte(41))return int(current);return 0;}'));
   const byteIR = source(byteInspection, 0, 'inspect').stdout;
-  assert.match(byteIR, /LIR 1\.8; bytecode 1\.8/); assert.match(byteIR, /byte\.checked/); assert.match(byteIR, /byte\.to_int/);
+  assert.match(byteIR, /LIR 1\.9; bytecode 1\.9/); assert.match(byteIR, /byte\.checked/); assert.match(byteIR, /byte\.to_int/);
   assert.match(byteIR, /field 0 value: byte/); assert.match(byteIR, /global g0 .*current: byte initial=41/);
   const allBytes = Array.from({ length: 256 }, (_, n) => `case byte(${n}):return ${n};`).join('');
   byteProgram(`int read(byte b){switch(b){${allBytes}default:return -1;}}int main(){for(int n=0;n<256;n++){byte b=byte(n);if(int(b)!=n||read(b)!=n)return 1;}return 42;}`);
@@ -1464,7 +1537,7 @@ try {
   source(staticMoved, 0, 'compile', ['-o', staticOutput], { cwd: '/' });
   assert.deepEqual(readFileSync(resolve(staticOriginal.directory, 'program.lbc')), readFileSync(staticOutput));
   const staticIR = source(staticOriginal, 0, 'inspect').stdout;
-  assert.match(staticIR, /LIR 1\.8; bytecode 1\.8/);
+  assert.match(staticIR, /LIR 1\.9; bytecode 1\.9/);
   assert.match(staticIR, /global g\d+ stdlib::std::state::hidden: int initial=40/);
   assert.match(staticIR, /global g\d+ stdlib::std::state::flags::active: bool initial=1/);
   assert.match(staticIR, /global\.load/); assert.match(staticIR, /global\.store/);
@@ -1495,7 +1568,7 @@ try {
     ['static int count=0;static int other=count[0];int main(){return 0;}', /mutable static/],
     ['static int count=2147483647+1;int main(){return 42;}', /invalid constant expression: integer overflow/],
     ['static int count=1/0;int main(){return 42;}', /invalid constant expression: division by zero/],
-    ['static int count[2];int main(){return 0;}', /scalar constant initializer/],
+    ['static int count[2][2];int main(){return 0;}', /after static declaration/],
     ['static int f(){return 42;}int main(){return f();}', /scalar constant initializer/],
     ['int count=42;int main(){return count;}', /after function name/],
     ['int main(){static int count=0;return count;}', /expected expression/],
@@ -1618,7 +1691,7 @@ try {
       assert.equal(readFileSync(output).readUInt32LE(16), 24, `static DAG ${test}: duplicate or missing cells`);
       const actual = command(0, ['inspect', output]).stdout.split('\n').filter(line => line.startsWith('global '))
         .map(line => line.replace(/^global g\d+ /, 'global ')).sort();
-      assert.deepEqual(actual, [...metadata].sort(), `static DAG ${test}: incorrect initializer table`);
+      assert.deepEqual(actual, metadata.map(line => `${line} length=0 (0=scalar)`).sort(), `static DAG ${test}: incorrect initializer table`);
     }
   }
 

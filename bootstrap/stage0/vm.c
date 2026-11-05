@@ -4,6 +4,7 @@
 
 typedef struct {
     Context *ctx; const Program *program; uint64_t steps; int32_t *globals;
+    uint32_t *global_offsets;
     FILE *input, *output, *error;
 } Vm;
 
@@ -55,8 +56,24 @@ static void run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, Ins
         case OP_CONST:
             /* Define the bit-pattern conversion without implementation-defined unsigned-to-signed casts. */
             R(i.dst) = i.a <= INT32_MAX ? (int32_t)i.a : (int32_t)((int64_t)i.a - INT64_C(4294967296)); break;
-        case OP_GLOBAL_LOAD: R(i.dst) = vm->globals[i.a]; break;
-        case OP_GLOBAL_STORE: vm->globals[i.dst] = R(i.a); break;
+        case OP_GLOBAL_LOAD: {
+            uint32_t offset = vm->global_offsets[i.a];
+            if (i.c) {
+                uint32_t index = (uint32_t)R(i.b);
+                if (index >= vm->program->globals[i.a].length) trap(vm, i, "static array index out of bounds");
+                offset += index;
+            }
+            R(i.dst) = vm->globals[offset]; break;
+        }
+        case OP_GLOBAL_STORE: {
+            uint32_t offset = vm->global_offsets[i.dst];
+            if (i.c) {
+                uint32_t index = (uint32_t)R(i.b);
+                if (index >= vm->program->globals[i.dst].length) trap(vm, i, "static array index out of bounds");
+                offset += index;
+            }
+            vm->globals[offset] = R(i.a); break;
+        }
         case OP_STRUCT:
             for (uint32_t j = 0; j < i.b; ++j) registers[reg_offsets[i.dst] + j] = R(f->arguments[i.a + j]);
             break;
@@ -175,12 +192,18 @@ int32_t execute_program(Context *ctx, const Program *p) {
 }
 
 int32_t execute_program_io(Context *ctx, const Program *p, FILE *input, FILE *output, FILE *error) {
-    Vm vm = {.ctx = ctx, .program = p, .globals = allocate(ctx, p->global_count * sizeof(int32_t)),
+    Vm vm = {.ctx = ctx, .program = p,
+        .global_offsets = allocate(ctx, p->global_count * sizeof(uint32_t)),
         .input = input, .output = output, .error = error};
-    for (uint32_t n = 0; n < p->global_count; ++n) vm.globals[n] = p->globals[n].initial;
+    uint32_t cells = 0;
+    for (uint32_t n = 0; n < p->global_count; ++n) {
+        vm.global_offsets[n] = cells; cells += p->globals[n].length ? p->globals[n].length : 1;
+    }
+    vm.globals = allocate(ctx, cells * sizeof(int32_t));
+    for (uint32_t n = 0; n < p->global_count; ++n) vm.globals[vm.global_offsets[n]] = p->globals[n].initial;
     Instruction entry = {0};
     int32_t value;
     run(&vm, p->entry, NULL, 0, entry, &value);
-    release(ctx, vm.globals);
+    release(ctx, vm.globals); release(ctx, vm.global_offsets);
     return value;
 }

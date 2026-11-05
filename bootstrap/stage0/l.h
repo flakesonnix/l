@@ -8,15 +8,16 @@
 #include <setjmp.h>
 
 #define L_IR_MAJOR 1
-#define L_IR_MINOR 8
+#define L_IR_MINOR 9
 #define L_BC_MAJOR 1
-#define L_BC_MINOR 8
+#define L_BC_MINOR 9
 #define L_NONE UINT32_MAX
 #define L_MAX_FUNCTIONS 256u
 #define L_MAX_MODULES 256u
 #define L_MAX_IMPORTS 1024u
 #define L_MAX_CONSTANTS 1024u
 #define L_MAX_GLOBALS 1024u
+#define L_MAX_GLOBAL_ELEMENTS 1048576u
 #define L_MAX_ALIASES 1024u
 #define L_MAX_STRUCTS 256u
 #define L_MAX_FIELDS 64u
@@ -122,7 +123,8 @@ struct Global {
     Module *module;
     Type type;
     bool exported, is_static;
-    Expr *value;
+    Expr *value, *length;
+    uint32_t array;
     int32_t integer;
     unsigned state;
     uint32_t symbol;
@@ -212,7 +214,7 @@ typedef struct {
     SwitchEntry *switch_entries;
     size_t register_capacity, code_capacity, argument_capacity, switch_capacity;
 } IrFunction;
-typedef struct { char *name; Type type; int32_t initial; } IrGlobal;
+typedef struct { char *name; Type type; int32_t initial; uint32_t length; } IrGlobal;
 typedef struct { char *name; Type type; } IrField;
 typedef struct { char *name; uint32_t field_count; IrField *fields; } IrStruct;
 typedef struct { char *name; int32_t value; } IrMember;

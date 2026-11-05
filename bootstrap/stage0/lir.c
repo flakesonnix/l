@@ -81,7 +81,7 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
         uint32_t idx = lower_expr(l, e->right);
         emit(l, e->token, OP_BOUNDS, 0, idx, 0, e->length);
         r = reg(l, e->type);
-        emit(l, e->token, OP_LOAD, r, e->symbol, idx, 1);
+        emit(l, e->token, e->global ? OP_GLOBAL_LOAD : OP_LOAD, r, e->symbol, idx, 1);
         return r;
     }
     case EX_ASSIGN:
@@ -94,7 +94,7 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
             uint32_t idx = lower_expr(l, e->left->right);
             emit(l, e->token, OP_BOUNDS, 0, idx, 0, e->left->length);
             r = lower_expr(l, e->right);
-            emit(l, e->token, OP_STORE, e->left->symbol, r, idx, 1);
+            emit(l, e->token, e->left->global ? OP_GLOBAL_STORE : OP_STORE, e->left->symbol, r, idx, 1);
             return r;
         }
         r = lower_expr(l, e->right);
@@ -103,10 +103,10 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
         if (e->left->kind == EX_INDEX) {
             uint32_t idx = lower_expr(l, e->left->right);
             emit(l, e->token, OP_BOUNDS, 0, idx, 0, e->left->length);
-            a = reg(l, TY_INT); emit(l, e->token, OP_LOAD, a, e->left->symbol, idx, 1);
+            a = reg(l, TY_INT); emit(l, e->token, e->left->global ? OP_GLOBAL_LOAD : OP_LOAD, a, e->left->symbol, idx, 1);
             b = constant(l, e->token, TY_INT, 1); r = reg(l, TY_INT);
             emit(l, e->token, e->op == TK_INC ? OP_ADD : OP_SUB, r, a, b, 0);
-            emit(l, e->token, OP_STORE, e->left->symbol, r, idx, 1);
+            emit(l, e->token, e->left->global ? OP_GLOBAL_STORE : OP_STORE, e->left->symbol, r, idx, 1);
             return a;
         }
         a = lower_expr(l, e->left); b = constant(l, e->token, TY_INT, 1); r = reg(l, TY_INT);
@@ -286,7 +286,7 @@ Program *lower(Context *ctx, Ast *ast) {
         if (!global->is_static) continue;
         IrGlobal *g = &p->globals[global->symbol];
         g->name = linked_name(ctx, global->module, global->scope, global->name);
-        g->type = global->type; g->initial = global->integer;
+        g->type = global->type; g->initial = global->integer; g->length = global->array;
     }
     uint32_t index = 0;
     for (Function *fn = ast->functions; fn; fn = fn->next, ++index) {
@@ -330,8 +330,12 @@ static Type slot_type(Context *ctx, const IrFunction *f, uint32_t r) {
     if (r >= f->slot_count) invalid(ctx, "slot index out of range");
     return f->slots[r];
 }
-static Type global_type(Context *ctx, const Program *p, uint32_t index) {
+static void same(Context *, Type, Type);
+static Type global_type(Context *ctx, const Program *p, const IrFunction *f, uint32_t index, Instruction i) {
     if (index >= p->global_count) invalid(ctx, "global index out of range");
+    if (i.c > 1) invalid(ctx, "invalid global addressing mode");
+    if ((p->globals[index].length != 0) != (i.c == 1)) invalid(ctx, "global shape does not match addressing mode");
+    if (i.c) same(ctx, register_type(ctx, f, i.b), TY_INT);
     return p->globals[index].type;
 }
 static bool scalar_type(const Program *p, Type type) {
@@ -433,7 +437,8 @@ static void dataflow(Context *ctx, const IrFunction *f, bool **seen_out) {
             use(ctx, bits, i.a);
             if (i.c) { use(ctx, bits, f->register_count + i.dst); use(ctx, bits, i.b); }
             break;
-        case OP_GLOBAL_STORE: use(ctx, bits, i.a); break;
+        case OP_GLOBAL_STORE: use(ctx, bits, i.a); if (i.c) use(ctx, bits, i.b); break;
+        case OP_GLOBAL_LOAD: if (i.c) use(ctx, bits, i.b); break;
         case OP_FIELD_STORE: use(ctx, bits, f->register_count + i.dst); use(ctx, bits, i.a); break;
         case OP_FIELD: use(ctx, bits, i.a); break;
         case OP_STRUCT:
@@ -490,8 +495,15 @@ void verify(Context *ctx, const Program *p) {
         }
     }
     if (p->global_count > L_MAX_GLOBALS) invalid(ctx, "too many globals");
+    uint32_t global_elements = 0;
     for (uint32_t n = 0; n < p->global_count; ++n) {
         const IrGlobal *g = &p->globals[n];
+        if (g->length > L_MAX_ARRAY) invalid(ctx, "global array length out of range");
+        if (g->length && g->type != TY_INT && g->type != TY_BOOL && g->type != TY_BYTE)
+            invalid(ctx, "global array element type must be int, bool or byte");
+        if (g->length && g->initial) invalid(ctx, "global array initializer must be zero");
+        if (g->length > L_MAX_GLOBAL_ELEMENTS - global_elements) invalid(ctx, "too many global array elements");
+        global_elements += g->length;
         if (!scalar_type(p, g->type)) invalid(ctx, "invalid global type");
         if (g->type == TY_BOOL && (uint32_t)g->initial > 1) invalid(ctx, "invalid bool global initializer");
         if (g->type == TY_BYTE && (uint32_t)g->initial > 255) invalid(ctx, "invalid byte global initializer");
@@ -569,9 +581,9 @@ void verify(Context *ctx, const Program *p) {
                 access_mode(ctx, f, i.dst, i);
                 same(ctx, slot_type(ctx, f, i.dst), register_type(ctx, f, i.a)); break;
             case OP_GLOBAL_LOAD:
-                same(ctx, register_type(ctx, f, i.dst), global_type(ctx, p, i.a)); break;
+                same(ctx, register_type(ctx, f, i.dst), global_type(ctx, p, f, i.a, i)); break;
             case OP_GLOBAL_STORE:
-                same(ctx, global_type(ctx, p, i.dst), register_type(ctx, f, i.a)); break;
+                same(ctx, global_type(ctx, p, f, i.dst, i), register_type(ctx, f, i.a)); break;
             case OP_BOUNDS:
                 same(ctx, register_type(ctx, f, i.a), TY_INT);
                 if (!i.c || i.c > L_MAX_ARRAY) invalid(ctx, "invalid array bounds limit");

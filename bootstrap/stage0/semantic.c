@@ -264,13 +264,18 @@ static Function *resolve_call(Semantic *s, Token name, const Type *types, uint32
 static Decl *resolve_index(Semantic *s, Expr *e) {
     if (e->left->kind != EX_NAME) token_fail(s->ctx, e->left->token, "arrays must be indexed through a variable name");
     Binding *b = lookup(s, e->left->token);
-    if (!b) token_fail(s->ctx, e->left->token, "unknown local variable");
-    if (!b->decl->array) token_fail(s->ctx, e->left->token, "variable is not an array");
+    if (b) {
+        if (!b->decl->array) token_fail(s->ctx, e->left->token, "variable is not an array");
+        e->symbol = b->decl->slot;
+        e->length = b->decl->array;
+        e->type = b->decl->type;
+    } else {
+        Global *global = resolve_global(s, e->left->token);
+        if (!global->length) token_fail(s->ctx, e->left->token, "variable is not an array");
+        e->global = global; e->symbol = global->symbol; e->length = global->array; e->type = global->type;
+    }
     require(s, e->right->token, analyze_expr(s, e->right), TY_INT);
-    e->symbol = b->decl->slot;
-    e->length = b->decl->array;
-    e->type = b->decl->type;
-    return b->decl;
+    return b ? b->decl : NULL;
 }
 static Type resolve_field(Semantic *s, Expr *e, Type type) {
     if (!IS_STRUCT(type)) token_fail(s->ctx, e->token, "field access requires a struct value");
@@ -295,13 +300,14 @@ static Type lvalue(Semantic *s, Expr *e) {
     Binding *b;
     if (e->kind == EX_INDEX) {
         Decl *d = resolve_index(s, e);
-        if (d->immutable) token_fail(s->ctx, e->token, "cannot modify const binding");
-        return d->type;
+        if (d && d->immutable) token_fail(s->ctx, e->token, "cannot modify const binding");
+        return e->type;
     } else {
         b = lookup(s, e->token);
         if (!b) {
             Global *global = resolve_global(s, e->token);
             if (!global->is_static) token_fail(s->ctx, e->token, "cannot modify module constant");
+            if (global->length) token_fail(s->ctx, e->token, "cannot assign to a whole array");
             e->kind = EX_GLOBAL; e->symbol = global->symbol; e->type = global->type; e->global = global;
             return e->type;
         }
@@ -356,6 +362,7 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         Binding *b = lookup(s, e->token);
         if (!b) {
             Global *constant = resolve_global(s, e->token);
+            if (constant->length) token_fail(s->ctx, e->token, "array used without an index");
             e->type = constant->type; e->global = constant;
             if (constant->is_static) {
                 if (s->constant_expression) token_fail(s->ctx, e->token, "mutable static storage is not a constant expression");
@@ -372,7 +379,8 @@ static Type analyze_expr(Semantic *s, Expr *e) {
     }
     case EX_INDEX: {
         Binding *binding = e->left->kind == EX_NAME ? lookup(s, e->left->token) : NULL;
-        if (binding && binding->decl->array) {
+        Global *global = !binding && e->left->kind == EX_NAME ? resolve_global(s, e->left->token) : NULL;
+        if ((binding && binding->decl->array) || (global && global->length)) {
             if (s->constant_expression) token_fail(s->ctx, e->token, "array access is not a constant expression");
             (void)resolve_index(s, e);
         } else {
@@ -674,6 +682,8 @@ void analyze(Context *ctx, Ast *ast) {
         Function scope = {.module = constant->module, .scope = constant->scope};
         Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope};
         constant->type = resolve_type(&s, constant->type, constant->type_name, NULL);
+        if (constant->length && constant->type != TY_INT && constant->type != TY_BOOL && constant->type != TY_BYTE)
+            token_fail(ctx, constant->name, "static array element type must be int, bool or byte");
         if (constant->type != TY_INT && constant->type != TY_BOOL && constant->type != TY_BYTE && constant->type != TY_STRING && !IS_ENUM(constant->type))
             token_fail(ctx, constant->name, "module constant/static type must be explicit int or bool or byte or string or enum");
         if (constant->exported) public_type(&s, constant->name, constant->type);
@@ -734,9 +744,21 @@ void analyze(Context *ctx, Ast *ast) {
         ctx->filename = constant->module->path;
         Function scope = {.module = constant->module, .scope = constant->scope};
         Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope, .reachable = true, .constant_expression = true};
-        require(&s, constant->name, analyze_expr(&s, constant->value), constant->type);
+        if (constant->length) require(&s, constant->name, analyze_expr(&s, constant->length), TY_INT);
+        else require(&s, constant->name, analyze_expr(&s, constant->value), constant->type);
     }
     evaluate_constants(ctx, ast);
+    uint32_t global_elements = 0;
+    for (Global *global = ast->globals; global; global = global->next) {
+        if (!global->length) continue;
+        ctx->filename = global->module->path;
+        int32_t length = evaluate_constant_expression(ctx, ast, global->length);
+        if (length < 1 || length > (int32_t)L_MAX_ARRAY) token_fail(ctx, global->name, "static array length must be 1..65535");
+        global->array = (uint32_t)length;
+        if (global->array > L_MAX_GLOBAL_ELEMENTS - global_elements)
+            token_fail(ctx, global->name, "too many static array elements (maximum 1048576)");
+        global_elements += global->array;
+    }
     for (Function *fn = ast->functions; fn; fn = fn->next) {
         ctx->filename = fn->module->path;
         Semantic s = { ctx, ast, fn, NULL, 0, 0, NULL, true, false };
