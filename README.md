@@ -385,6 +385,45 @@ after traps. Each execution still starts with fresh static cells; I/O side effec
 remain external. No file handles, Unicode text API, formatting, dynamic input
 strings, file opening or general extern functions are exposed to L.
 
+### VM execution observation
+
+The C embedding API also provides optional read-only execution observation:
+
+```c
+int32_t execute_program_observed(Context *ctx, const Program *program,
+    FILE *input, FILE *output, FILE *error, VmObserver observer, void *data);
+```
+
+`VmObserver` has signature `void (*)(void *, VmEvent)`. The callback receives the
+supplied opaque data pointer unchanged (including NULL), and an event by value.
+Passing a NULL observer disables callbacks. Existing `execute_program` and
+`execute_program_io` calls keep their behavior and use no observer. As with those
+APIs, supply a verified, live `Program` and valid caller-owned streams.
+
+Each `VmEvent` contains `kind`, `function`, `pc` and `arm`. Function and instruction
+positions index `program->functions[function].code[pc]`, allowing callers to look
+up names and serialized source line/column metadata without exposing VM registers.
+
+- `VM_INSTRUCTION` fires immediately before an opcode executes, with
+  `arm == L_NONE`. An opcode that traps still has this start event. Instructions
+  rejected by the step budget and callees rejected by the depth limit have no
+  execution event.
+- `VM_BRANCH` reports the selected outcome of `branch` or `switch`, before the
+  transfer or an unmatched-switch trap. Its PC is the selecting instruction,
+  not the destination. `branch` uses arm 0 for true and 1 for false. `switch`
+  uses case-vector-relative arms 0..count-1, regardless of the vector's offset,
+  and arm `count` for the fallback, including empty tables and trapping fallbacks.
+  Outcomes remain distinct when multiple arms share the same destination.
+
+Calls appear as a caller instruction followed by callee instructions; returns
+appear before resuming the caller. Observers can collect instruction/branch
+counters as a foundation for coverage of future L-written compiler code. No trace
+buffer, CLI trace mode or serialized trace format is added, and IR/bytecode stays
+at **1.9**. Observer work does not consume VM steps; callers bound its host memory
+and time. Callbacks must return normally and must not mutate the program,
+execution context or execution streams, or reenter the same execution. Normal
+I/O, fresh-static-storage, trap-cleanup and memory-ownership rules are unchanged.
+
 ### Value structs
 
 ```c
@@ -833,6 +872,14 @@ and deserialized executions alternate failures and successful retries through
 nested helpers, checking consumed input, retained stdout prefixes, caller-owned error flags,
 execution cleanup, fresh statics and unchanged metadata/serialized bytecode.
 These tests keep the language syntax and IR/bytecode format at 1.9.
+Observer tests compare exact instruction and branch-event order against independent
+loop/call/dispatch models, directly and after serialization. The 132 cases include
+disabled callbacks, NULL data, repeated runs, shared branch destinations,
+nonzero case-vector offsets, empty switches and trapping fallbacks. They check
+I/O failures, unchanged program results/bytecode, cleanup, and exact event counts
+at the instruction and call-depth limits. Observation is tested on explicitly
+bounded programs and known resource-limit cases, never arbitrary mutants or
+potentially cyclic verifier graphs.
 Storage/dispatch tests reuse 423 integer-expression BigInt models in lengths and
 labels, checking folded metadata, errors, duplicates, visibility and shadowing.
 The fuzz suite adds 128 bounded constant-shape programs checked against separate
@@ -878,9 +925,9 @@ model-based testing, not an exhaustive or coverage-guided fuzzing campaign.
 `make coverage` measures all stage-0 C files without source exclusions and fails
 below 100% line, function **or branch coverage**. It also runs fault-injection,
 verifier and bytecode-mutation tests. The report is `build/coverage/report.json`.
-The 1.9 slice measures 2586/2586 lines, 161/161 functions and 2658/2658 branches.
+The 1.9 slice measures 2596/2596 lines, 163/163 functions and 2660/2660 branches.
 Its suites pass 842 integration checks, 8872 module checks, 182 frontend cases,
-52 fault cases and 319 verifier cases plus format mutations. Deterministic fuzzing
+52 fault cases, 319 verifier cases plus format mutations, and 132 observer cases. Deterministic fuzzing
 covers 31966 bytecode inputs, 3116 semantic programs, 8595 VM executions and 2560
 verification-only control-flow graphs.
 100% coverage does not establish correctness or full language conformance.
