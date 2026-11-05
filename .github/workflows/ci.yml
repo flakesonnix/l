@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'review/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Stage 0 (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [test, sanitize, coverage]
+    env:
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+      - name: Build and verify
+        env:
+          TARGET: ${{ matrix.target }}
+        run: make CC=gcc "$TARGET"
+      - name: Retain coverage and failure diagnostics
+        if: ${{ always() && (matrix.target == 'coverage' || failure()) }}
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: stage0-${{ matrix.target }}
+          path: |
+            build/coverage/report.json
+            build/fuzz.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  nix:
+    name: Nix checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Detect flake support in this review slice
+        id: flake
+        run: |
+          if test -f flake.nix; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+            echo 'Nix checks start with the Nix flake review slice.'
+          fi
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        if: steps.flake.outputs.present == 'true'
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Check pinned package, tests, sanitizers, coverage and formatting
+        if: steps.flake.outputs.present == 'true'
+        run: nix flake check --print-build-logs
