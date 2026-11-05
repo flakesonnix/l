@@ -20,6 +20,7 @@ static size_t enum_programs;
 static size_t byte_programs;
 static size_t string_programs;
 static size_t io_programs;
+static size_t global_array_programs, global_array_lifecycles;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -132,7 +133,10 @@ static void fuzz_bytecode(void) {
             "int main(){P p=P{swap(\"*\")};if(p.s.length!=3||int(p.s[1])!=0||int(p.s[2])!=255||cell!=\"*\")return 1;"
             "if(\"\"!=\"\"||p.s!=initial)return 1;return int(cell[0]);}",
         "module std.io;pub extern int read_byte();pub extern void write_byte(byte b);"
-            "pub extern void write_string(string s);pub extern void write_error(string s);int main(){return 42;}"
+            "pub extern void write_string(string s);pub extern void write_error(string s);int main(){return 42;}",
+        "static int data[2];static bool ready[1];static byte bytes[2];int step(){data[1]++;return data[1];}"
+            "int main(){if(data[1]!=0||ready[0]||bytes[1]!=byte(0))return 1;data[1]=40;ready[0]=true;"
+            "bytes[1]=byte(1);return step()+int(bytes[1]);}"
     };
     Seed seeds[sizeof(sources) / sizeof(*sources)];
     Context *ctx = context("fuzz-seed");
@@ -1030,6 +1034,94 @@ static void io_cases(void) {
     }
 }
 
+static void global_array_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        unsigned length = 1 + random_number(4);
+        int32_t values[4] = {0}, bytes[4] = {0}, sum = 0, visits = 0;
+        bool flags[4] = {false};
+        source_length = 0;
+        append("static int values[%u];static byte bytes[%u];static bool flags[%u];static int guard=17;static int visits=0;"
+               "int bump(int i,int d){int old=values[i];values[i]=old+d;visits++;return old;}"
+               "int pair(int a,int b){return a*3+b;}int descend(int i,int n){values[i]++;if(n>0)return descend(i,n-1);return values[i];}"
+               "int main(){int sum=0;", length, length, length);
+        for (unsigned op = 0; op < 24; ++op) {
+            unsigned index = random_number(length), other = random_number(length), octet = random_number(256);
+            int32_t delta = (int32_t)random_number(41) - 20;
+            switch (random_number(13)) {
+            case 0: append("values[%u]=%d;", index, delta); values[index] = delta; break;
+            case 1: append("sum=sum+values[%u]++;", index); sum += values[index]++; break;
+            case 2: append("sum=sum+values[%u]--;", index); sum += values[index]--; break;
+            case 3: append("bytes[%u]=byte(%u);", index, octet); bytes[index] = (int32_t)octet; break;
+            case 4: append("flags[%u]=!flags[%u];", index, index); flags[index] = !flags[index]; break;
+            case 5:
+                append("sum=sum+bump(%u,%d);", index, delta); sum += values[index]; values[index] += delta; ++visits; break;
+            case 6:
+                append("values[%u]=bump(%u,%d);", index, index, delta); ++visits; break; // RHS update is overwritten by the assignment.
+            case 7:
+                append("{int i=%u;values[i++]=i;sum=sum+i;}", index); values[index] = (int32_t)index + 1; sum += (int32_t)index + 1; break;
+            case 8:
+                append("values[%u]=values[%u]=%d;", index, other, delta); values[index] = values[other] = delta; break;
+            case 9: {
+                append("sum=sum+pair(bump(%u,%d),bump(%u,%d));", index, delta, other, -delta);
+                int32_t a = values[index]; values[index] += delta;
+                int32_t b = values[other]; values[other] -= delta; sum += a * 3 + b; visits += 2; break;
+            }
+            case 10:
+                append("if(flags[%u]&&bump(%u,%d)!=0)sum++;", index, other, delta);
+                if (flags[index]) { if (values[other]) ++sum; values[other] += delta; ++visits; } break;
+            case 11:
+                append("bytes[%u]=byte((int(bytes[%u])+%u)%%256);", index, index, octet);
+                bytes[index] = (bytes[index] + (int32_t)octet) % 256; break;
+            case 12: {
+                unsigned depth = random_number(4);
+                append("sum=sum+descend(%u,%u);", index, depth); values[index] += (int32_t)depth + 1; sum += values[index]; break;
+            }
+            }
+            append("if(visits!=%d||guard!=17)return 1;", visits);
+            for (unsigned n = 0; n < length; ++n)
+                append("if(values[%u]!=%d)return 1;if(bytes[%u]!=byte(%d))return 1;if(flags[%u]!=%s)return 1;",
+                       n, values[n], n, bytes[n], n, flags[n] ? "true" : "false");
+        }
+        append("return sum+visits;}");
+        ++global_array_programs; semantic_case(sum + visits, 0);
+    }
+}
+static void global_array_lifecycle(const char *trap) {
+    source_length = 0;
+    append("static int data[2];static bool flags[2];static byte bytes[2];static int guard=41;"
+           "int check(){if(data[1]!=0||flags[0]||bytes[1]!=byte(0)||guard!=41)return 1;return 42;}"
+           "int dirty(){data[1]=42;flags[0]=true;bytes[1]=byte(255);guard=99;%s}"
+           "int main(){if(check()!=42)return 1;return dirty();}"
+           "int recover(){if(check()!=42)return 1;data[0]=42;return data[0];}", trap);
+    Context *owner = context("global-array-lifecycle");
+    if (setjmp(owner->failure)) failed("global array lifecycle source rejected");
+    ++programs; ++global_array_lifecycles;
+    Program *p = compile(owner, source), *loaded = roundtrip(owner, p);
+    Program *versions[] = {p, loaded};
+    for (unsigned n = 0; n < 2; ++n) {
+        Program *version = versions[n], recovery = *version;
+        for (uint32_t j = 0; j < version->function_count; ++j)
+            if (!strcmp(version->functions[j].name, "test::recover")) recovery.entry = j;
+        verify(owner, &recovery);
+        IrGlobal before[4]; memcpy(before, version->globals, sizeof(before));
+        Context *execution = context("global-array-execution");
+        for (unsigned attempt = 0; attempt < 4; ++attempt) {
+            reuse_execution(execution, version, 70); reuse_execution(execution, &recovery, 0);
+        }
+        if (memcmp(before, version->globals, sizeof(before))) failed("global array metadata changed across traps/retries");
+        dispose(execution);
+    }
+    dispose(owner);
+}
+static void global_array_lifecycle_cases(void) {
+    static const char *const traps[] = {
+        "return data[-1];", "return data[2];", "data[-1]=1;return 0;", "data[2]=1;return 0;",
+        "return data[2]++;", "return data[-1]--;", "data[1]=2147483647;return data[1]++;",
+        "bytes[0]=byte(-1);return 0;", "return 1/0;", "while(true){}return 0;"
+    };
+    for (unsigned n = 0; n < sizeof(traps) / sizeof(*traps); ++n) global_array_lifecycle(traps[n]);
+}
+
 /* Enumerate (PC, defined-value set) states instead of using the verifier's meet algorithm. */
 enum { GRAPH_REGISTERS = 6, GRAPH_SLOTS = 2, GRAPH_CODE = 13, GRAPH_STATES = 1u << (GRAPH_REGISTERS + GRAPH_SLOTS) };
 static bool graph_model(const IrFunction *f) {
@@ -1049,7 +1141,8 @@ static bool graph_model(const IrFunction *f) {
             uses = 1u << i.a;
             if (i.c) uses |= (1u << (GRAPH_REGISTERS + i.dst)) | (1u << i.b);
             break;
-        case OP_GLOBAL_STORE: uses = 1u << i.a; break;
+        case OP_GLOBAL_STORE: uses = (1u << i.a) | (i.c ? 1u << i.b : 0); break;
+        case OP_GLOBAL_LOAD: if (i.c) uses = 1u << i.b; break;
         case OP_ADD: case OP_STRING_INDEX: uses = (1u << i.a) | (1u << i.b); break;
         case OP_WRITE_BYTE: case OP_WRITE_STRING: case OP_WRITE_ERROR:
         case OP_BRANCH: case OP_SWITCH: case OP_RETURN: case OP_TO_BYTE: case OP_TO_INT: case OP_STRING_LENGTH: uses = 1u << i.a; break;
@@ -1099,7 +1192,7 @@ static void graph_cases(void) {
         Type slots[] = {TY_INT, TY_INT}, registers[] = {TY_BOOL, TY_INT, TY_INT, TY_INT, TY_INT, TY_INT};
         uint32_t lengths[] = {0, 1};
         SwitchEntry entries[6];
-        IrGlobal globals[] = {{"a", TY_INT, 0}, {"b", TY_INT, 42}};
+        IrGlobal globals[] = {{"a", TY_INT, 0, 0}, {"b", TY_INT, 42, 0}};
         Instruction code[] = {
             ins(OP_CONST, 0, 1, 0, 0), ins(OP_CONST, 1, 42, 0, 0), ins(OP_JUMP, 0, 3, 0, 0),
             ins(OP_STORE, 0, 1, 0, 0), ins(OP_CLEAR, 1, 0, 0, 0), ins(OP_CONST, 2, 0, 0, 0),
@@ -1127,6 +1220,12 @@ static void graph_cases(void) {
         }
         bool valid = graph_model(&f);
         Program p = {.function_count = 1, .functions = &f, .global_count = 2, .globals = globals}; graph_case(&p, valid);
+        globals[0].length = 2; globals[1].length = 3; globals[1].initial = 0;
+        code[7] = ins(OP_GLOBAL_LOAD, 3, 0, random_number(2) ? 2 : 5, 1);
+        code[8] = ins(OP_GLOBAL_STORE, 1, random_number(2) ? 1 : 3, random_number(2) ? 2 : 5, 1);
+        code[9] = ins(OP_GLOBAL_LOAD, 4, 1, random_number(2) ? 2 : 5, 1);
+        graph_case(&p, graph_model(&f));
+        globals[0].length = globals[1].length = 0; globals[1].initial = 42;
         /* Same arbitrary CFG, now with byte conversions, arrays and shared cells. */
         slots[0] = slots[1] = registers[3] = registers[4] = TY_BYTE;
         globals[0].type = globals[1].type = TY_BYTE;
@@ -1180,6 +1279,8 @@ int main(void) {
     byte_cases();
     string_cases();
     io_cases();
+    global_array_cases();
+    global_array_lifecycle_cases();
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
@@ -1192,5 +1293,7 @@ int main(void) {
     printf("fuzz: %zu byte programs matched independent storage, conversion and state models\n", byte_programs);
     printf("fuzz: %zu string programs matched independent byte, equality, bounds and state models\n", string_programs);
     printf("fuzz: %zu I/O programs matched independent input, output, error, EOF and trap models\n", io_programs);
+    printf("fuzz: %zu static array programs matched independent shared storage and evaluation-order models\n", global_array_programs);
+    printf("fuzz: %zu static array lifecycle programs survived traps, cleanup and fresh retries\n", global_array_lifecycles);
     return 0;
 }

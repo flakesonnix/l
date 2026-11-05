@@ -107,7 +107,7 @@ static void switch_fixture(Fixture *x) {
 }
 static void global_fixture(Fixture *x) {
     x->program.global_count = 1;
-    x->globals[0] = (IrGlobal){"g", TY_INT, 42};
+    x->globals[0] = (IrGlobal){"g", TY_INT, 42, 0};
     x->code[0][0] = ins(OP_GLOBAL_LOAD, 0, 0, 0, 0);
 }
 static void struct_fixture(Fixture *x) {
@@ -439,7 +439,7 @@ static void mutate(Fixture *x, int which) {
         x->code[0][5] = ins(OP_RETURN, 0, 4, 0, 0); break;
     case GLOBAL_MAX:
         x->program.global_count = L_MAX_GLOBALS;
-        for (unsigned j = 0; j < L_MAX_GLOBALS; ++j) x->globals[j] = (IrGlobal){"g", TY_INT, 42};
+        for (unsigned j = 0; j < L_MAX_GLOBALS; ++j) x->globals[j] = (IrGlobal){"g", TY_INT, 42, 0};
         x->code[0][0].a = L_MAX_GLOBALS - 1; break;
     case GLOBAL_LIMIT: x->program.global_count = L_MAX_GLOBALS + 1; break;
     case GLOBAL_TYPE:
@@ -546,7 +546,7 @@ static void enum_fixture(Fixture *x) {
     x->members[4] = (IrMember){"Alias", -7};
     x->program.struct_count = 1; x->program.structs = x->structs;
     x->structs[0] = (IrStruct){"P", 1, x->fields[0]}; x->fields[0][0] = (IrField){"kind", TY_ENUM};
-    x->program.global_count = 1; x->globals[0] = (IrGlobal){"g", TY_ENUM, -7};
+    x->program.global_count = 1; x->globals[0] = (IrGlobal){"g", TY_ENUM, -7, 0};
     IrFunction *f = &x->functions[0];
     f->slot_count = 1; x->slots[0][0] = TY_ENUM;
     f->register_count = 4; x->registers[0][0] = x->registers[0][1] = TY_ENUM;
@@ -662,7 +662,7 @@ static void enum_bytes(void) {
 }
 static void byte_fixture(Fixture *x) {
     reset(x);
-    x->program.global_count = 1; x->globals[0] = (IrGlobal){"b", TY_BYTE, 42};
+    x->program.global_count = 1; x->globals[0] = (IrGlobal){"b", TY_BYTE, 42, 0};
     x->program.struct_count = 1; x->program.structs = x->structs;
     x->structs[0] = (IrStruct){"P", 1, x->fields[0]}; x->fields[0][0] = (IrField){"b", TY_BYTE};
     IrFunction *f = &x->functions[0];
@@ -770,7 +770,7 @@ static void string_fixture(Fixture *x) {
     x->program.string_count = 3; x->program.strings = x->strings;
     for (unsigned n = 0; n <= L_MAX_STRINGS; ++n) x->strings[n] = (IrString){0, string_data};
     x->strings[0] = (IrString){4, string_data}; x->strings[1] = (IrString){4, duplicate};
-    x->program.global_count = 1; x->globals[0] = (IrGlobal){"s", TY_STRING, 0};
+    x->program.global_count = 1; x->globals[0] = (IrGlobal){"s", TY_STRING, 0, 0};
     IrFunction *f = &x->functions[0];
     f->slot_count = 1; x->slots[0][0] = TY_STRING;
     f->register_count = 6;
@@ -1000,6 +1000,87 @@ static void check_io(int which, bool serialized) {
     if (ctx->status != (which <= I_EMPTY ? 0 : 65)) { fprintf(stderr, "unexpected I/O verifier status: %d\n", which); exit(1); }
     cleanup(ctx); free(ctx);
 }
+enum {
+    G_VALID, G_ZERO, G_BYTE, G_BOOL, G_MAX_LENGTH, G_MAX_TOTAL,
+    G_LOAD_HIGH, G_LOAD_NEGATIVE, G_STORE_HIGH, G_STORE_NEGATIVE,
+    G_LENGTH_LIMIT, G_TOTAL_LIMIT, G_STRING, G_ENUM, G_STRUCT, G_INITIAL, G_NEGATIVE_INITIAL,
+    G_LOAD_MODE, G_STORE_MODE, G_LOAD_WHOLE, G_STORE_WHOLE, G_LOAD_SCALAR, G_STORE_SCALAR,
+    G_LOAD_INDEX, G_STORE_INDEX, G_INDEX_TYPE, G_LOAD_UNDEFINED, G_STORE_UNDEFINED, G_VALUE_UNDEFINED,
+    G_COUNT
+};
+static void global_array_fixture(Fixture *x, int which) {
+    reset(x);
+    x->program.global_count = 3;
+    x->globals[0] = (IrGlobal){"left", TY_INT, 7, 0};
+    x->globals[1] = (IrGlobal){"array", TY_INT, 0, 3};
+    x->globals[2] = (IrGlobal){"right", TY_INT, 42, 0};
+    IrFunction *f = &x->functions[0];
+    f->register_count = 5; f->code_count = 7;
+    for (unsigned n = 0; n < 5; ++n) x->registers[0][n] = TY_INT;
+    x->code[0][0] = ins(OP_CONST, 0, 2, 0, 0);
+    x->code[0][1] = ins(OP_GLOBAL_LOAD, 1, 1, 0, 1);
+    x->code[0][2] = ins(OP_CONST, 2, 42, 0, 0);
+    x->code[0][3] = ins(OP_GLOBAL_STORE, 1, 2, 0, 1);
+    x->code[0][4] = ins(OP_GLOBAL_LOAD, 3, 1, 0, 1);
+    x->code[0][5] = ins(OP_GLOBAL_LOAD, 4, 2, 0, 0);
+    x->code[0][6] = ins(OP_RETURN, 0, 3, 0, 0);
+    switch (which) {
+    case G_ZERO: x->code[0][6].a = 1; break;
+    case G_BYTE: case G_BOOL:
+        x->globals[1].type = x->registers[0][1] = x->registers[0][2] = x->registers[0][3] = which == G_BYTE ? TY_BYTE : TY_BOOL;
+        x->code[0][2].a = which == G_BYTE ? 255 : 1; x->code[0][6].a = 4; break;
+    case G_MAX_LENGTH: x->globals[1].length = L_MAX_ARRAY; x->code[0][0].a = L_MAX_ARRAY - 1; break;
+    case G_MAX_TOTAL: case G_TOTAL_LIMIT:
+        x->program.global_count = 19; x->globals[1].length = L_MAX_ARRAY;
+        for (unsigned n = 3; n < 18; ++n) x->globals[n] = (IrGlobal){"a", TY_INT, 0, L_MAX_ARRAY};
+        x->globals[18] = (IrGlobal){"last", TY_BYTE, 0, 16 + (which == G_TOTAL_LIMIT)}; break;
+    case G_LOAD_HIGH: case G_LOAD_NEGATIVE: case G_STORE_HIGH: case G_STORE_NEGATIVE:
+        x->code[0][0].a = which == G_LOAD_NEGATIVE || which == G_STORE_NEGATIVE ? UINT32_MAX : 3;
+        if (which == G_STORE_HIGH || which == G_STORE_NEGATIVE) x->code[0][1] = ins(OP_GLOBAL_LOAD, 1, 0, 0, 0);
+        break;
+    case G_LENGTH_LIMIT: x->globals[1].length = L_MAX_ARRAY + 1; break;
+    case G_STRING: x->globals[1].type = TY_STRING; break;
+    case G_ENUM: x->globals[1].type = TY_ENUM; break;
+    case G_STRUCT: x->globals[1].type = TY_STRUCT; break;
+    case G_INITIAL: x->globals[1].initial = 1; break;
+    case G_NEGATIVE_INITIAL: x->globals[1].initial = -1; break;
+    case G_LOAD_MODE: x->code[0][1].c = 2; break;
+    case G_STORE_MODE: x->code[0][3].c = UINT32_MAX; break;
+    case G_LOAD_WHOLE: x->code[0][1].c = 0; break;
+    case G_STORE_WHOLE: x->code[0][3].c = 0; break;
+    case G_LOAD_SCALAR: x->code[0][1].a = 0; break;
+    case G_STORE_SCALAR: x->code[0][3].dst = 2; break;
+    case G_LOAD_INDEX: x->code[0][1].b = L_NONE; break;
+    case G_STORE_INDEX: x->code[0][3].b = 5; break;
+    case G_INDEX_TYPE: x->registers[0][0] = TY_BOOL; x->code[0][0].a = 0; break;
+    case G_LOAD_UNDEFINED: {
+        Instruction i = x->code[0][0]; x->code[0][0] = x->code[0][1]; x->code[0][1] = i; break;
+    }
+    case G_STORE_UNDEFINED: x->code[0][3].b = 4; break;
+    case G_VALUE_UNDEFINED: x->code[0][3].a = 3; break;
+    default: break;
+    }
+}
+static void check_global_array(int which, bool serialized) {
+    Context *ctx = calloc(1, sizeof(*ctx)); if (!ctx) exit(1);
+    ctx->filename = "global-array-verifier";
+    if (!setjmp(ctx->failure)) {
+        Fixture x; global_array_fixture(&x, which); Program *p = &x.program;
+        if (serialized) {
+            write_bytecode(ctx, p, "build/verifier-global-array.lbc");
+            size_t size; unsigned char *bytes = read_file(ctx, "build/verifier-global-array.lbc", &size);
+            p = read_bytecode(ctx, bytes, size);
+        } else verify(ctx, p);
+        if (which > G_STORE_NEGATIVE) { fprintf(stderr, "accepted invalid global array case %d\n", which); exit(1); }
+        size_t allocated = ctx->allocated;
+        for (unsigned n = 0; n < 3; ++n)
+            if (execute_program(ctx, p) != (which == G_ZERO ? 0 : 42) || ctx->allocated != allocated || p->globals[1].initial)
+                exit(1);
+    }
+    int expected = which <= G_MAX_TOTAL ? 0 : which <= G_STORE_NEGATIVE ? 70 : 65;
+    if (ctx->status != expected) { fprintf(stderr, "global array case %d: expected %d, got %d\n", which, expected, ctx->status); exit(1); }
+    cleanup(ctx); free(ctx);
+}
 static void string_bytes(void) {
     Context *ctx = calloc(1, sizeof(*ctx)); if (!ctx) exit(1);
     ctx->filename = "string-format-test"; if (setjmp(ctx->failure)) exit(1);
@@ -1033,7 +1114,8 @@ static void global_bytes(void) {
     check_bytes(original, size, true);
     for (size_t n = 0; n < size; ++n) check_bytes(original, n, false);
     static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
-        {32, 0, 4}, {32, UINT32_MAX, 4}, {36, 0, 1}, {37, TY_AUTO, 4}
+        {32, 0, 4}, {32, UINT32_MAX, 4}, {36, 0, 1}, {37, TY_AUTO, 4},
+        {45, L_MAX_ARRAY + 1, 4}, {45, 1, 4}
     };
     for (size_t n = 0; n < sizeof(corruptions) / sizeof(*corruptions); ++n) {
         memcpy(bytes, original, size); store(bytes, corruptions[n].offset, corruptions[n].value, corruptions[n].width);
@@ -1073,8 +1155,10 @@ int main(void) {
     for (int which = 0; which < B_COUNT; ++which) { check_byte(which, false); check_byte(which, true); }
     for (int which = 0; which < T_COUNT; ++which) { check_string(which, false); check_string(which, true); }
     for (int which = 0; which < I_COUNT; ++which) { check_io(which, false); check_io(which, true); }
+    for (int which = 0; which < G_COUNT; ++which) { check_global_array(which, false); check_global_array(which, true); }
     remove("build/verifier-byte.lbc");
     remove("build/verifier-io.lbc");
+    remove("build/verifier-global-array.lbc");
     global_bytes();
     struct_bytes();
     enum_bytes();
@@ -1091,7 +1175,7 @@ int main(void) {
     check_bytes(original, size, true);
     for (size_t length = 0; length < size; ++length) check_bytes(original, length, false);
     static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
-        {0, 0, 1}, {4, 2, 2}, {6, L_BC_MINOR + 1, 2}, {6, 0, 2}, {6, 1, 2}, {6, 2, 2}, {6, 3, 2}, {6, 4, 2}, {6, 5, 2}, {6, 6, 2}, {6, 7, 2}, {8, 0, 4}, {8, L_MAX_FUNCTIONS + 1, 4},
+        {0, 0, 1}, {4, 2, 2}, {6, L_BC_MINOR + 1, 2}, {6, 0, 2}, {6, 1, 2}, {6, 2, 2}, {6, 3, 2}, {6, 4, 2}, {6, 5, 2}, {6, 6, 2}, {6, 7, 2}, {6, 8, 2}, {8, 0, 4}, {8, L_MAX_FUNCTIONS + 1, 4},
         {12, 2, 4}, {16, L_MAX_GLOBALS + 1, 4}, {20, L_MAX_STRUCTS + 1, 4}, {24, L_MAX_ENUMS + 1, 4}, {28, L_MAX_STRINGS + 1, 4}, {32, 0, 4}, {32, UINT32_MAX, 4}, {36, 0, 1},
         {48, L_MAX_SLOTS + 1, 4}, {52, L_MAX_REGISTERS + 1, 4},
         {56, L_MAX_CODE + 1, 4}, {60, L_MAX_ARGS + 1, 4}, {64, L_MAX_CASES + 1, 4},
@@ -1109,6 +1193,6 @@ int main(void) {
     memcpy(bytes, original, size); bytes[size] = 0;
     check_bytes(bytes, size + 1, false);
     free(bytes); cleanup(ctx); free(ctx); remove("build/verifier.lbc"); remove("build/verifier-case.lbc");
-    printf("verifier: %d IR cases plus truncation/format mutations passed\n", CASE_COUNT + S_COUNT + E_COUNT + B_COUNT + T_COUNT + I_COUNT);
+    printf("verifier: %d IR cases plus truncation/format mutations passed\n", CASE_COUNT + S_COUNT + E_COUNT + B_COUNT + T_COUNT + I_COUNT + G_COUNT);
     return 0;
 }

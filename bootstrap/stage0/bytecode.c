@@ -59,7 +59,7 @@ void write_bytecode(Context *ctx, const Program *p, const char *path) {
         const IrGlobal *g = &p->globals[n];
         uint32_t length = (uint32_t)strlen(g->name);
         put(file, length, 4); fwrite(g->name, 1, length, file);
-        put(file, g->type, 4); put(file, (uint32_t)g->initial, 4);
+        put(file, g->type, 4); put(file, (uint32_t)g->initial, 4); put(file, g->length, 4);
     }
     for (uint32_t n = 0; n < p->function_count; ++n) {
         const IrFunction *f = &p->functions[n];
@@ -134,9 +134,14 @@ Program *read_bytecode(Context *ctx, const unsigned char *data, size_t size) {
         string->bytes = (const unsigned char *)copy_text(ctx, (const char *)r.data + r.at, string->length); r.at += string->length;
     }
     p->globals = allocate(ctx, p->global_count * sizeof(*p->globals));
+    uint32_t global_elements = 0;
     for (uint32_t n = 0; n < p->global_count; ++n) {
         IrGlobal *g = &p->globals[n];
         g->name = get_name(&r); g->type = (Type)get(&r, 4); g->initial = get_signed(&r);
+        g->length = get(&r, 4);
+        if (g->length > L_MAX_ARRAY) fail(ctx, 0, 0, "bytecode global array length out of range");
+        if (g->length > L_MAX_GLOBAL_ELEMENTS - global_elements) fail(ctx, 0, 0, "bytecode global array element limit exceeded");
+        global_elements += g->length;
     }
     p->functions = allocate(ctx, p->function_count * sizeof(*p->functions));
     for (uint32_t n = 0; n < p->function_count; ++n) {
@@ -210,7 +215,8 @@ void inspect(const Program *p, FILE *file) {
             fprintf(file, "  field %u %s: %s\n", j, s->fields[j].name, ir_type_name(p, s->fields[j].type));
     }
     for (uint32_t n = 0; n < p->global_count; ++n)
-        fprintf(file, "global g%u %s: %s initial=%d\n", n, p->globals[n].name, ir_type_name(p, p->globals[n].type), p->globals[n].initial);
+        fprintf(file, "global g%u %s: %s initial=%d length=%u (0=scalar)\n", n, p->globals[n].name,
+            ir_type_name(p, p->globals[n].type), p->globals[n].initial, p->globals[n].length);
     for (uint32_t n = 0; n < p->function_count; ++n) {
         const IrFunction *f = &p->functions[n];
         fprintf(file, "f%u %s -> %s (%u parameters, %u slots, %u registers, %u switch cases)\n", n, f->name,

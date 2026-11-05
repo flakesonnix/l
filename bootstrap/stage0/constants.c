@@ -92,6 +92,7 @@ static int32_t constant_value(Context *ctx, const Ast *ast, Global *constant, Gl
 void evaluate_constants(Context *ctx, Ast *ast) {
     for (Enum *enumeration = ast->enums; enumeration; enumeration = enumeration->next)
         for (Global *member = enumeration->members; member; member = member->next) (void)constant_value(ctx, ast, member, NULL);
-    for (Global *constant = ast->globals; constant; constant = constant->next) (void)constant_value(ctx, ast, constant, NULL);
+    for (Global *constant = ast->globals; constant; constant = constant->next)
+        if (!constant->length) (void)constant_value(ctx, ast, constant, NULL);
 }
 int32_t evaluate_constant_expression(Context *ctx, const Ast *ast, Expr *expr) { return expression_value(ctx, ast, expr, NULL); }
