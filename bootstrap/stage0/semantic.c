@@ -212,8 +212,8 @@ static Type resolve_alias(Context *ctx, Ast *ast, TypeAlias *alias, TypeAlias *p
     Function scope = {.module = alias->module, .scope = alias->scope};
     Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope};
     alias->type = resolve_type(&s, alias->type, alias->target_name, alias);
-    if (alias->type != TY_INT && alias->type != TY_BOOL && alias->type != TY_BYTE)
-        token_fail(ctx, alias->name, "type alias target must be int or bool or byte");
+    if (alias->type != TY_INT && alias->type != TY_BOOL && alias->type != TY_BYTE && alias->type != TY_STRING)
+        token_fail(ctx, alias->name, "type alias target must be int or bool or byte or string");
     alias->state = 2; alias->parent = NULL;
     leave(ctx); ctx->filename = saved;
     return alias->type;
@@ -286,6 +286,16 @@ static Type lvalue(Semantic *s, Expr *e) {
     if (b->decl->immutable) token_fail(s->ctx, e->token, "cannot modify const binding");
     return b->decl->type;
 }
+static uint32_t intern_string(Semantic *s, Token token) {
+    Ast *ast = s->ast;
+    IrString value = {(uint32_t)token.length, (const unsigned char *)token.text};
+    for (uint32_t n = 0; n < ast->string_count; ++n) if (string_equal(ast->strings[n], value)) return n;
+    if (ast->string_count == L_MAX_STRINGS) token_fail(s->ctx, token, "too many distinct strings (maximum 1024)");
+    if (value.length > L_MAX_STRING_BYTES - ast->string_bytes) token_fail(s->ctx, token, "string table exceeds 1048576 bytes");
+    ast->string_bytes += value.length;
+    reserve(s->ctx, (void **)&ast->strings, &ast->string_capacity, ast->string_count + 1, sizeof(*ast->strings));
+    ast->strings[ast->string_count] = value; return ast->string_count++;
+}
 static Type analyze_expr(Semantic *s, Expr *e) {
     enter(s->ctx, e->token);
     switch (e->kind) {
@@ -293,6 +303,7 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         if (e->integer > INT32_MAX || e->integer < INT32_MIN) token_fail(s->ctx, e->token, "integer literal exceeds int range");
         e->type = TY_INT; break;
     case EX_BOOL: e->type = TY_BOOL; break;
+    case EX_STRING: e->type = TY_STRING; e->integer = intern_string(s, e->token); break;
     case EX_CONVERT:
         require(s, e->token, analyze_expr(s, e->left), e->type == TY_BYTE ? TY_INT : TY_BYTE); break;
     case EX_STRUCT: {
@@ -308,9 +319,14 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         if (field) token_fail(s->ctx, e->token, "wrong number of struct initializer fields");
         break;
     }
-    case EX_FIELD:
-        if (s->constant_expression) token_fail(s->ctx, e->token, "field access is not a constant expression");
-        (void)resolve_field(s, e, analyze_expr(s, e->left)); break;
+    case EX_FIELD: {
+        Type type = analyze_expr(s, e->left);
+        if (type == TY_STRING) {
+            if (e->token.length != 6 || memcmp(e->token.text, "length", 6)) token_fail(s->ctx, e->token, "string has only a length property");
+            e->kind = EX_LENGTH; e->type = TY_INT;
+        } else (void)resolve_field(s, e, type);
+        break;
+    }
     case EX_NAME: {
         Binding *b = lookup(s, e->token);
         if (!b) {
@@ -329,9 +345,18 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         if (b->decl->array) token_fail(s->ctx, e->token, "array used without an index");
         e->symbol = b->decl->slot; e->type = b->decl->type; break;
     }
-    case EX_INDEX:
-        if (s->constant_expression) token_fail(s->ctx, e->token, "array access is not a constant expression");
-        (void)resolve_index(s, e); break;
+    case EX_INDEX: {
+        Binding *binding = e->left->kind == EX_NAME ? lookup(s, e->left->token) : NULL;
+        if (binding && binding->decl->array) {
+            if (s->constant_expression) token_fail(s->ctx, e->token, "array access is not a constant expression");
+            (void)resolve_index(s, e);
+        } else {
+            require(s, e->token, analyze_expr(s, e->left), TY_STRING);
+            require(s, e->token, analyze_expr(s, e->right), TY_INT);
+            e->kind = EX_STRING_INDEX; e->type = TY_BYTE;
+        }
+        break;
+    }
     case EX_ASSIGN: {
         if (s->constant_expression) token_fail(s->ctx, e->token, "assignment is not a constant expression");
         Type type = lvalue(s, e->left);
@@ -380,7 +405,7 @@ static int32_t typed_constant(Semantic *s, Expr *expr, Type type) {
     s->constant_expression = true;
     require(s, expr->token, analyze_expr(s, expr), type);
     s->constant_expression = saved;
-    return evaluate_constant_expression(s->ctx, expr);
+    return evaluate_constant_expression(s->ctx, s->ast, expr);
 }
 static bool scoped_stmt(Semantic *s, Stmt *stmt) {
     Binding *saved = s->bindings;
@@ -612,8 +637,8 @@ void analyze(Context *ctx, Ast *ast) {
         Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope};
         for (Field *field = record->fields; field; field = field->next) {
             field->type = resolve_type(&s, field->type, field->type_name, NULL);
-            if (field->type != TY_INT && field->type != TY_BOOL && field->type != TY_BYTE && !IS_ENUM(field->type))
-                token_fail(ctx, field->name, "struct fields must be scalar int or bool or byte or enum");
+            if (field->type != TY_INT && field->type != TY_BOOL && field->type != TY_BYTE && field->type != TY_STRING && !IS_ENUM(field->type))
+                token_fail(ctx, field->name, "struct fields must be scalar int or bool or byte or string or enum");
             if (record->exported) public_type(&s, field->name, field->type);
             for (Field *other = record->fields; other != field; other = other->next)
                 if (token_equal(other->name, field->name)) token_fail(ctx, field->name, "duplicate struct field");
@@ -624,8 +649,8 @@ void analyze(Context *ctx, Ast *ast) {
         Function scope = {.module = constant->module, .scope = constant->scope};
         Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope};
         constant->type = resolve_type(&s, constant->type, constant->type_name, NULL);
-        if (constant->type != TY_INT && constant->type != TY_BOOL && constant->type != TY_BYTE && !IS_ENUM(constant->type))
-            token_fail(ctx, constant->name, "module constant/static type must be explicit int or bool or byte or enum");
+        if (constant->type != TY_INT && constant->type != TY_BOOL && constant->type != TY_BYTE && constant->type != TY_STRING && !IS_ENUM(constant->type))
+            token_fail(ctx, constant->name, "module constant/static type must be explicit int or bool or byte or string or enum");
         if (constant->exported) public_type(&s, constant->name, constant->type);
     }
     bool main_found = false;
@@ -639,7 +664,7 @@ void analyze(Context *ctx, Ast *ast) {
         for (Decl *p = fn->parameters; p; p = p->next) {
             p->type = resolve_type(&s, p->type, p->type_name, NULL);
             if (fn->exported) public_type(&s, p->name, p->type);
-            if (p->type == TY_VOID || p->type == TY_AUTO) token_fail(ctx, p->name, "parameter type must be int, bool, byte, enum or struct");
+            if (p->type == TY_VOID || p->type == TY_AUTO) token_fail(ctx, p->name, "parameter type must be int, bool, byte, string, enum or struct");
             else parameters[count++] = p->type;
             Binding *binding = allocate(ctx, sizeof(*binding));
             *binding = (Binding){p, 0, s.bindings}; s.bindings = binding;

@@ -161,6 +161,7 @@ status 42 source_compiler run "$root/examples/constant_shapes.l"
 status 42 source_compiler run "$root/examples/struct_demo.l"
 status 42 source_compiler run "$root/examples/enum_demo.l"
 status 42 source_compiler run "$root/examples/byte_demo.l"
+status 42 source_compiler run "$root/examples/string_demo.l"
 status 64 "$compiler"
 status 64 "$compiler" unknown ignored
 status 64 "$compiler" compile ignored

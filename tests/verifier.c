@@ -18,6 +18,7 @@ typedef struct {
     IrEnum enums[L_MAX_ENUMS];
     IrMember members[L_MAX_MEMBERS];
     char member_names[L_MAX_MEMBERS][12];
+    IrString strings[L_MAX_STRINGS + 1];
 } Fixture;
 
 static Instruction ins(Opcode op, uint32_t dst, uint32_t a, uint32_t b, uint32_t c) {
@@ -649,9 +650,9 @@ static void enum_bytes(void) {
     check_bytes(original, size, true);
     for (size_t n = 0; n < size; ++n) check_bytes(original, n, false);
     static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
-        {24, L_MAX_ENUMS + 1, 4}, {28, 0, 4}, {28, UINT32_MAX, 4}, {32, 0, 1},
-        {33, 0, 4}, {33, L_MAX_MEMBERS + 1, 4}, {37, 0, 4}, {37, UINT32_MAX, 4}, {41, 0, 1},
-        {50, 'A', 1}, {60, TY_ENUM + 1, 4}, {64, 1, 4}, {42, 1, 4}
+        {24, L_MAX_ENUMS + 1, 4}, {32, 0, 4}, {32, UINT32_MAX, 4}, {36, 0, 1},
+        {37, 0, 4}, {37, L_MAX_MEMBERS + 1, 4}, {41, 0, 4}, {41, UINT32_MAX, 4}, {45, 0, 1},
+        {54, 'A', 1}, {64, TY_ENUM + 1, 4}, {68, 1, 4}, {46, 1, 4}
     };
     for (size_t n = 0; n < sizeof(corruptions) / sizeof(*corruptions); ++n) {
         memcpy(bytes, original, size); store(bytes, corruptions[n].offset, corruptions[n].value, corruptions[n].width);
@@ -762,6 +763,183 @@ static void check_byte(int which, bool serialized) {
     if (ctx->status != expected) { fprintf(stderr, "byte verifier case %d: expected %d, got %d\n", which, expected, ctx->status); exit(1); }
     cleanup(ctx); free(ctx);
 }
+static const unsigned char string_data[L_MAX_STRING + 1] = {65, 0, 42, 255};
+static void string_fixture(Fixture *x) {
+    static const unsigned char duplicate[] = {65, 0, 42, 255};
+    reset(x);
+    x->program.string_count = 3; x->program.strings = x->strings;
+    for (unsigned n = 0; n <= L_MAX_STRINGS; ++n) x->strings[n] = (IrString){0, string_data};
+    x->strings[0] = (IrString){4, string_data}; x->strings[1] = (IrString){4, duplicate};
+    x->program.global_count = 1; x->globals[0] = (IrGlobal){"s", TY_STRING, 0};
+    IrFunction *f = &x->functions[0];
+    f->slot_count = 1; x->slots[0][0] = TY_STRING;
+    f->register_count = 6;
+    x->registers[0][0] = x->registers[0][4] = TY_STRING; x->registers[0][2] = TY_BYTE;
+    x->registers[0][1] = x->registers[0][3] = x->registers[0][5] = TY_INT;
+    f->code_count = 9;
+    x->code[0][0] = ins(OP_GLOBAL_LOAD, 0, 0, 0, 0);
+    x->code[0][1] = ins(OP_CONST, 1, 2, 0, 0);
+    x->code[0][2] = ins(OP_STRING_INDEX, 2, 0, 1, 0);
+    x->code[0][3] = ins(OP_TO_INT, 3, 2, 0, 0);
+    x->code[0][4] = ins(OP_CONST, 4, 1, 0, 0);
+    x->code[0][5] = ins(OP_STORE, 0, 4, 0, 0);
+    x->code[0][6] = ins(OP_GLOBAL_STORE, 0, 4, 0, 0);
+    x->code[0][7] = ins(OP_STRING_LENGTH, 5, 0, 0, 0);
+    x->code[0][8] = ins(OP_RETURN, 0, 3, 0, 0);
+}
+enum {
+    T_VALID, T_FIRST, T_LAST, T_LENGTH, T_EMPTY_LENGTH, T_DUP_EQ, T_DUP_NE, T_DIFFERENT, T_DIFFERENT_LENGTH,
+    T_EMPTY_EQ, T_LOCAL, T_CALL, T_FIELD, T_FIELD_STORE, T_MAX_COUNT, T_MAX_LENGTH, T_MAX_BYTES,
+    T_NEGATIVE_TRAP, T_HIGH_TRAP, T_EMPTY_TRAP,
+    T_COUNT_LIMIT, T_LENGTH_LIMIT, T_BYTES_LIMIT, T_GLOBAL_HIGH, T_GLOBAL_NEGATIVE, T_GLOBAL_EMPTY,
+    T_CONST_HIGH, T_CONST_NEGATIVE, T_CONST_EMPTY, T_LENGTH_SOURCE, T_LENGTH_DEST, T_LENGTH_REGISTER,
+    T_INDEX_SOURCE, T_INDEX_DEST, T_INDEX_TYPE, T_INDEX_REGISTER, T_SOURCE_REGISTER, T_DEST_REGISTER,
+    T_LENGTH_UNDEFINED, T_INDEX_UNDEFINED, T_OFFSET_UNDEFINED, T_DUP_LENGTH, T_DUP_INDEX,
+    T_ARRAY, T_SWITCH, T_EQUALITY, T_STORE, T_GLOBAL_STORE, T_ARITHMETIC, T_NEGATE, T_ORDER, T_BRANCH,
+    T_CALL_TYPE, T_RETURN_TYPE, T_FIELD_TYPE, T_COUNT
+};
+static void mutate_string(Fixture *x, int which) {
+    static const unsigned char different[] = {65, 0, 42, 254};
+    IrFunction *f = &x->functions[0], *g = &x->functions[1];
+    if (which >= T_DUP_EQ && which <= T_EMPTY_EQ) {
+        x->registers[0][5] = TY_BOOL; x->code[0][7] = ins(which == T_DUP_NE ? OP_NE : OP_EQ, 5, 0, 4, 0);
+        bool equal = which == T_DUP_EQ || which == T_EMPTY_EQ;
+        x->code[0][8] = ins(OP_BRANCH, 0, 5, equal ? 9 : 10, equal ? 10 : 9);
+        x->code[0][9] = ins(OP_RETURN, 0, 3, 0, 0); x->code[0][10] = ins(OP_TRAP, 0, 0, 0, 0); f->code_count = 11;
+    }
+    if (which == T_CALL || which == T_CALL_TYPE || which == T_RETURN_TYPE) {
+        f->argument_count = 1; x->arguments[0] = 0; x->code[0][4] = ins(OP_CALL, 4, 1, 0, 1);
+        g->result = TY_STRING; g->slot_count = g->parameter_count = g->register_count = 1;
+        x->slots[1][0] = x->registers[1][0] = TY_STRING; g->code_count = 2;
+        x->code[1][0] = ins(OP_LOAD, 0, 0, 0, 0); x->code[1][1] = ins(OP_RETURN, 0, 0, 0, 0);
+    }
+    if (which == T_FIELD || which == T_FIELD_STORE || which == T_FIELD_TYPE) {
+        x->program.struct_count = 1; x->program.structs = x->structs;
+        x->structs[0] = (IrStruct){"P", 1, x->fields[0]}; x->fields[0][0] = (IrField){"s", TY_STRING};
+        f->register_count = 8; x->registers[0][6] = TY_STRUCT; x->registers[0][7] = TY_STRING;
+        f->slot_count = 2; x->slots[0][1] = TY_STRUCT; f->argument_count = 1; x->arguments[0] = 4;
+        f->code_count = 12; x->code[0][5] = ins(OP_STRUCT, 6, 0, 1, 0);
+        x->code[0][6] = ins(OP_STORE, 1, 6, 0, 0);
+        x->code[0][7] = ins(OP_FIELD, 7, 6, 0, 0);
+        x->code[0][8] = ins(OP_FIELD_STORE, 1, 0, 0, 0);
+        x->code[0][9] = ins(OP_STRING_LENGTH, 5, 7, 0, 0);
+        x->code[0][10] = ins(OP_GLOBAL_STORE, 0, 7, 0, 0);
+        x->code[0][11] = ins(OP_RETURN, 0, 3, 0, 0);
+        if (which == T_FIELD_STORE) {
+            x->code[0][7] = ins(OP_FIELD_STORE, 1, 0, 0, 0);
+            x->code[0][8] = ins(OP_LOAD, 6, 1, 0, 0); x->code[0][6] = ins(OP_STORE, 1, 6, 0, 0);
+            /* Use a distinct aggregate register for the post-write snapshot. */
+            x->registers[0][7] = TY_STRUCT; x->code[0][8].dst = 7;
+            x->code[0][9] = ins(OP_FIELD, 5, 7, 0, 0); x->registers[0][5] = TY_STRING;
+            x->code[0][10].a = 5;
+        }
+    }
+    switch (which) {
+    case T_VALID: case T_DUP_EQ: case T_DUP_NE: case T_CALL: case T_FIELD: case T_FIELD_STORE: break;
+    case T_FIRST: x->code[0][1].a = 0; break;
+    case T_LAST: x->code[0][1].a = 3; break;
+    case T_LENGTH: x->code[0][8].a = 5; break;
+    case T_EMPTY_LENGTH:
+        x->globals[0].initial = 2; x->code[0][2] = ins(OP_CONST, 2, 42, 0, 0); x->code[0][8].a = 5; break;
+    case T_DIFFERENT: x->strings[1].bytes = different; break;
+    case T_DIFFERENT_LENGTH: x->strings[1].length = 3; break;
+    case T_EMPTY_EQ:
+        x->strings[0].length = x->strings[1].length = 0; x->code[0][2] = ins(OP_CONST, 2, 42, 0, 0); break;
+    case T_LOCAL:
+        x->code[0][6] = ins(OP_LOAD, 0, 0, 0, 0); x->code[0][0] = ins(OP_CONST, 4, 1, 0, 0);
+        x->code[0][4] = ins(OP_STRING_INDEX, 2, 0, 1, 0); x->code[0][5] = ins(OP_TO_INT, 3, 2, 0, 0);
+        x->code[0][2] = ins(OP_STORE, 0, 4, 0, 0); x->code[0][3] = x->code[0][6];
+        x->code[0][6] = ins(OP_GLOBAL_STORE, 0, 4, 0, 0); break;
+    case T_MAX_COUNT: case T_COUNT_LIMIT: x->program.string_count = L_MAX_STRINGS + (which == T_COUNT_LIMIT); break;
+    case T_MAX_LENGTH: case T_LENGTH_LIMIT: x->strings[0].length = L_MAX_STRING + (which == T_LENGTH_LIMIT); break;
+    case T_MAX_BYTES: case T_BYTES_LIMIT:
+        x->program.string_count = 17;
+        for (unsigned n = 0; n < 17; ++n) x->strings[n] = (IrString){n < 16 ? L_MAX_STRING : 16 + (which == T_BYTES_LIMIT), string_data};
+        break;
+    case T_NEGATIVE_TRAP: x->code[0][1].a = UINT32_MAX; break;
+    case T_HIGH_TRAP: x->code[0][1].a = 4; break;
+    case T_EMPTY_TRAP: x->globals[0].initial = 2; break;
+    case T_GLOBAL_HIGH: x->globals[0].initial = 3; break;
+    case T_GLOBAL_NEGATIVE: x->globals[0].initial = -1; break;
+    case T_GLOBAL_EMPTY: x->program.string_count = 0; break;
+    case T_CONST_HIGH: x->code[0][4].a = 3; break;
+    case T_CONST_NEGATIVE: x->code[0][4].a = UINT32_MAX; break;
+    case T_CONST_EMPTY:
+        x->program.string_count = x->program.global_count = 0;
+        x->code[0][0] = ins(OP_CONST, 0, 0, 0, 0); break;
+    case T_LENGTH_SOURCE: x->code[0][7].a = 1; break;
+    case T_LENGTH_DEST: x->registers[0][5] = TY_STRING; break;
+    case T_LENGTH_REGISTER: x->code[0][7].a = L_NONE; break;
+    case T_INDEX_SOURCE: x->code[0][2].a = 1; break;
+    case T_INDEX_DEST: x->registers[0][2] = TY_INT; break;
+    case T_INDEX_TYPE: x->code[0][2].b = 0; break;
+    case T_INDEX_REGISTER: x->code[0][2].b = L_NONE; break;
+    case T_SOURCE_REGISTER: x->code[0][2].a = L_NONE; break;
+    case T_DEST_REGISTER: x->code[0][7].dst = L_NONE; break;
+    case T_LENGTH_UNDEFINED:
+        x->code[0][1] = ins(OP_STRING_LENGTH, 1, 4, 0, 0); break;
+    case T_INDEX_UNDEFINED: x->code[0][2].a = 4; break;
+    case T_OFFSET_UNDEFINED: x->code[0][2].b = 5; break;
+    case T_DUP_LENGTH: x->code[0][7].dst = 3; break;
+    case T_DUP_INDEX: x->code[0][7] = ins(OP_STRING_INDEX, 2, 4, 1, 0); break;
+    case T_ARRAY: x->slot_lengths[0][0] = 1; break;
+    case T_SWITCH: x->code[0][8] = ins(OP_SWITCH, L_NONE, 0, 0, 0); break;
+    case T_EQUALITY: x->registers[0][5] = TY_BOOL; x->code[0][7] = ins(OP_EQ, 5, 0, 1, 0); break;
+    case T_STORE: x->slots[0][0] = TY_INT; break;
+    case T_GLOBAL_STORE: x->code[0][6].a = 1; break;
+    case T_ARITHMETIC: x->code[0][7] = ins(OP_ADD, 5, 0, 4, 0); break;
+    case T_NEGATE: x->code[0][7] = ins(OP_NEG, 5, 0, 0, 0); break;
+    case T_ORDER: x->registers[0][5] = TY_BOOL; x->code[0][7] = ins(OP_LT, 5, 0, 4, 0); break;
+    case T_BRANCH: x->code[0][8] = ins(OP_BRANCH, 0, 0, 8, 8); break;
+    case T_CALL_TYPE: x->arguments[0] = 1; break;
+    case T_RETURN_TYPE: x->registers[1][0] = TY_INT; x->code[1][0] = ins(OP_CONST, 0, 0, 0, 0); break;
+    case T_FIELD_TYPE: x->fields[0][0].type = TY_INT; break;
+    }
+}
+static void check_string(int which, bool serialized) {
+    Context *ctx = calloc(1, sizeof(*ctx)); if (!ctx) exit(1);
+    ctx->filename = "string-verifier-test";
+    if (!setjmp(ctx->failure)) {
+        Fixture x; string_fixture(&x); mutate_string(&x, which);
+        Program *p = &x.program;
+        if (serialized) {
+            write_bytecode(ctx, p, "build/verifier-string.lbc");
+            size_t size; unsigned char *bytes = read_file(ctx, "build/verifier-string.lbc", &size);
+            p = read_bytecode(ctx, bytes, size);
+        } else verify(ctx, p);
+        if (which > T_EMPTY_TRAP) { fprintf(stderr, "string verifier accepted invalid case %d\n", which); exit(1); }
+        size_t allocated = ctx->allocated;
+        int32_t value = which == T_FIRST ? 65 : which == T_LAST ? 255 : which == T_LENGTH ? 4 : which == T_EMPTY_LENGTH ? 0 : 42;
+        int32_t initial = p->globals[0].initial;
+        for (unsigned repeat = 0; repeat < 3; ++repeat)
+            if (execute_program(ctx, p) != value || ctx->allocated != allocated || p->globals[0].initial != initial) exit(1);
+    }
+    int expected = which <= T_MAX_BYTES ? 0 : which <= T_EMPTY_TRAP ? 70 : 65;
+    if (ctx->status != expected) { fprintf(stderr, "string verifier case %d: expected %d, got %d\n", which, expected, ctx->status); exit(1); }
+    cleanup(ctx); free(ctx);
+}
+static void string_bytes(void) {
+    Context *ctx = calloc(1, sizeof(*ctx)); if (!ctx) exit(1);
+    ctx->filename = "string-format-test"; if (setjmp(ctx->failure)) exit(1);
+    Fixture x; string_fixture(&x);
+    write_bytecode(ctx, &x.program, "build/verifier-string.lbc");
+    size_t size; unsigned char *original = read_file(ctx, "build/verifier-string.lbc", &size), *bytes = allocate(ctx, size);
+    check_bytes(original, size, true);
+    for (size_t n = 0; n < size; ++n) check_bytes(original, n, false);
+    static const struct { size_t offset; uint32_t value; } corruptions[] = {
+        {28, L_MAX_STRINGS + 1}, {28, UINT32_MAX}, {32, L_MAX_STRING + 1}, {32, UINT32_MAX},
+        {40, L_MAX_STRING + 1}, {48, L_MAX_STRING}, {61, 3}, {61, UINT32_MAX}
+    };
+    for (size_t n = 0; n < sizeof(corruptions) / sizeof(*corruptions); ++n) {
+        memcpy(bytes, original, size); store(bytes, corruptions[n].offset, corruptions[n].value, 4);
+        check_bytes(bytes, size, false);
+    }
+    /* The loaded pool owns its bytes, independently of the input buffer. */
+    Program *p = read_bytecode(ctx, original, size);
+    memset(original, 0, size);
+    if (execute_program(ctx, p) != 42 || p->strings[0].bytes[3] != 255 || !string_equal(p->strings[0], p->strings[1])) exit(1);
+    cleanup(ctx); free(ctx); remove("build/verifier-string.lbc");
+}
 static void global_bytes(void) {
     Context *ctx = calloc(1, sizeof(*ctx)); if (!ctx) exit(1);
     ctx->filename = "global-format-test"; if (setjmp(ctx->failure)) exit(1);
@@ -773,7 +951,7 @@ static void global_bytes(void) {
     check_bytes(original, size, true);
     for (size_t n = 0; n < size; ++n) check_bytes(original, n, false);
     static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
-        {28, 0, 4}, {28, UINT32_MAX, 4}, {32, 0, 1}, {33, TY_AUTO, 4}
+        {32, 0, 4}, {32, UINT32_MAX, 4}, {36, 0, 1}, {37, TY_AUTO, 4}
     };
     for (size_t n = 0; n < sizeof(corruptions) / sizeof(*corruptions); ++n) {
         memcpy(bytes, original, size); store(bytes, corruptions[n].offset, corruptions[n].value, corruptions[n].width);
@@ -781,7 +959,7 @@ static void global_bytes(void) {
     }
     const uint32_t values[] = {0, 1, 2, UINT32_MAX};
     for (unsigned n = 0; n < 4; ++n) {
-        memcpy(bytes, original, size); store(bytes, 33, TY_BOOL, 4); store(bytes, 37, values[n], 4);
+        memcpy(bytes, original, size); store(bytes, 37, TY_BOOL, 4); store(bytes, 41, values[n], 4);
         check_bytes(bytes, size, n < 2);
     }
     cleanup(ctx); free(ctx); remove("build/verifier-globals.lbc");
@@ -795,9 +973,9 @@ static void struct_bytes(void) {
     check_bytes(original, size, true);
     for (size_t n = 0; n < size; ++n) check_bytes(original, n, false);
     static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
-        {28, 0, 4}, {28, UINT32_MAX, 4}, {32, 0, 1}, {33, 0, 4}, {33, L_MAX_FIELDS + 1, 4},
-        {37, 0, 4}, {37, UINT32_MAX, 4}, {41, 0, 1}, {42, TY_VOID, 4}, {42, TY_STRUCT, 4}, {42, UINT32_MAX, 4},
-        {50, 'x', 1}, {51, TY_AUTO, 4}
+        {32, 0, 4}, {32, UINT32_MAX, 4}, {36, 0, 1}, {37, 0, 4}, {37, L_MAX_FIELDS + 1, 4},
+        {41, 0, 4}, {41, UINT32_MAX, 4}, {45, 0, 1}, {46, TY_VOID, 4}, {46, TY_STRUCT, 4}, {46, UINT32_MAX, 4},
+        {54, 'x', 1}, {55, TY_AUTO, 4}
     };
     for (size_t n = 0; n < sizeof(corruptions) / sizeof(*corruptions); ++n) {
         memcpy(bytes, original, size); store(bytes, corruptions[n].offset, corruptions[n].value, corruptions[n].width);
@@ -811,10 +989,12 @@ int main(void) {
     for (int which = 0; which < S_COUNT; ++which) check_struct(which);
     for (int which = 0; which < E_COUNT; ++which) check_enum(which);
     for (int which = 0; which < B_COUNT; ++which) { check_byte(which, false); check_byte(which, true); }
+    for (int which = 0; which < T_COUNT; ++which) { check_string(which, false); check_string(which, true); }
     remove("build/verifier-byte.lbc");
     global_bytes();
     struct_bytes();
     enum_bytes();
+    string_bytes();
     Context *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) return 1;
     ctx->filename = "roundtrip-test";
@@ -827,24 +1007,24 @@ int main(void) {
     check_bytes(original, size, true);
     for (size_t length = 0; length < size; ++length) check_bytes(original, length, false);
     static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
-        {0, 0, 1}, {4, 2, 2}, {6, L_BC_MINOR + 1, 2}, {6, 0, 2}, {6, 1, 2}, {6, 2, 2}, {6, 3, 2}, {6, 4, 2}, {6, 5, 2}, {8, 0, 4}, {8, L_MAX_FUNCTIONS + 1, 4},
-        {12, 2, 4}, {16, L_MAX_GLOBALS + 1, 4}, {20, L_MAX_STRUCTS + 1, 4}, {24, L_MAX_ENUMS + 1, 4}, {28, 0, 4}, {28, UINT32_MAX, 4}, {32, 0, 1},
-        {44, L_MAX_SLOTS + 1, 4}, {48, L_MAX_REGISTERS + 1, 4},
-        {52, L_MAX_CODE + 1, 4}, {56, L_MAX_ARGS + 1, 4}, {60, L_MAX_CASES + 1, 4},
-        {72, L_MAX_ARRAY + 1, 4}
+        {0, 0, 1}, {4, 2, 2}, {6, L_BC_MINOR + 1, 2}, {6, 0, 2}, {6, 1, 2}, {6, 2, 2}, {6, 3, 2}, {6, 4, 2}, {6, 5, 2}, {6, 6, 2}, {8, 0, 4}, {8, L_MAX_FUNCTIONS + 1, 4},
+        {12, 2, 4}, {16, L_MAX_GLOBALS + 1, 4}, {20, L_MAX_STRUCTS + 1, 4}, {24, L_MAX_ENUMS + 1, 4}, {28, L_MAX_STRINGS + 1, 4}, {32, 0, 4}, {32, UINT32_MAX, 4}, {36, 0, 1},
+        {48, L_MAX_SLOTS + 1, 4}, {52, L_MAX_REGISTERS + 1, 4},
+        {56, L_MAX_CODE + 1, 4}, {60, L_MAX_ARGS + 1, 4}, {64, L_MAX_CASES + 1, 4},
+        {76, L_MAX_ARRAY + 1, 4}
     };
     for (size_t j = 0; j < sizeof(corruptions) / sizeof(*corruptions); ++j) {
         memcpy(bytes, original, size);
         store(bytes, corruptions[j].offset, corruptions[j].value, corruptions[j].width);
         check_bytes(bytes, size, false);
     }
-    /* With empty nominal/global tables, slot types start at 64; lengths start at 72. */
+    /* With empty data/type tables, slot types start at 68; lengths start at 76. */
     memcpy(bytes, original, size);
-    store(bytes, 72, L_MAX_ARRAY, 4); store(bytes, 76, 2, 4);
+    store(bytes, 76, L_MAX_ARRAY, 4); store(bytes, 80, 2, 4);
     check_bytes(bytes, size, false);
     memcpy(bytes, original, size); bytes[size] = 0;
     check_bytes(bytes, size + 1, false);
     free(bytes); cleanup(ctx); free(ctx); remove("build/verifier.lbc"); remove("build/verifier-case.lbc");
-    printf("verifier: %d IR cases plus truncation/format mutations passed\n", CASE_COUNT + S_COUNT + E_COUNT + B_COUNT);
+    printf("verifier: %d IR cases plus truncation/format mutations passed\n", CASE_COUNT + S_COUNT + E_COUNT + B_COUNT + T_COUNT);
     return 0;
 }

@@ -282,6 +282,188 @@ try {
     'app/a.l': `module app.a;${Array.from({ length: 128 }, (_, n) => `int f${n}(){return 0;}`).join('')}`,
     'app/b.l': `module app.b;${Array.from({ length: 128 }, (_, n) => `int f${n}(){return 0;}`).join('')}` }, /too many functions across modules/);
 
+  // Strings are immutable binary values, including empty strings and embedded NULs.
+  const stringProgram = body => program({ 'app/main.l': `module app.main;${body}` });
+  const literal = bytes => `"${Array.from(bytes, n => `\\x${n.toString(16).padStart(2, '0')}`).join('')}"`;
+  const stringFiles = main => ({ 'app/main.l': `module app.main;${main}`,
+    'std/text.l': String.raw`module std.text;using Internal=string;pub using Text=Internal;
+      pub const Text first=later;const string later="A\0\xff";pub static Text current=first;
+      pub struct P{Text text;int length;};pub Text swap(Text value){Text old=current;current=value;return old;}` });
+  for (const body of [
+    'int main(){string s="*";return int(s[0]);}',
+    'int main(){auto s="*";const string copy=s;s="";return int(copy[0])+s.length;}',
+    'string id(const string s){return s;}int main(){return int(id("*")[0]);}',
+    'string walk(string s,int n){if(n==0)return s;return walk(s,n-1);}int main(){return int(walk("*",20)[0]);}',
+    'using Text=string;using Value=Text;int main(){Value s="*";Text t=s;return int(t[0]);}',
+    'const int length=text.length;const byte b=text[length-1];const string text=next;const string next="a*";int main(){return int(b);}',
+    'const string empty="";static string state=empty;int main(){if(state!="")return 1;state="*";return int(state[0]);}',
+    'int main(){if(""==""&&"a"!=""&&"a"!="b"&&"a"=="a")return 42;return 1;}',
+    String.raw`const bool a="a\0x"=="\x61\x00x";const bool b="a\0x"!="a\0y";const bool c="a"!="a\0";int main(){if(a&&b&&c)return 42;return 1;}`,
+    String.raw`int main(){string s="\n\r\t\0\\\"\xaF\xFA";if(s.length!=8)return 1;if(int(s[0])!=10||int(s[1])!=13||int(s[2])!=9||int(s[3])!=0||int(s[4])!=92||int(s[5])!=34||int(s[6])!=175||int(s[7])!=250)return 1;return 42;}`,
+    String.raw`int main(){string s="\x001\01";if(s.length==4&&s[0]==byte(0)&&s[1]==byte(49)&&s[2]==byte(0)&&s[3]==byte(49))return 42;return 1;}`,
+    'int main(){if(" // /* */ ~ ".length==12)return 42;return 1;}',
+    'const bool a=false&&(""[0]==byte(0));const bool b=true||("x"[-1]==byte(0));int main(){if(!a&&b)return 42;return 1;}',
+    'int main(){if(false&&(""[0]==byte(0)))return 1;if(true||("x"[-1]==byte(0)))return 42;return 1;}',
+    'const string s="abc";enum E{N=s.length};int main(){byte a[s.length];a[2]="*"[0];switch(E::N){case E::N:return int(a[2]);default:return 1;}}',
+    'const string s="*";int main(){switch(s[0]){case "*"[0]:return 42;default:return 1;}}',
+    'int main(){switch(3){case "abc".length:return 42;default:return 1;}}',
+    'struct P{string text;int length;};P change(P p){p.text="*";p.length=0;return p;}int main(){P p=P{"keep",42};P q=change(p);if(p.text!="keep"||p.length!=42||q.length!=0)return 1;return int(q.text[0]);}',
+    'struct P{string s;};int main(){P p=P{"*"};string old=p.s;p.s="";return int(old[0])+p.s.length;}',
+    'struct P{string s;};int main(){return int(P{"*"}.s[0]);}',
+    'int f(string s){return 20;}int f(byte b){return 22;}int main(){return f("*")+f("*"[0]);}',
+    'void change(string s){s="";}int main(){string s="*";change(s);return int(s[0]);}',
+    'int main(){string s="abc";int n=0;byte b=s[n++];if(n==1&&b==byte(97))return 42;return 1;}',
+    'static int n=0;string next(){n++;return "*";}int main(){int a=next().length;byte b=next()[0];return int(b)+a+n-3;}',
+    'static string s="*";int index(){s="";return 0;}int main(){byte b=s[index()];return int(b)+s.length;}',
+    'static string s="x";string next(){s="*";return s;}int index(){if(s=="*")return 0;return 1;}int main(){return int(next()[index()]);}',
+    'int pair(string a,string b){if(a=="a"&&b=="*")return 42;return 1;}int main(){string s="a";return pair(s,s="*");}',
+    'int main(){string s="a";if(s==(s="b"))return 1;if(s=="b")return 42;return 1;}',
+    'int main(){string s="a";if(false&&((s="b")=="b"))return 1;if(true||((s="c")=="c")){}if(s=="a")return 42;return 1;}',
+    'const string s="*";int main(){string s="x";{string s="*";if(s!="*")return 1;}if(s=="x")return 42;return 1;}',
+    'int main(){"";for(string s="*";s.length>0;s=""){return int(s[0]);}return 1;}',
+  ]) stringProgram(body);
+  for (const [imports, type, first] of [
+    ['import std.text;', 'std::text::Text', 'std::text::first'],
+    ['import std.text as t;', 't::Text', 't::first'],
+    ['import std.text::{Text as T,first};', 'T', 'first'],
+  ]) program(stringFiles(`${imports}const int n=${first}.length;int main(){${type} s=${first};if(n==3&&int(s[1])==0&&int(s[2])==255)return 42;return 1;}`));
+  const stringInspection = program(stringFiles('import std.text::{P,swap,current};int main(){P p=P{swap("*"),42};if(p.text.length==3&&current=="*")return int(current[0]);return 1;}'));
+  const stringIR = source(stringInspection, 0, 'inspect').stdout;
+  assert.match(stringIR, /LIR 1\.7; bytecode 1\.7/); assert.match(stringIR, /string\.length/); assert.match(stringIR, /string\.index/);
+  assert.match(stringIR, /string k0 length=3 hex=4100ff/); assert.match(stringIR, /field 0 text: string/);
+  assert.equal(readFileSync(resolve(stringInspection.directory, 'program.lbc')).readUInt32LE(28), 2);
+  const octets = literal(Array.from({ length: 256 }, (_, n) => n));
+  stringProgram(`const string all=${octets};int main(){if(all.length!=256)return 1;for(int n=0;n<256;n++){if(int(all[n])!=n)return 1;}return 42;}`);
+  const printable = Array.from({ length: 95 }, (_, n) => String.fromCharCode(n + 32)).join('').replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+  stringProgram(`int main(){string s="${printable}";for(int n=0;n<s.length;n++){if(int(s[n])!=n+32)return 1;}return 42;}`);
+  for (const [body, message] of [
+    ['int main(){string s=42;return 42;}', /expected string, got int/],
+    ['int main(){int s="*";return 42;}', /expected int, got string/],
+    ['int main(){byte s="*";return 42;}', /expected byte, got string/],
+    ['int main(){return "*";}', /expected int, got string/],
+    ['int main(){string s;return 42;}', /require an initializer/],
+    ['int main(){return int("*");}', /expected byte, got string/],
+    ['int main(){return int(byte("*"));}', /expected int, got string/],
+    ['int main(){string s=string("*");return 42;}', /expected expression/],
+    ['using Text=string;int main(){Text s=Text("*");return 42;}', /type alias is not callable/],
+    ['int main(){string s="a"+"b";return 42;}', /expected int, got string/],
+    ['int main(){if("a"<"b")return 42;return 1;}', /expected int, got string/],
+    ['int main(){if("a"==byte(97))return 42;return 1;}', /matching scalar types/],
+    ['int main(){if("")return 42;return 1;}', /expected bool, got string/],
+    ['int main(){string s="a";s++;return 42;}', /expected int, got string/],
+    ['int main(){string s[1];return 42;}', /array element type/],
+    ['using Text=string;int main(){Text s[1];return 42;}', /array element type/],
+    ['int main(){switch("*"){default:return 42;}}', /switch selector/],
+    ['int main(){return "a".size;}', /only a length property/],
+    ['int main(){return "a".lengtx;}', /only a length property/],
+    ['int main(){return "a".length();}', /direct function calls/],
+    ['int main(){return int("*"[true]);}', /expected int, got bool/],
+    ['int main(){return int("*"[byte(0)]);}', /expected int, got byte/],
+    ['int main(){return int("*"[0][0]);}', /expected string, got byte/],
+    ['int main(){const string s="*";s="x";return 42;}', /cannot modify const/],
+    ['const string s="*";int main(){s="x";return 42;}', /cannot modify module constant/],
+    ['int main(){string s="*";s[0]=byte(0);return 42;}', /not an array/],
+    ['int main(){string s="*";s[0]++;return 42;}', /not an array/],
+    ['int main(){"*"[0]=byte(0);return 42;}', /indexed through a variable/],
+    ['int main(){string s="*";s.length=0;return 42;}', /requires a struct value/],
+    ['struct P{string s;};int main(){const P p=P{"*"};p.s="";return 42;}', /cannot modify const/],
+    ['struct P{string s;};int main(){P p=P{"*"};p.s[0]=byte(0);return 42;}', /indexed through a variable/],
+    ['static string s="*";const int n=s.length;int main(){return 42;}', /mutable static/],
+    ['static string s="*";const byte b=s[0];int main(){return 42;}', /mutable static/],
+    ['const string s=t;const string t=s;int main(){return 42;}', /constant dependency cycle/],
+    ['const string s="*";int main(){const string s="x";int a[s.length];return 42;}', /local binding is not a compile-time/],
+    ['const string s="*";int f(string s){int a[s.length];return 42;}int main(){return 42;}', /local binding is not a compile-time/],
+    ['string text(){return "*";}const int n=text().length;int main(){return 42;}', /function call/],
+    ['const bool b=true||(missing.length==0);int main(){return 42;}', /unknown local/],
+    ['const bool b=true||("*"[false]==byte(0));int main(){return 42;}', /expected int, got bool/],
+    ['static string s="*";const bool b=true||(s[0]==byte(0));int main(){return 42;}', /mutable static/],
+    ['const string s="*";const bool b=true||((s="")=="");int main(){return 42;}', /assignment is not/],
+    ['int main(){switch(byte(42)){case "*"[0]:return 42;case byte(42):return 1;default:return 0;}}', /duplicate case value/],
+    ['string main(){return "*";}', /entry point/],
+    ['using Text=string;int f(Text s){return 42;}int f(string s){return 1;}int main(){return 42;}', /duplicate function signature/],
+    ['int main(){int string=42;return 42;}', /variable name/],
+  ]) rejected({ 'app/main.l': `module app.main;${body}` }, message);
+  for (const body of ['import std.text;int main(){return std::text::later.length;}',
+    'import std.text::{later};int main(){return 42;}',
+    'import std.text as t;int main(){t::Internal s="*";return 42;}']) rejected(stringFiles(body), /inaccessible symbol/);
+  for (const text of ['', '*']) for (const index of [-2147483648, -1, text.length, 2147483647]) {
+    for (const kind of ['const', 'static']) rejected({ 'app/main.l': `module app.main;${kind} byte b="${text}"[${index}];int main(){return 42;}` }, /string index out of bounds/);
+    const f = fixture({ 'app/main.l': `module app.main;int read(string s,int n){const byte b=s[n];return int(b);}int main(){return read("${text}",${index});}` });
+    const output = resolve(f.directory, 'trap.lbc');
+    assert.match(source(f, 70, 'run').stderr, /string index out of bounds/);
+    source(f, 0, 'compile', ['-o', output]); assert.match(command(70, ['run', output]).stderr, /string index out of bounds/);
+  }
+  for (const [text, message] of [
+    ['"', /unterminated string literal/], ['"abc', /unterminated string literal/], ['"\\', /unterminated string escape/],
+    ['"\\x', /two hexadecimal digits/], ['"\\x0', /two hexadecimal digits/], ['"\\x0"', /two hexadecimal digits/],
+    ['"\\xg0"', /two hexadecimal digits/], ['"\\x0G"', /two hexadecimal digits/], ['"\\x/0"', /two hexadecimal digits/],
+    ['"\\u0041"', /unsupported string escape/], ['"\\a"', /unsupported string escape/],
+    ['"\n"', /printable ASCII/], ['"\r"', /printable ASCII/], ['"\t"', /printable ASCII/],
+    ['"\0"', /printable ASCII/], ['"\x7f"', /printable ASCII/], ['"é"', /printable ASCII/],
+    [`"${'a'.repeat(65536)}"`, /exceeds 65535 bytes/],
+  ]) rejected({ 'app/main.l': `module app.main;int main(){string s=${text}` }, message);
+  const columnPrefix = String.raw`module app.main;int main(){"\x00\n\"";return `;
+  const columns = rejected({ 'app/main.l': `${columnPrefix}missing;}` }, /unknown local/);
+  assert.ok(source(columns, 65).stderr.includes(`:1:${columnPrefix.length + 1}:`));
+  function stringLimit(body, count) {
+    const f = fixture({ 'app/main.l': `module app.main;int main(){${body}return 42;}` }), output = resolve(f.directory, 'limit.lbc');
+    source(f); source(f, 42, 'run'); source(f, 0, 'compile', ['-o', output]); command(42, ['run', output]);
+    assert.equal(readFileSync(output).readUInt32LE(28), count);
+  }
+  const distinct = Array.from({ length: 1024 }, (_, n) => `"${n}";`).join('');
+  stringLimit(`${distinct}"0";`, 1024);
+  rejected({ 'app/main.l': `module app.main;int main(){${distinct}"extra";return 42;}` }, /too many distinct strings/);
+  stringLimit(`if("${'\\x41'.repeat(65535)}".length!=65535)return 1;`, 1);
+  const fullPool = Array.from({ length: 16 }, (_, n) => `"${String.fromCharCode(65 + n).repeat(65535)}";`).join('');
+  stringLimit(`${fullPool}"${'z'.repeat(16)}";`, 17);
+  rejected({ 'app/main.l': `module app.main;int main(){${fullPool}"${'z'.repeat(17)}";return 42;}` }, /string table exceeds/);
+  let stringConstantModels = 0;
+  state = 0x53545243;
+  for (let batch = 0; batch < 8; ++batch) {
+    let declarations = `const string all=${octets};`, comparisons = '';
+    for (let n = batch * 32; n < (batch + 1) * 32; ++n) {
+      const a = Buffer.from(Array.from({ length: random(13) }, () => random(256)));
+      const b = n % 3 ? Buffer.from(a) : Buffer.concat([a, Buffer.from([0])]);
+      if (n % 3 === 2 && b.length) b[b.length - 1] ^= 255;
+      declarations += `const byte b${n}=all[${n}];const int n${n}=${literal(a)}.length;const bool e${n}=${literal(a)}==${literal(b)};const bool d${n}=${literal(a)}!=${literal(b)};`;
+      comparisons += `if(int(b${n})!=${n}||n${n}!=${a.length}||e${n}!=${a.equals(b)}||d${n}!=${!a.equals(b)})return 1;`;
+      ++stringConstantModels;
+    }
+    stringProgram(`${declarations}int main(){${comparisons}return 42;}`);
+  }
+  state = 0x53545244;
+  for (let test = 0; test < 32; ++test) {
+    const values = [Buffer.alloc(0), Buffer.from([0]), Buffer.from([255, 0, 42]), Buffer.from('alpha'), Buffer.from('beta')];
+    const initial = random(values.length), start = random(values.length), nodes = [];
+    const project = { 'std/strings.l': `module std.strings;pub using Text=string;pub static Text cell=${literal(values[initial])};` };
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.s${n}`, next = random(values.length), parents = [], form = (test + n) % 3;
+      let imports = form === 0 ? 'import std.strings;' : form === 1 ? 'import std.strings as s;' : 'import std.strings::{Text as T,cell};';
+      const type = form === 0 ? 'std::strings::Text' : form === 1 ? 's::Text' : 'T';
+      const cell = form === 0 ? 'std::strings::cell' : form === 1 ? 's::cell' : 'cell';
+      let body = `if(value==${cell})value=${literal(values[next])};else value=${cell};${cell}=value;`;
+      for (let p = 0; p < n; ++p) if (p >= n - 2 || random(3) === 0) {
+        parents.push(p); imports += `import ${nodes[p].name}::{work::run as f${p}};`; body += `value=f${p}(value);`;
+      }
+      nodes.push({ name, next, parents });
+      project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${imports}namespace work{pub ${type} run(${type} value){${body}return value;}}`;
+    }
+    let cell = values[initial];
+    function simulate(n, value) {
+      value = value.equals(cell) ? values[nodes[n].next] : cell; cell = value;
+      for (const parent of nodes[n].parents) value = simulate(parent, value);
+      return value;
+    }
+    const a = simulate(7, values[start]), b = simulate(6, values[start]);
+    const imports = ['import std.strings::{Text,cell};', 'import app.s7 as top;', 'import app.s6 as next;'];
+    if (test % 2) imports.reverse();
+    project['app/main.l'] = `module app.main;${imports.join('')}int main(){Text start=${literal(values[start])};Text a=top::work::run(start);Text b=next::work::run(start);`
+      + `if(start!=${literal(values[start])}||a!=${literal(a)}||b!=${literal(b)}||cell!=${literal(cell)})return 1;return 42;}`;
+    const settings = config(); if (test % 2) settings.module_roots.reverse();
+    const f = program(project, 42, settings);
+    assert.equal(readFileSync(resolve(f.directory, 'program.lbc')).readUInt32LE(16), 1, 'shared string cell must not be duplicated');
+  }
+
   // Bytes are distinct scalar values; narrowing is checked, widening is explicit.
   const byteProgram = body => program({ 'app/main.l': `module app.main;${body}` });
   const byteFiles = main => ({ 'app/main.l': `module app.main;${main}`,
@@ -317,7 +499,7 @@ try {
   ]) program(byteFiles(`${imports}int main(){${type} b=${first};return int(b)+1;}`));
   const byteInspection = program(byteFiles('import std.octets::{Packet,swap,current};int main(){Packet p=Packet{swap(byte(42)),true};if(p.value==byte(41))return int(current);return 0;}'));
   const byteIR = source(byteInspection, 0, 'inspect').stdout;
-  assert.match(byteIR, /LIR 1\.6; bytecode 1\.6/); assert.match(byteIR, /byte\.checked/); assert.match(byteIR, /byte\.to_int/);
+  assert.match(byteIR, /LIR 1\.7; bytecode 1\.7/); assert.match(byteIR, /byte\.checked/); assert.match(byteIR, /byte\.to_int/);
   assert.match(byteIR, /field 0 value: byte/); assert.match(byteIR, /global g0 .*current: byte initial=41/);
   const allBytes = Array.from({ length: 256 }, (_, n) => `case byte(${n}):return ${n};`).join('');
   byteProgram(`int read(byte b){switch(b){${allBytes}default:return -1;}}int main(){for(int n=0;n<256;n++){byte b=byte(n);if(int(b)!=n||read(b)!=n)return 1;}return 42;}`);
@@ -664,7 +846,7 @@ try {
     ['using Count=int;int main(){Count{42};return 42;}', /struct literal requires a struct type/],
     ['int main(){(1+2){42};return 42;}', /struct literal requires a named struct type/],
     ['struct P{int x;};const int n=P{42};int main(){return 42;}', /struct literal is not a constant expression/],
-    ['struct P{int x;};const int n=P{42}.x;int main(){return 42;}', /field access is not a constant expression/],
+    ['struct P{int x;};const int n=P{42}.x;int main(){return 42;}', /struct literal is not a constant expression/],
     ['struct A{int x;};struct B{int x;};int main(){A a=B{42};return 42;}', /expected struct, got struct/],
     ['struct A{int x;};struct B{int x;};int f(A a){return a.x;}int main(){return f(B{42});}', /no matching function overload/],
     ['struct P{int x;};pub P make(){return P{42};}int main(){return 42;}', /public signature exposes a private struct/],
@@ -939,7 +1121,7 @@ try {
     ['const int answer=n;int main(){int n=42;return n;}', /unknown local variable or constant/],
     ['const int answer=1;const int value=(answer=42);int main(){return value;}', /assignment is not/],
     ['const int answer=1;const int value=answer++;int main(){return value;}', /postfix update is not/],
-    ['const int answer=1;const int value=answer[0];int main(){return value;}', /array access is not/],
+    ['const int answer=1;const int value=answer[0];int main(){return value;}', /expected string, got int/],
     ['int f(){return 42;}const int answer=f();int main(){return answer;}', /function call is not/],
     ['bool f(){return true;}const bool answer=false&&f();int main(){return 0;}', /function call is not/],
     ['const bool answer=false&&missing;int main(){return 0;}', /unknown local variable or constant/],
@@ -1188,7 +1370,7 @@ try {
   source(staticMoved, 0, 'compile', ['-o', staticOutput], { cwd: '/' });
   assert.deepEqual(readFileSync(resolve(staticOriginal.directory, 'program.lbc')), readFileSync(staticOutput));
   const staticIR = source(staticOriginal, 0, 'inspect').stdout;
-  assert.match(staticIR, /LIR 1\.6; bytecode 1\.6/);
+  assert.match(staticIR, /LIR 1\.7; bytecode 1\.7/);
   assert.match(staticIR, /global g\d+ stdlib::std::state::hidden: int initial=40/);
   assert.match(staticIR, /global g\d+ stdlib::std::state::flags::active: bool initial=1/);
   assert.match(staticIR, /global\.load/); assert.match(staticIR, /global\.store/);
@@ -1216,7 +1398,7 @@ try {
     ['static int count=f();int f(){return 42;}int main(){return 0;}', /function call is not/],
     ['static int count=0;static int other=(count=42);int main(){return 0;}', /assignment is not/],
     ['static int count=0;static int other=count++;int main(){return 0;}', /postfix update is not/],
-    ['static int count=0;static int other=count[0];int main(){return 0;}', /array access is not/],
+    ['static int count=0;static int other=count[0];int main(){return 0;}', /mutable static/],
     ['static int count=2147483647+1;int main(){return 42;}', /invalid constant expression: integer overflow/],
     ['static int count=1/0;int main(){return 42;}', /invalid constant expression: division by zero/],
     ['static int count[2];int main(){return 0;}', /scalar constant initializer/],
@@ -1417,7 +1599,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 byte DAGs, 32 enum DAGs, 32 struct DAGs, 32 alias DAGs, 32 constant DAGs, 32 static DAGs in two import orders, ${constantModels} constant-expression models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 struct DAGs, 32 alias DAGs, 32 constant DAGs, 32 static DAGs in two import orders, ${constantModels} constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

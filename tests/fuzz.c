@@ -18,6 +18,7 @@ static size_t shape_programs;
 static size_t struct_programs;
 static size_t enum_programs;
 static size_t byte_programs;
+static size_t string_programs;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -124,7 +125,11 @@ static void fuzz_bytecode(void) {
         "using Octet=byte;const Octet first=byte(41);static byte state=first;struct P{byte b;};"
             "byte next(){byte old=state;state=byte(int(state)+1);return old;}"
             "int main(){byte a[2];P p=P{next()};a[1]=state;if(int(p.b)!=41||int(a[0])!=0)return 1;"
-            "switch(a[1]){case byte(42):return int(a[1]);default:return 0;}}"
+            "switch(a[1]){case byte(42):return int(a[1]);default:return 0;}}",
+        "using Text=string;const Text initial=\"a\\0\\xff\";static string cell=initial;struct P{string s;};"
+            "string swap(string s){string old=cell;cell=s;return old;}"
+            "int main(){P p=P{swap(\"*\")};if(p.s.length!=3||int(p.s[1])!=0||int(p.s[2])!=255||cell!=\"*\")return 1;"
+            "if(\"\"!=\"\"||p.s!=initial)return 1;return int(cell[0]);}"
     };
     Seed seeds[sizeof(sources) / sizeof(*sources)];
     Context *ctx = context("fuzz-seed");
@@ -559,14 +564,14 @@ static void reuse_execution(Context *ctx, const Program *p, int status) {
 }
 static void static_lifecycle_case(size_t test, const char *trap) {
     source_length = 0;
-    append("enum Phase{Start=-7,Done=2147483647};struct Pair{int x;bool ready;Phase phase;byte octet;};"
-           "Pair step(Pair p){p.x++;p.phase=Phase::Done;p.octet=byte(0);return p;}"
-           "static int count=41;static bool ready=true;static Phase phase=Phase::Start;static byte octet=byte(255);"
+    append("enum Phase{Start=-7,Done=2147483647};struct Pair{int x;bool ready;Phase phase;byte octet;string text;};"
+           "Pair step(Pair p){p.x++;p.phase=Phase::Done;p.octet=byte(0);p.text=\"\";return p;}"
+           "static int count=41;static bool ready=true;static Phase phase=Phase::Start;static byte octet=byte(255);static string text=\"start\\0\\xff\";"
            "int descend(int n){count++;if(n>0)return descend(n-1);return count;}"
-           "int fail(){Pair p=step(Pair{count,ready,phase,octet});count=p.x;phase=p.phase;octet=p.octet;ready=false;%s}"
-           "int main(){if(count!=41||!ready||phase!=Phase::Start||octet!=byte(255))return 1;return fail();}"
-           "int recover(){if(count!=41||!ready||phase!=Phase::Start||octet!=byte(255))return 1;Pair p=step(Pair{count,ready,phase,octet});"
-           "count=99;phase=p.phase;octet=p.octet;ready=false;return p.x;}", trap);
+           "int fail(){Pair p=step(Pair{count,ready,phase,octet,text});count=p.x;phase=p.phase;octet=p.octet;text=p.text;ready=false;%s}"
+           "int main(){if(count!=41||!ready||phase!=Phase::Start||octet!=byte(255)||text!=\"start\\0\\xff\")return 1;return fail();}"
+           "int recover(){if(count!=41||!ready||phase!=Phase::Start||octet!=byte(255)||text!=\"start\\0\\xff\")return 1;Pair p=step(Pair{count,ready,phase,octet,text});"
+           "count=99;phase=p.phase;octet=p.octet;text=p.text;ready=false;return p.x;}", trap);
     ++programs; ++lifecycle_programs;
     fprintf(stderr, "static lifecycle case %zu:\nmodule test;\n%s\n", test, source);
     Context *owner = context("static-lifecycle-source");
@@ -580,8 +585,8 @@ static void static_lifecycle_case(size_t test, const char *trap) {
         for (uint32_t j = 0; j < p->function_count; ++j)
             if (!strcmp(p->functions[j].name, "test::recover")) recovery.entry = j;
         verify(owner, &recovery);
-        if (p->global_count != 4) failed("static lifecycle program has the wrong cell count");
-        IrGlobal initial[4]; memcpy(initial, p->globals, sizeof(initial));
+        if (p->global_count != 5) failed("static lifecycle program has the wrong cell count");
+        IrGlobal initial[5]; memcpy(initial, p->globals, sizeof(initial));
         write_bytecode(owner, p, "build/fuzz-roundtrip.lbc");
         size_t before_size;
         const unsigned char *before = read_file(owner, "build/fuzz-roundtrip.lbc", &before_size);
@@ -616,7 +621,10 @@ static void static_lifecycle_cases(void) {
         "switch(phase){case Phase::Start:return 0;default:return 1/(count-42);}",
         "return int(byte(count+214));",
         "return int(byte(int(octet)-1));",
-        "byte data[1];data[0]=octet;return int(data[count]);"
+        "byte data[1];data[0]=octet;return int(data[count]);",
+        "return int(text[0]);",
+        "text=\"x\";return int(text[count]);",
+        "text=\"x\";return int(text[-count]);"
     };
     for (size_t test = 0; test < sizeof(traps) / sizeof(*traps); ++test) static_lifecycle_case(test, traps[test]);
 }
@@ -808,6 +816,97 @@ static void byte_cases(void) {
     }
 }
 
+typedef struct { unsigned length; unsigned char bytes[16]; } StringModel;
+static void string_literal(StringModel s) {
+    append("\"");
+    for (unsigned n = 0; n < s.length; ++n) append("\\x%02x", s.bytes[n]);
+    append("\"");
+}
+static bool string_model_equal(StringModel a, StringModel b) {
+    if (a.length != b.length) return false;
+    for (unsigned n = 0; n < a.length; ++n) if (a.bytes[n] != b.bytes[n]) return false;
+    return true;
+}
+static int32_t string_score(StringModel s) {
+    int32_t score = (int32_t)s.length;
+    for (unsigned n = 0; n < s.length; ++n) score += (int32_t)s.bytes[n] * (int32_t)(n + 1);
+    return score;
+}
+static void string_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        StringModel values[8] = {{0, {0}}, {1, {0}}, {3, {255, 0, 42}}};
+        for (unsigned n = 3; n < 7; ++n) {
+            values[n].length = 1 + random_number(16);
+            for (unsigned j = 0; j < values[n].length; ++j) values[n].bytes[j] = (unsigned char)random_number(256);
+        }
+        values[7] = values[test % 7];
+        unsigned p = random_number(8), q = random_number(8), cell = random_number(8);
+        int32_t sum = 0;
+        source_length = 0;
+        for (unsigned n = 0; n < 8; ++n) { append("const string c%u=", n); string_literal(values[n]); append(";"); }
+        append("using Text=string;struct P{Text s;int guard;};static string cell=c%u;"
+               "string swap(string s){string old=cell;cell=s;return old;}"
+               "P change(P p,string s){p.s=s;p.guard=0;return p;}"
+               "int score(string s){int sum=s.length;for(int n=0;n<s.length;n++)sum=sum+int(s[n])*(n+1);return sum;}"
+               "int pair(string a,string b){return score(a)*3+score(b);}int index(string s){cell=s;return 0;}"
+               "int main(){P p=P{c%u,42};P q=P{c%u,42};int sum=0;", cell, p, q);
+        for (unsigned op = 0; op < 24; ++op) {
+            unsigned selected = random_number(8);
+            switch (random_number(10)) {
+            case 0:
+                append("q=change(p,c%u);sum=sum+score(p.s)+score(q.s);", selected);
+                q = selected; sum += string_score(values[p]) + string_score(values[q]); break;
+            case 1:
+                append("p.s=c%u;sum=sum+p.s.length;", selected); p = selected; sum += (int32_t)values[p].length; break;
+            case 2:
+                append("sum=sum+score(swap(p.s))+score(cell);"); sum += string_score(values[cell]) + string_score(values[p]); cell = p; break;
+            case 3:
+                append("if(p.s==q.s){q.s=c%u;sum++;}else p=q;", selected);
+                if (string_model_equal(values[p], values[q])) { q = selected; ++sum; } else p = q;
+                break;
+            case 4:
+                append("if(p.s!=c%u&&swap(q.s)==c%u)sum=sum+2;", selected, selected);
+                if (!string_model_equal(values[p], values[selected])) {
+                    if (string_model_equal(values[cell], values[selected])) sum += 2;
+                    cell = q;
+                }
+                break;
+            case 5:
+                append("{const string keep=q.s;p.s=keep;q.s=c%u;sum=sum+score(keep);}", selected);
+                p = q; q = selected; sum += string_score(values[p]); break;
+            case 6:
+                append("{P copy=p;p=change(p,c%u);sum=sum+score(copy.s);}", selected);
+                sum += string_score(values[p]); p = selected; break;
+            case 7:
+                append("p.s=swap(q.s);q.s=c%u;sum=sum+score(p.s);", selected);
+                p = cell; cell = q; q = selected; sum += string_score(values[p]); break;
+            case 8:
+                append("if(cell.length>0)sum=sum+int(cell[index(c%u)]);", selected);
+                if (values[cell].length) { sum += values[cell].bytes[0]; cell = selected; } break;
+            case 9:
+                append("sum=sum+pair(swap(p.s),swap(q.s));");
+                sum += string_score(values[cell]) * 3 + string_score(values[p]); cell = q; break;
+            }
+        }
+        append("return sum+score(p.s)+score(q.s)+score(cell);}");
+        sum += string_score(values[p]) + string_score(values[q]) + string_score(values[cell]);
+        ++string_programs; semantic_case(sum, 0);
+    }
+    for (unsigned length = 0; length <= 16; ++length) {
+        StringModel s = {.length = length};
+        for (unsigned j = 0; j < length; ++j) s.bytes[j] = (unsigned char)random_number(256);
+        const int32_t indexes[] = {INT32_MIN, -(int32_t)length, -1, 0, (int32_t)length - 1,
+                                  (int32_t)length, (int32_t)length + 1, INT32_MAX};
+        for (unsigned n = 0; n < sizeof(indexes) / sizeof(*indexes); ++n) {
+            source_length = 0;
+            append("struct P{string s;};byte read(P p,int n){return p.s[n];}int main(){return int(read(P{");
+            string_literal(s); append("},%d));}", indexes[n]);
+            bool valid = indexes[n] >= 0 && (uint32_t)indexes[n] < length;
+            ++string_programs; semantic_case(valid ? s.bytes[indexes[n]] : 0, valid ? 0 : 70);
+        }
+    }
+}
+
 /* Enumerate (PC, defined-value set) states instead of using the verifier's meet algorithm. */
 enum { GRAPH_REGISTERS = 6, GRAPH_SLOTS = 2, GRAPH_CODE = 13, GRAPH_STATES = 1u << (GRAPH_REGISTERS + GRAPH_SLOTS) };
 static bool graph_model(const IrFunction *f) {
@@ -828,12 +927,13 @@ static bool graph_model(const IrFunction *f) {
             if (i.c) uses |= (1u << (GRAPH_REGISTERS + i.dst)) | (1u << i.b);
             break;
         case OP_GLOBAL_STORE: uses = 1u << i.a; break;
-        case OP_ADD: uses = (1u << i.a) | (1u << i.b); break;
-        case OP_BRANCH: case OP_SWITCH: case OP_RETURN: case OP_TO_BYTE: case OP_TO_INT: uses = 1u << i.a; break;
+        case OP_ADD: case OP_STRING_INDEX: uses = (1u << i.a) | (1u << i.b); break;
+        case OP_BRANCH: case OP_SWITCH: case OP_RETURN: case OP_TO_BYTE: case OP_TO_INT: case OP_STRING_LENGTH: uses = 1u << i.a; break;
         default: break;
         }
         if ((bits & uses) != uses) return false;
-        if (i.op == OP_CONST || i.op == OP_LOAD || i.op == OP_ADD || i.op == OP_GLOBAL_LOAD || i.op == OP_TO_BYTE || i.op == OP_TO_INT) {
+        if (i.op == OP_CONST || i.op == OP_LOAD || i.op == OP_ADD || i.op == OP_GLOBAL_LOAD || i.op == OP_TO_BYTE || i.op == OP_TO_INT ||
+            i.op == OP_STRING_LENGTH || i.op == OP_STRING_INDEX) {
             reachable |= 1u << i.dst; bits |= 1u << i.dst;
         }
         if (i.op == OP_CLEAR || (i.op == OP_STORE && !i.c)) bits |= 1u << (GRAPH_REGISTERS + i.dst);
@@ -912,6 +1012,18 @@ static void graph_cases(void) {
         code[9] = random_number(2) ? ins(OP_GLOBAL_LOAD, 4, 1, 0, 0) : ins(OP_LOAD, 4, 1, 2, 1);
         code[10] = ins(OP_TO_INT, 5, random_number(2) ? 3 : 4, 0, 0);
         graph_case(&p, graph_model(&f));
+        /* String operations and scalar string storage on the same verification-only CFG. */
+        IrString strings[] = {{0, (const unsigned char *)""}, {1, (const unsigned char *)"*"}};
+        p.string_count = 2; p.strings = strings;
+        globals[0].type = globals[1].type = slots[0] = slots[1] = registers[2] = registers[4] = TY_STRING;
+        globals[1].initial = 1; lengths[1] = 0; code[1].a = 0;
+        code[3] = ins(OP_CONST, 2, 1, 0, 0); code[4] = ins(OP_STORE, 1, 2, 0, 0);
+        code[5] = ins(OP_STRING_INDEX, 3, 2, random_number(2) ? 1 : 5, 0);
+        code[7] = ins(OP_STORE, 0, 2, 0, 0);
+        code[8] = random_number(2) ? ins(OP_GLOBAL_STORE, 1, random_number(2) ? 2 : 4, 0, 0) : ins(OP_STORE, 1, 2, 0, 0);
+        code[9] = random_number(2) ? ins(OP_GLOBAL_LOAD, 4, 1, 0, 0) : ins(OP_LOAD, 4, 1, 0, 0);
+        code[10] = ins(OP_STRING_LENGTH, 5, random_number(2) ? 2 : 4, 0, 0);
+        graph_case(&p, graph_model(&f));
     }
     if (!valid_graphs || !invalid_graphs) failed("graph model did not exercise acceptance and rejection");
 }
@@ -935,6 +1047,7 @@ int main(void) {
     struct_cases();
     enum_cases();
     byte_cases();
+    string_cases();
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
@@ -945,5 +1058,6 @@ int main(void) {
     printf("fuzz: %zu struct programs matched independent copy, field and call models\n", struct_programs);
     printf("fuzz: %zu enum programs matched independent value, dispatch and state models\n", enum_programs);
     printf("fuzz: %zu byte programs matched independent storage, conversion and state models\n", byte_programs);
+    printf("fuzz: %zu string programs matched independent byte, equality, bounds and state models\n", string_programs);
     return 0;
 }

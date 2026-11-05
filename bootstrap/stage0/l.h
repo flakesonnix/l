@@ -8,9 +8,9 @@
 #include <setjmp.h>
 
 #define L_IR_MAJOR 1
-#define L_IR_MINOR 6
+#define L_IR_MINOR 7
 #define L_BC_MAJOR 1
-#define L_BC_MINOR 6
+#define L_BC_MINOR 7
 #define L_NONE UINT32_MAX
 #define L_MAX_FUNCTIONS 256u
 #define L_MAX_MODULES 256u
@@ -22,6 +22,9 @@
 #define L_MAX_FIELDS 64u
 #define L_MAX_ENUMS 256u
 #define L_MAX_MEMBERS 1024u
+#define L_MAX_STRINGS 1024u
+#define L_MAX_STRING 65535u
+#define L_MAX_STRING_BYTES 1048576u
 #define L_MAX_REGISTERS 4096u
 #define L_MAX_SLOTS 1024u
 #define L_MAX_ARRAY 65535u
@@ -45,7 +48,7 @@ typedef struct {
 typedef struct { const char *text; size_t length; uint32_t line, column; int kind; int64_t integer; } Token;
 typedef enum {
     TY_VOID, TY_INT, TY_BOOL, TY_AUTO, TY_NAMED, TY_STRUCT,
-    TY_ENUM = TY_STRUCT + L_MAX_STRUCTS, TY_BYTE = TY_ENUM + L_MAX_ENUMS
+    TY_ENUM = TY_STRUCT + L_MAX_STRUCTS, TY_BYTE = TY_ENUM + L_MAX_ENUMS, TY_STRING
 } Type;
 #define IS_STRUCT(t) ((uint32_t)(t) - TY_STRUCT < L_MAX_STRUCTS)
 #define IS_ENUM(t) ((uint32_t)(t) - TY_ENUM < L_MAX_ENUMS)
@@ -54,7 +57,8 @@ enum {
     TK_CONST, TK_TRUE, TK_FALSE, TK_IF, TK_ELSE, TK_WHILE, TK_FOR, TK_RETURN,
     TK_MODULE, TK_EQ, TK_NE, TK_LE, TK_GE, TK_AND, TK_OR, TK_INC, TK_DEC,
     TK_BREAK, TK_CONTINUE, TK_SWITCH, TK_CASE, TK_DEFAULT,
-    TK_IMPORT, TK_AS, TK_PUB, TK_NAMESPACE, TK_SCOPE, TK_STATIC, TK_USING, TK_STRUCT, TK_ENUM, TK_BYTE
+    TK_IMPORT, TK_AS, TK_PUB, TK_NAMESPACE, TK_SCOPE, TK_STATIC, TK_USING, TK_STRUCT, TK_ENUM, TK_BYTE,
+    TK_STRING, TK_TEXT
 };
 
 typedef struct Expr Expr;
@@ -74,7 +78,7 @@ typedef struct Field Field;
 typedef struct Enum Enum;
 struct ExprList { Expr *value; ExprList *next; };
 struct SwitchCase { Token token; int32_t value; bool is_default; Expr *expr; Stmt *body; SwitchCase *next; };
-typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX, EX_GLOBAL, EX_STRUCT, EX_FIELD, EX_CONVERT } ExprKind;
+typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX, EX_GLOBAL, EX_STRUCT, EX_FIELD, EX_CONVERT, EX_STRING, EX_LENGTH, EX_STRING_INDEX } ExprKind;
 struct Expr {
     ExprKind kind;
     Token token;
@@ -163,6 +167,7 @@ struct Module {
     unsigned state;
     Module *next;
 };
+typedef struct { uint32_t length; const unsigned char *bytes; } IrString;
 typedef struct {
     Function *functions;
     uint32_t function_count, constant_count, static_count, alias_count, struct_count, enum_count;
@@ -172,6 +177,9 @@ typedef struct {
     TypeAlias *aliases;
     Struct *structs;
     Enum *enums;
+    uint32_t string_count, string_bytes;
+    size_t string_capacity;
+    IrString *strings;
 } Ast;
 typedef struct ModuleRoot ModuleRoot;
 typedef struct PackageDependency PackageDependency;
@@ -183,7 +191,8 @@ typedef enum {
     OP_CONST, OP_LOAD, OP_STORE, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_REM,
     OP_NEG, OP_NOT, OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE,
     OP_JUMP, OP_BRANCH, OP_CALL, OP_RETURN, OP_BOUNDS, OP_CLEAR, OP_SWITCH, OP_TRAP,
-    OP_GLOBAL_LOAD, OP_GLOBAL_STORE, OP_STRUCT, OP_FIELD, OP_FIELD_STORE, OP_TO_BYTE, OP_TO_INT, OP_COUNT
+    OP_GLOBAL_LOAD, OP_GLOBAL_STORE, OP_STRUCT, OP_FIELD, OP_FIELD_STORE, OP_TO_BYTE, OP_TO_INT,
+    OP_STRING_LENGTH, OP_STRING_INDEX, OP_COUNT
 } Opcode;
 typedef struct { Opcode op; uint32_t dst, a, b, c, line, column; } Instruction;
 typedef struct { int32_t value; uint32_t target; } SwitchEntry;
@@ -213,6 +222,8 @@ typedef struct {
     IrStruct *structs;
     uint32_t enum_count;
     IrEnum *enums;
+    uint32_t string_count;
+    IrString *strings;
 } Program;
 
 _Noreturn void fail(Context *, uint32_t, uint32_t, const char *, ...);
@@ -228,6 +239,7 @@ Token namespace_path(Context *, Token);
 Token leaf_name(Token);
 Token parent_scope(Token);
 const char *type_name(Type);
+bool string_equal(IrString, IrString);
 void enter(Context *, Token);
 void leave(Context *);
 unsigned char *read_file(Context *, const char *, size_t *);
@@ -240,7 +252,7 @@ char *source_directory(Context *, const char *);
 Ast *load_modules(Context *, const ModuleConfig *, const char *, const unsigned char *, size_t);
 void analyze(Context *, Ast *);
 void evaluate_constants(Context *, Ast *);
-int32_t evaluate_constant_expression(Context *, Expr *);
+int32_t evaluate_constant_expression(Context *, const Ast *, Expr *);
 Program *lower(Context *, Ast *);
 void verify(Context *, const Program *);
 void write_bytecode(Context *, const Program *, const char *);

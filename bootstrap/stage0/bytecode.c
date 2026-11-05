@@ -33,6 +33,7 @@ void write_bytecode(Context *ctx, const Program *p, const char *path) {
     put(file, p->global_count, 4);
     put(file, p->struct_count, 4);
     put(file, p->enum_count, 4);
+    put(file, p->string_count, 4);
     for (uint32_t n = 0; n < p->struct_count; ++n) {
         const IrStruct *s = &p->structs[n];
         uint32_t length = (uint32_t)strlen(s->name);
@@ -50,6 +51,9 @@ void write_bytecode(Context *ctx, const Program *p, const char *path) {
             length = (uint32_t)strlen(e->members[j].name);
             put(file, length, 4); fwrite(e->members[j].name, 1, length, file); put(file, (uint32_t)e->members[j].value, 4);
         }
+    }
+    for (uint32_t n = 0; n < p->string_count; ++n) {
+        put(file, p->strings[n].length, 4); fwrite(p->strings[n].bytes, 1, p->strings[n].length, file);
     }
     for (uint32_t n = 0; n < p->global_count; ++n) {
         const IrGlobal *g = &p->globals[n];
@@ -97,6 +101,8 @@ Program *read_bytecode(Context *ctx, const unsigned char *data, size_t size) {
     if (p->struct_count > L_MAX_STRUCTS) fail(ctx, 0, 0, "bytecode struct limit exceeded");
     p->enum_count = get(&r, 4);
     if (p->enum_count > L_MAX_ENUMS) fail(ctx, 0, 0, "bytecode enum limit exceeded");
+    p->string_count = get(&r, 4);
+    if (p->string_count > L_MAX_STRINGS) fail(ctx, 0, 0, "bytecode string limit exceeded");
     p->structs = allocate(ctx, p->struct_count * sizeof(*p->structs));
     for (uint32_t n = 0; n < p->struct_count; ++n) {
         IrStruct *s = &p->structs[n];
@@ -116,6 +122,16 @@ Program *read_bytecode(Context *ctx, const unsigned char *data, size_t size) {
         for (uint32_t j = 0; j < e->member_count; ++j) {
             e->members[j].name = get_name(&r); e->members[j].value = get_signed(&r);
         }
+    }
+    p->strings = allocate(ctx, p->string_count * sizeof(*p->strings));
+    uint32_t string_bytes = 0;
+    for (uint32_t n = 0; n < p->string_count; ++n) {
+        IrString *string = &p->strings[n]; string->length = get(&r, 4);
+        if (string->length > L_MAX_STRING) fail(ctx, 0, 0, "bytecode string length exceeds limit");
+        if (string->length > L_MAX_STRING_BYTES - string_bytes) fail(ctx, 0, 0, "bytecode string table exceeds byte limit");
+        string_bytes += string->length;
+        if (string->length > r.size - r.at) fail(ctx, 0, 0, "truncated bytecode string");
+        string->bytes = (const unsigned char *)copy_text(ctx, (const char *)r.data + r.at, string->length); r.at += string->length;
     }
     p->globals = allocate(ctx, p->global_count * sizeof(*p->globals));
     for (uint32_t n = 0; n < p->global_count; ++n) {
@@ -172,9 +188,14 @@ void inspect(const Program *p, FILE *file) {
         "const", "load", "store", "add.checked", "sub.checked", "mul.checked", "div.checked", "rem.checked",
         "neg.checked", "not", "eq", "ne", "lt", "le", "gt", "ge", "jump", "branch", "call", "return",
         "bounds_check", "clear", "switch", "trap", "global.load", "global.store", "struct.make", "field.load", "field.store",
-        "byte.checked", "byte.to_int"
+        "byte.checked", "byte.to_int", "string.length", "string.index"
     };
     fprintf(file, "LIR %u.%u; bytecode %u.%u; entry f%u\n", L_IR_MAJOR, L_IR_MINOR, L_BC_MAJOR, L_BC_MINOR, p->entry);
+    for (uint32_t n = 0; n < p->string_count; ++n) {
+        fprintf(file, "string k%u length=%u hex=", n, p->strings[n].length);
+        for (uint32_t j = 0; j < p->strings[n].length; ++j) fprintf(file, "%02x", p->strings[n].bytes[j]);
+        fputc('\n', file);
+    }
     for (uint32_t n = 0; n < p->enum_count; ++n) {
         const IrEnum *e = &p->enums[n];
         fprintf(file, "enum t%u %s (%u members)\n", TY_ENUM + n, e->name, e->member_count);

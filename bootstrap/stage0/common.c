@@ -111,10 +111,15 @@ const char *type_name(Type type) {
     case TY_INT: return "int";
     case TY_BOOL: return "bool";
     case TY_BYTE: return "byte";
+    case TY_STRING: return "string";
     case TY_AUTO: return "auto";
     case TY_NAMED: return "unresolved type";
     default: return "invalid";
     }
+}
+
+bool string_equal(IrString a, IrString b) {
+    return a.length == b.length && !memcmp(a.bytes, b.bytes, a.length);
 }
 
 void enter(Context *ctx, Token token) {

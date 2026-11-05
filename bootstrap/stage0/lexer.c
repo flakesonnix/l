@@ -16,12 +16,49 @@ static int keyword(Token token) {
         {"break", TK_BREAK}, {"continue", TK_CONTINUE},
         {"switch", TK_SWITCH}, {"case", TK_CASE}, {"default", TK_DEFAULT},
         {"import", TK_IMPORT}, {"as", TK_AS}, {"pub", TK_PUB}, {"namespace", TK_NAMESPACE}, {"static", TK_STATIC},
-        {"using", TK_USING}, {"struct", TK_STRUCT}, {"enum", TK_ENUM}, {"byte", TK_BYTE}
+        {"using", TK_USING}, {"struct", TK_STRUCT}, {"enum", TK_ENUM}, {"byte", TK_BYTE}, {"string", TK_STRING}
     };
     for (size_t i = 0; i < sizeof(keywords) / sizeof(*keywords); ++i)
         if (strlen(keywords[i].name) == token.length &&
             !memcmp(keywords[i].name, token.text, token.length)) return keywords[i].kind;
     return TK_NAME;
+}
+
+static unsigned hex_digit(Context *ctx, Token token, unsigned char c) {
+    if (digit(c)) return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    token_fail(ctx, token, "string hex escape requires two hexadecimal digits");
+}
+static Token string_token(Context *ctx, const char *source, size_t length, size_t *at, Token token) {
+    char *bytes = allocate(ctx, 1); size_t capacity = 1, count = 0;
+    ++*at;
+    while (*at < length) {
+        unsigned char c = (unsigned char)source[(*at)++];
+        if (c == '"') {
+            token.text = bytes; token.length = count; token.kind = TK_TEXT; return token;
+        }
+        if (c == '\\') {
+            if (*at == length) token_fail(ctx, token, "unterminated string escape");
+            c = (unsigned char)source[(*at)++];
+            switch (c) {
+            case 'n': c = '\n'; break;
+            case 'r': c = '\r'; break;
+            case 't': c = '\t'; break;
+            case '0': c = 0; break;
+            case '\\': case '"': break;
+            case 'x': {
+                if (length - *at < 2) token_fail(ctx, token, "string hex escape requires two hexadecimal digits");
+                unsigned high = hex_digit(ctx, token, (unsigned char)source[(*at)++]);
+                c = (unsigned char)(high * 16 + hex_digit(ctx, token, (unsigned char)source[(*at)++])); break;
+            }
+            default: token_fail(ctx, token, "unsupported string escape");
+            }
+        } else if (c < 32 || c > 126) token_fail(ctx, token, "string literals require printable ASCII or byte escapes");
+        if (count == L_MAX_STRING) token_fail(ctx, token, "string literal exceeds 65535 bytes");
+        reserve(ctx, (void **)&bytes, &capacity, count + 1, sizeof(*bytes)); bytes[count++] = (char)c;
+    }
+    token_fail(ctx, token, "unterminated string literal");
 }
 
 Token *lex(Context *ctx, const char *source, size_t length, size_t *count) {
@@ -37,6 +74,7 @@ Token *lex(Context *ctx, const char *source, size_t length, size_t *count) {
             continue;
         }
         Token token = { source + at, 1, line, column, c, 0 };
+        size_t start = at;
         if (c == '/' && at + 1 < length && source[at + 1] == '/') {
             while (at < length && source[at] != '\n') {
                 if (!source[at]) token_fail(ctx, token, "NUL byte in source");
@@ -54,7 +92,8 @@ Token *lex(Context *ctx, const char *source, size_t length, size_t *count) {
             at += 2; column += 2;
             continue;
         }
-        if (alpha(c)) {
+        if (c == '"') token = string_token(ctx, source, length, &at, token);
+        else if (alpha(c)) {
             size_t start = at++;
             while (at < length && (alpha((unsigned char)source[at]) || digit((unsigned char)source[at]))) ++at;
             token.length = at - start;
@@ -87,7 +126,7 @@ Token *lex(Context *ctx, const char *source, size_t length, size_t *count) {
                 token_fail(ctx, token, "unsupported character in Stage 0 source");
             if (!c) token_fail(ctx, token, "NUL byte in source");
         }
-        column += (uint32_t)token.length;
+        column += (uint32_t)(at - start);
         reserve(ctx, (void **)&tokens, &capacity, *count + 1, sizeof(*tokens));
         tokens[(*count)++] = token;
     }

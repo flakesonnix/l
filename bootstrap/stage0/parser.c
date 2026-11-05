@@ -28,15 +28,16 @@ static Type parse_type(Parser *p, Token *name) {
     case TK_INT: return TY_INT;
     case TK_BOOL: return TY_BOOL;
     case TK_BYTE: return TY_BYTE;
+    case TK_STRING: return TY_STRING;
     case TK_VOID: return TY_VOID;
     case TK_AUTO: return TY_AUTO;
-    default: token_fail(p->ctx, token, "expected Stage 0 type (int, bool, byte, void, auto or named type)");
+    default: token_fail(p->ctx, token, "expected Stage 0 type (int, bool, byte, string, void, auto or named type)");
     }
 }
 static bool starts_decl(Parser *p) {
     int k = peek(p).kind;
     if (k == TK_INT || k == TK_BYTE) return p->tokens[p->at + 1].kind != '(';
-    if (k == TK_CONST || k == TK_BOOL || k == TK_VOID || k == TK_AUTO) return true;
+    if (k == TK_CONST || k == TK_BOOL || k == TK_VOID || k == TK_AUTO || k == TK_STRING) return true;
     if (k != TK_NAME) return false;
     /* A qualified name followed by an identifier is a declaration, not a value expression. */
     size_t at = p->at + 1;
@@ -73,7 +74,9 @@ static int precedence(int op) {
 static Expr *primary(Parser *p) {
     Token token = peek(p);
     Expr *e;
-    if (take(p, TK_INTEGER)) {
+    if (take(p, TK_TEXT)) {
+        e = new_expr(p, EX_STRING, token);
+    } else if (take(p, TK_INTEGER)) {
         e = new_expr(p, EX_INT, token); e->integer = token.integer;
     } else if (take(p, TK_TRUE) || take(p, TK_FALSE)) {
         e = new_expr(p, EX_BOOL, token); e->integer = token.kind == TK_TRUE;

@@ -58,6 +58,12 @@ static void run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, Ins
             if ((uint32_t)R(i.a) > 255) trap(vm, i, "byte conversion out of range (0..255)");
             R(i.dst) = R(i.a); break;
         case OP_TO_INT: R(i.dst) = R(i.a); break;
+        case OP_STRING_LENGTH: R(i.dst) = (int32_t)vm->program->strings[R(i.a)].length; break;
+        case OP_STRING_INDEX: {
+            IrString string = vm->program->strings[R(i.a)];
+            if ((uint32_t)R(i.b) >= string.length) trap(vm, i, "string index out of bounds");
+            R(i.dst) = string.bytes[R(i.b)]; break;
+        }
         case OP_LOAD:
             if (!i.c) {
                 memcpy(&R(i.dst), elements + offsets[i.a], width(vm->program, f->registers[i.dst]) * sizeof(int32_t));
@@ -88,8 +94,11 @@ static void run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, Ins
             R(i.dst) = checked(vm, i, i.op == OP_DIV ? (int64_t)a / b : (int64_t)a % b); break;
         case OP_NEG: R(i.dst) = checked(vm, i, -(int64_t)R(i.a)); break;
         case OP_NOT: R(i.dst) = !R(i.a); break;
-        case OP_EQ: R(i.dst) = R(i.a) == R(i.b); break;
-        case OP_NE: R(i.dst) = R(i.a) != R(i.b); break;
+        case OP_EQ: case OP_NE: {
+            bool equal = f->registers[i.a] == TY_STRING ?
+                string_equal(vm->program->strings[R(i.a)], vm->program->strings[R(i.b)]) : R(i.a) == R(i.b);
+            R(i.dst) = i.op == OP_EQ ? equal : !equal; break;
+        }
         case OP_LT: R(i.dst) = R(i.a) < R(i.b); break;
         case OP_LE: R(i.dst) = R(i.a) <= R(i.b); break;
         case OP_GT: R(i.dst) = R(i.a) > R(i.b); break;
