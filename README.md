@@ -821,6 +821,18 @@ storage reset. The fuzz suite adds 128 independent array/state/order models,
 10 mutation/trap/cleanup lifecycle programs and 512 additional verification-only
 graphs for indexed global accesses. Arbitrary mutants and cyclic graphs are
 still never executed.
+Another 32 static-buffer import DAGs (seed `0x42554646`) run in two import orders,
+with independent BigInt heaps for integer, boolean and byte arrays. They exercise
+shared diamonds, imported constant lengths, scalar element-type aliases, nested
+calls, postfix updates, short-circuiting and assignment after RHS mutation.
+Snapshots check array contents and visit counts; sorted metadata checks lengths,
+zero initializers, adjacent private scalar guards and one entry per declaration despite
+multiple import paths. A separate I/O lifecycle program mutates all three array
+types before read, buffered-write or unbuffered-write failures. Its 40 compiled
+and deserialized executions alternate failures and successful retries through
+nested helpers, checking consumed input, retained stdout prefixes, caller-owned error flags,
+execution cleanup, fresh statics and unchanged metadata/serialized bytecode.
+These tests keep the language syntax and IR/bytecode format at 1.9.
 Storage/dispatch tests reuse 423 integer-expression BigInt models in lengths and
 labels, checking folded metadata, errors, duplicates, visibility and shadowing.
 The fuzz suite adds 128 bounded constant-shape programs checked against separate
@@ -867,8 +879,8 @@ model-based testing, not an exhaustive or coverage-guided fuzzing campaign.
 below 100% line, function **or branch coverage**. It also runs fault-injection,
 verifier and bytecode-mutation tests. The report is `build/coverage/report.json`.
 The 1.9 slice measures 2586/2586 lines, 161/161 functions and 2658/2658 branches.
-Its suites pass 842 integration checks, 8232 module checks, 182 frontend cases,
+Its suites pass 842 integration checks, 8872 module checks, 182 frontend cases,
 52 fault cases and 319 verifier cases plus format mutations. Deterministic fuzzing
-covers 31966 bytecode inputs, 3115 semantic programs, 8555 VM executions and 2560
+covers 31966 bytecode inputs, 3116 semantic programs, 8595 VM executions and 2560
 verification-only control-flow graphs.
 100% coverage does not establish correctness or full language conformance.

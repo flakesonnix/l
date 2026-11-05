@@ -21,6 +21,7 @@ static size_t byte_programs;
 static size_t string_programs;
 static size_t io_programs;
 static size_t global_array_programs, global_array_lifecycles;
+static size_t io_array_programs, io_array_executions;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -1122,6 +1123,94 @@ static void global_array_lifecycle_cases(void) {
     for (unsigned n = 0; n < sizeof(traps) / sizeof(*traps); ++n) global_array_lifecycle(traps[n]);
 }
 
+typedef struct { FILE *input, *output, *error; } TestStreams;
+static TestStreams io_array_streams(unsigned mode) {
+    TestStreams streams = {
+        mode == 0 ? fopen(".", "rb") : tmpfile(),
+        mode == 1 || mode == 2 ? fopen("/dev/full", "wb") : tmpfile(),
+        mode == 3 || mode == 4 ? fopen("/dev/full", "wb") : tmpfile()
+    };
+    if (!streams.input || !streams.output || !streams.error) failed("could not open I/O lifecycle streams");
+    if (mode != 0) {
+        if (fputc(7, streams.input) == EOF) failed("could not seed I/O lifecycle input");
+        rewind(streams.input);
+    }
+    if ((mode == 1 || mode == 2) && setvbuf(streams.output, NULL, mode == 2 ? _IONBF : _IOFBF, BUFSIZ))
+        failed("could not configure failing stdout");
+    if ((mode == 3 || mode == 4) && setvbuf(streams.error, NULL, mode == 4 ? _IONBF : _IOFBF, BUFSIZ))
+        failed("could not configure failing stderr");
+    return streams;
+}
+static void io_array_execution(Context *ctx, const Program *p, TestStreams streams, int status) {
+    ctx->filename = "static-buffer-io-execution"; ctx->status = 0;
+    ++executions; ++io_array_executions;
+    if (!setjmp(ctx->failure)) {
+        if (execute_program_io(ctx, p, streams.input, streams.output, streams.error) != 42)
+            failed("static buffers or scalar guards were not fresh on I/O retry");
+    }
+    if (ctx->status != status) failed("unexpected I/O lifecycle status");
+    if (!status && (ctx->allocated || ctx->allocations)) failed("successful I/O retry leaked execution memory");
+    cleanup(ctx);
+    if (ctx->allocated || ctx->allocations) failed("I/O failure cleanup retained execution memory");
+}
+static void io_array_result(TestStreams streams, unsigned mode) {
+    static const unsigned char output[] = {7, 0, 255}, error[] = {255, 0};
+    if (mode == 0) {
+        if (!ferror(streams.input)) failed("input read failure was not preserved on the caller stream");
+    } else if (ftell(streams.input) != 1 || fgetc(streams.input) != EOF || ferror(streams.input))
+        failed("I/O retry changed caller input consumption");
+    if (mode == 1 || mode == 2) {
+        if (!ferror(streams.output)) failed("output failure was not preserved on the caller stream");
+    } else io_compare(streams.output, output, mode == 0 ? 0 : sizeof(output), 1);
+    if (mode == 3 || mode == 4) {
+        if (!ferror(streams.error)) failed("stderr failure was not preserved on the caller stream");
+    } else io_compare(streams.error, error, mode == 5 ? sizeof(error) : 0, 1);
+    fclose(streams.input); fclose(streams.output); fclose(streams.error);
+}
+static void io_array_lifecycle(void) {
+    static const char text[] =
+        "module std.io;pub extern int read_byte();pub extern void write_byte(byte b);"
+        "pub extern void write_string(string s);pub extern void write_error(string s);"
+        "static byte source[4];static int positions[4];static bool ready[4];static int count=0;static int guard=41;"
+        "int consume(){return read_byte();}void emit(byte b){write_byte(b);write_string(\"\\0\\xff\");}"
+        "void report(){write_error(\"\\xff\\0\");}"
+        "int main(){if(count!=0||guard!=41)return 1;for(int n=0;n<4;n++){"
+        "if(source[n]!=byte(0)||positions[n]!=0||ready[n])return 1;"
+        "source[n]=byte(n);positions[n]=n+40;ready[n]=true;count++;}guard=99;"
+        "int value=consume();emit(byte(value));report();"
+        "if(count!=4||guard!=99||source[3]!=byte(3)||positions[3]!=43||!ready[3])return 1;return 42;}";
+    Context *owner = context("static-buffer-io-lifecycle");
+    if (setjmp(owner->failure)) failed("static-buffer I/O lifecycle source was rejected");
+    ++programs; ++io_array_programs;
+    Program *p = compile(owner, text), *loaded = roundtrip(owner, p), *versions[] = {p, loaded};
+    for (unsigned version = 0; version < 2; ++version) {
+        Program *program = versions[version];
+        if (program->global_count != 5) failed("unexpected static-buffer I/O metadata");
+        IrGlobal initial[5]; memcpy(initial, program->globals, sizeof(initial));
+        write_bytecode(owner, program, "build/fuzz-roundtrip.lbc");
+        size_t before_size;
+        unsigned char *before = read_file(owner, "build/fuzz-roundtrip.lbc", &before_size);
+        Context *execution = context("static-buffer-io-execution");
+        for (unsigned mode = 0; mode < 5; ++mode) {
+            for (unsigned attempt = 0; attempt < 2; ++attempt) {
+                fprintf(stderr, "static-buffer I/O lifecycle: version=%u mode=%u retry=%u\n", version, mode, attempt);
+                TestStreams failure = io_array_streams(mode);
+                io_array_execution(execution, program, failure, 70); io_array_result(failure, mode);
+                if (memcmp(initial, program->globals, sizeof(initial))) failed("I/O failure changed static initializer metadata");
+                TestStreams success = io_array_streams(5);
+                io_array_execution(execution, program, success, 0); io_array_result(success, 5);
+                if (memcmp(initial, program->globals, sizeof(initial))) failed("I/O retry changed static initializer metadata");
+            }
+        }
+        dispose(execution);
+        write_bytecode(owner, program, "build/fuzz-roundtrip.lbc");
+        size_t after_size;
+        unsigned char *after = read_file(owner, "build/fuzz-roundtrip.lbc", &after_size);
+        if (before_size != after_size || memcmp(before, after, before_size)) failed("I/O failures or retries changed serialized bytecode");
+    }
+    dispose(owner);
+}
+
 /* Enumerate (PC, defined-value set) states instead of using the verifier's meet algorithm. */
 enum { GRAPH_REGISTERS = 6, GRAPH_SLOTS = 2, GRAPH_CODE = 13, GRAPH_STATES = 1u << (GRAPH_REGISTERS + GRAPH_SLOTS) };
 static bool graph_model(const IrFunction *f) {
@@ -1281,6 +1370,7 @@ int main(void) {
     io_cases();
     global_array_cases();
     global_array_lifecycle_cases();
+    io_array_lifecycle();
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
@@ -1295,5 +1385,6 @@ int main(void) {
     printf("fuzz: %zu I/O programs matched independent input, output, error, EOF and trap models\n", io_programs);
     printf("fuzz: %zu static array programs matched independent shared storage and evaluation-order models\n", global_array_programs);
     printf("fuzz: %zu static array lifecycle programs survived traps, cleanup and fresh retries\n", global_array_lifecycles);
+    printf("fuzz: %zu static-buffer I/O lifecycle program passed 5 failure modes and %zu executions\n", io_array_programs, io_array_executions);
     return 0;
 }
