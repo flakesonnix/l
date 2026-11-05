@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import assert from 'node:assert/strict';
@@ -55,8 +55,102 @@ function program(files, value = 42, settings = config()) {
 }
 const library = 'module std.math; int hidden(){return 40;} pub int answer(){return hidden()+2;}';
 const files = main => ({ 'app/main.l': `module app.main; ${main}`, 'std/math.l': library });
+const ioLibrary = readFileSync(resolve('stdlib/io.l'), 'utf8');
+const ioFiles = main => ({ 'app/main.l': `module app.main; ${main}`, 'std/io.l': ioLibrary });
+async function brokenPipe(args, stream) {
+  const child = spawn(compiler, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdio[stream].destroy();
+  let diagnostic = '';
+  const other = child.stdio[stream === 1 ? 2 : 1];
+  other.on('data', bytes => { diagnostic += bytes.toString(); });
+  const timer = setTimeout(() => child.kill('SIGKILL'), 30000);
+  try {
+    const result = await new Promise((resolve, reject) => {
+      child.on('error', reject);
+      child.on('close', (status, signal) => resolve({ status, signal }));
+    });
+    assert.equal(result.signal, null, 'broken pipes must trap instead of raising SIGPIPE');
+    assert.equal(result.status, 70, diagnostic);
+    if (stream === 1) assert.match(diagnostic, /VM trap: output write failure/);
+    ++checks;
+  } finally { clearTimeout(timer); }
+}
 
 try {
+  // Explicit imports expose only the four declared stream intrinsics; bytes are never text-decoded.
+  const ioBytes = Buffer.from(Array.from({ length: 256 }, (_, n) => n));
+  for (const [imports, read, write, text, error] of [
+    ['import std.io;', 'std::io::read_byte', 'std::io::write_byte', 'std::io::write_string', 'std::io::write_error'],
+    ['import std.io as io;', 'io::read_byte', 'io::write_byte', 'io::write_string', 'io::write_error'],
+    ['import std.io::{read_byte as r,write_byte as w,write_string as s,write_error as e};', 'r', 'w', 's', 'e'],
+  ]) {
+    const f = fixture(ioFiles(`${imports} int main(){${text}("\\0\\xff");${error}("\\xff\\0");
+      ${text}("");${error}("");int count=0;
+      for(;;){int value=${read}();if(value==-1)break;${write}(byte(value));count++;}
+      if(${read}()!=-1||${read}()!=-1)return 1;return count%256;}`));
+    const output = resolve(f.directory, 'io.lbc'), again = resolve(f.directory, 'again.lbc');
+    source(f); source(f, 0, 'compile', ['-o', output]);
+    const ir = source(f, 0, 'inspect').stdout;
+    assert.equal(command(0, ['inspect', output]).stdout, ir);
+    for (const name of ['read_byte', 'write_byte', 'write_string', 'write_error']) assert.ok(ir.includes(`io.${name}`));
+    for (const input of [Buffer.alloc(0), ioBytes, Buffer.from([0, 255, 128, 10, 13, 42])]) {
+      for (const args of [['run', f.input, '--manifest', f.manifest], ['run', output]]) {
+        const result = command(input.length % 256, args, { encoding: null, input, cwd: '/' });
+        assert.deepEqual(result.stdout, Buffer.concat([Buffer.from([0, 255]), input]));
+        assert.deepEqual(result.stderr, Buffer.from([255, 0]));
+      }
+    }
+    source(f, 0, 'compile', ['-o', again], { cwd: '/' });
+    assert.deepEqual(readFileSync(output), readFileSync(again));
+  }
+  program(ioFiles('import std.io;int main(){return 42;}'));
+  program({ ...ioFiles('import std.io;int main(){return std::io::read_byte();}'),
+    'std/io.l': 'module std.io;pub int read_byte(){return 42;}' }); // Names alone are not magic.
+  program({ ...ioFiles('import std.io;int main(){return 42;}'), 'std/io.l':
+    'module std.io;pub using B=byte;pub using S=string;pub using I=int;'
+      + 'pub extern I read_byte();pub extern void write_byte(const B b);'
+      + 'pub extern void write_string(S s);pub extern void write_error(S s);' });
+  rejected(ioFiles('int main(){return std::io::read_byte();}'), /unknown/);
+  rejected(ioFiles('import std.io;int main(){return read_byte();}'), /unknown/);
+  rejected(ioFiles('import std.io::{println};int main(){return 0;}'), /unknown/);
+  rejected(ioFiles('import std.io;int main(){std::io::write_byte(256);return 0;}'), /no matching/);
+  for (const declaration of [
+    'pub extern int other();', 'pub extern int reed_byte();', 'pub extern void wrong_byte(byte b);',
+    'pub extern void wrong_string(string s);', 'pub extern void wrong_error(string s);',
+    'pub extern void read_byte();', 'pub extern int read_byte(int n);', 'pub extern int read_byte(int a,int b);',
+    'pub extern int write_byte(byte b);', 'pub extern void write_byte();', 'pub extern void write_byte(int b);',
+    'pub extern void write_string(byte b);', 'pub extern void write_error(byte b);',
+    'pub extern void write_string(string a,string b);',
+  ]) {
+    const f = rejected({ ...ioFiles('import std.io;int main(){return 0;}'),
+      'std/io.l': `module std.io;\n${declaration}` }, /unsupported std.io intrinsic/);
+    assert.match(source(f, 65).stderr, /std\/io.l:2:/);
+  }
+  for (const [declaration, message] of [
+    ['extern int read_byte();', /must be public/],
+    ['namespace n{pub extern int read_byte();}', /must not be declared in namespaces/],
+    ['pub extern int read_byte(){}', /expected ';' after extern/],
+    ['pub extern int read_byte()', /expected ';' after extern/],
+    ['pub extern int read_byte();pub extern int read_byte();', /duplicate function/],
+    ['pub extern void write_byte(byte b[1]);', /arrays are not supported as parameters/],
+  ]) rejected({ ...ioFiles('import std.io;int main(){return 0;}'), 'std/io.l': `module std.io;${declaration}` }, message);
+  rejected({ 'app/main.l': 'module app.main;pub extern int read_byte();int main(){return 0;}' }, /only supported in module std.io/);
+  for (const declaration of ['pub extern int main();', 'extern pub int read_byte();',
+    'extern static int n=0;', 'extern const int n=0;', 'extern int n;',
+    'int main(){extern int read_byte();return 0;}', 'int extern(){return 0;}']) {
+    rejected({ 'app/main.l': `module app.main;${declaration}` }, /error:/);
+  }
+  for (const stream of [1, 2]) {
+    const name = stream === 1 ? 'write_string' : 'write_error';
+    const f = fixture(ioFiles(`import std.io;int main(){for(int n=0;n<256;n++)std::io::${name}("${'x'.repeat(1024)}");return 0;}`));
+    const output = resolve(f.directory, 'pipe.lbc'); source(f, 0, 'compile', ['-o', output]);
+    await brokenPipe(['run', f.input, '--manifest', f.manifest], stream);
+    await brokenPipe(['run', output], stream);
+  }
+  const demo = resolve('examples/io_demo.l'), demoManifest = resolve('examples/package.json');
+  const demoResult = command(0, ['run', demo, '--manifest', demoManifest], { encoding: null, input: ioBytes });
+  assert.deepEqual(demoResult.stdout, Buffer.concat([Buffer.from('Echo: '), ioBytes]));
+  assert.deepEqual(demoResult.stderr, Buffer.from('Input copied.\n'));
   program(files('import std.math; int main(){return std::math::answer();}'));
   program({ 'app/main.l': '// Leading comments are not declarations.\nmodule app.main;int main(){return 42;}' });
   program(files('import std.math as m; int main(){return m::answer();}'));
@@ -329,7 +423,7 @@ try {
   ]) program(stringFiles(`${imports}const int n=${first}.length;int main(){${type} s=${first};if(n==3&&int(s[1])==0&&int(s[2])==255)return 42;return 1;}`));
   const stringInspection = program(stringFiles('import std.text::{P,swap,current};int main(){P p=P{swap("*"),42};if(p.text.length==3&&current=="*")return int(current[0]);return 1;}'));
   const stringIR = source(stringInspection, 0, 'inspect').stdout;
-  assert.match(stringIR, /LIR 1\.7; bytecode 1\.7/); assert.match(stringIR, /string\.length/); assert.match(stringIR, /string\.index/);
+  assert.match(stringIR, /LIR 1\.8; bytecode 1\.8/); assert.match(stringIR, /string\.length/); assert.match(stringIR, /string\.index/);
   assert.match(stringIR, /string k0 length=3 hex=4100ff/); assert.match(stringIR, /field 0 text: string/);
   assert.equal(readFileSync(resolve(stringInspection.directory, 'program.lbc')).readUInt32LE(28), 2);
   const octets = literal(Array.from({ length: 256 }, (_, n) => n));
@@ -499,7 +593,7 @@ try {
   ]) program(byteFiles(`${imports}int main(){${type} b=${first};return int(b)+1;}`));
   const byteInspection = program(byteFiles('import std.octets::{Packet,swap,current};int main(){Packet p=Packet{swap(byte(42)),true};if(p.value==byte(41))return int(current);return 0;}'));
   const byteIR = source(byteInspection, 0, 'inspect').stdout;
-  assert.match(byteIR, /LIR 1\.7; bytecode 1\.7/); assert.match(byteIR, /byte\.checked/); assert.match(byteIR, /byte\.to_int/);
+  assert.match(byteIR, /LIR 1\.8; bytecode 1\.8/); assert.match(byteIR, /byte\.checked/); assert.match(byteIR, /byte\.to_int/);
   assert.match(byteIR, /field 0 value: byte/); assert.match(byteIR, /global g0 .*current: byte initial=41/);
   const allBytes = Array.from({ length: 256 }, (_, n) => `case byte(${n}):return ${n};`).join('');
   byteProgram(`int read(byte b){switch(b){${allBytes}default:return -1;}}int main(){for(int n=0;n<256;n++){byte b=byte(n);if(int(b)!=n||read(b)!=n)return 1;}return 42;}`);
@@ -1370,7 +1464,7 @@ try {
   source(staticMoved, 0, 'compile', ['-o', staticOutput], { cwd: '/' });
   assert.deepEqual(readFileSync(resolve(staticOriginal.directory, 'program.lbc')), readFileSync(staticOutput));
   const staticIR = source(staticOriginal, 0, 'inspect').stdout;
-  assert.match(staticIR, /LIR 1\.7; bytecode 1\.7/);
+  assert.match(staticIR, /LIR 1\.8; bytecode 1\.8/);
   assert.match(staticIR, /global g\d+ stdlib::std::state::hidden: int initial=40/);
   assert.match(staticIR, /global g\d+ stdlib::std::state::flags::active: bool initial=1/);
   assert.match(staticIR, /global\.load/); assert.match(staticIR, /global\.store/);

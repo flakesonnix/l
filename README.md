@@ -20,6 +20,7 @@ make
 ./build/l run examples/enum_demo.l --manifest examples/package.json
 ./build/l run examples/byte_demo.l --manifest examples/package.json
 ./build/l run examples/string_demo.l --manifest examples/package.json
+printf 'hello\n' | ./build/l run examples/io_demo.l --manifest examples/package.json
 make test                                      # Requires Node.js 22+
 make fuzz                                      # Deterministic mutation/model tests
 make sanitize
@@ -48,6 +49,8 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
   `int(byteExpr)` widening, including in compile-time expressions.
 - Immutable literal-backed `string` values, bytewise equality, integer `.length`
   and checked indexing returning `byte`, including in compile-time expressions.
+- Explicitly imported `std.io` byte input, byte/string stdout and string stderr,
+  backed by four fixed `pub extern` VM intrinsics.
 - Initialized local variables, `const`, lexical scopes and shadowing.
 - Fixed local `int`/`bool`/`byte` arrays: `int values[10];`, indexing and element
   assignment with runtime bounds checks; lengths may be compile-time expressions.
@@ -97,7 +100,7 @@ instructions, call depth to 256 and managed working memory to 128 MiB.
 These are seed-profile limits, not general L language limits.
 
 Not implemented yet: other primitive types,
-dynamic strings/IO, nested/array-field structs, pointers/slices, ownership/borrows,
+dynamic strings, file/network I/O, nested/array-field structs, pointers/slices, ownership/borrows,
 generics/concepts, dynamic values, GC, classes, effects, native/LLVM, self-hosting and build/package
 management. The repository does not imply these subsystems have been implemented.
 
@@ -172,8 +175,8 @@ and type aliases remain module-private.
 Wildcard imports, re-exports, import cycles and executable module initialization
 are rejected. Dependencies do not supply a hidden entry point: imported functions
 named `main` are ordinary functions. Bytecode requires no manifest. Artifact
-version **1.7** rejects older versions, including **1.6**; recompile from source.
-`string` is now reserved; rename existing identifiers using it.
+version **1.8** rejects older versions, including **1.7**; recompile from source.
+`extern` is now reserved; rename existing identifiers using it.
 
 `compile -o` rejects an existing output that aliases the manifest or any source in
 the reachable module graph, including relative-path variants, symlinks and hard
@@ -216,7 +219,7 @@ Aliases cannot be called, used as values or used as casts.
 Local aliases, `using namespace`, generic aliases, aliases to `void`/`auto`, and
 array/function aliases are not supported. `using` is now a reserved keyword.
 Aliases disappear before IR lowering and add no runtime objects or bytecode
-metadata. The current IR/bytecode version is **1.7**; the exact-version policy is
+metadata. The current IR/bytecode version is **1.8**; the exact-version policy is
 unchanged.
 
 ### Byte values and conversions
@@ -268,7 +271,7 @@ Fixed byte arrays initialize to zero on each declaration, use integer lengths an
 indices, and obey the same bounds, initialization and `const` rules as other
 arrays. The existing limits count elements, not packed octets. Stage 0 currently
 stores every byte value/array element in one 32-bit VM cell; it exposes no packed
-memory layout. Character literals, I/O, slices and general lifetime rules remain
+memory layout. Character literals, slices and general lifetime rules remain
 future language slices.
 
 ### Literal-backed strings
@@ -316,7 +319,7 @@ indices and indices at or beyond the length trap. An index expression that
 reassigns the original string binding still indexes the previously evaluated
 value. Temporary strings, returned strings and string-valued fields support the
 same reads. Ordering, concatenation, string conversions, string switches, string
-arrays, slices, dynamic allocation and I/O are outside this slice.
+arrays, slices and dynamic allocation are not supported.
 
 String literals/references, equality, `.length` and indexing are also pure
 constant expressions. Evaluated out-of-bounds indices are compilation errors in
@@ -333,6 +336,51 @@ unevaluated operands. Different spellings of equal bytes share storage. String
 values occupy one opaque 32-bit pool-index cell; no address or index is exposed
 to L code. Literal storage remains valid for the lifetime of its `Program` and
 survives individual VM executions and trap cleanup.
+
+### Standard stream I/O
+
+`stdlib/io.l` declares the complete intrinsic interface:
+
+```c
+module std.io;
+
+pub extern int read_byte();
+pub extern void write_byte(byte value);
+pub extern void write_string(string value);
+pub extern void write_error(string value);
+```
+
+Callers must explicitly `import std.io;` and use `std::io::read_byte()` etc.,
+or use normal module aliases/selective imports. No implicit imports or search
+paths are added. Register `stdlib` as a source root with prefix `std` and a
+package dependency, as shown in `examples/package.json`.
+
+`read_byte()` consumes one stdin byte and returns an `int` in 0..255, or -1 at
+EOF, including on repeated EOF reads. Check EOF before calling `byte(value)`.
+`write_byte` writes exactly one byte to stdout. `write_string` and `write_error`
+write every string byte to stdout and stderr respectively, without implicit
+newlines, encoding conversion or NUL termination. Empty strings are valid.
+Writes flush their stream before returning, including empty writes. Reported
+read, short-write and flush failures trap with status `70`; already consumed
+input and written output are not rolled back. The CLI ignores `SIGPIPE` where
+available so broken pipes report stream errors rather than terminating by signal.
+
+`pub extern Result name(parameters);` has no L body. Stage 0 accepts it only at
+module scope in `std.io`, with one of these four exact resolved signatures.
+Private, namespaced, unknown or incorrectly typed externs are compilation errors,
+even when unused. Transparent scalar aliases work in signatures; parameter names
+and `const` do not change them. Other declarations retain their ordinary behavior;
+matching an intrinsic name without `extern` does not give a function VM behavior.
+This is not general FFI or a new linker protocol. Intrinsics are impure calls,
+not constant expressions, and obey normal argument order and call/step budgets.
+
+The C embedding API retains `execute_program(ctx, program)` for standard streams
+and adds `execute_program_io(ctx, program, input, output, error)` for caller-owned
+`FILE *` streams. It never closes, rewinds or clears them. The embedder supplies
+valid streams, handles its own signal policy and cleans the execution context
+after traps. Each execution still starts with fresh static cells; I/O side effects
+remain external. No file handles, Unicode text API, formatting, dynamic input
+strings, file opening or general extern functions are exposed to L.
 
 ### Value structs
 
@@ -498,7 +546,7 @@ forbidden in these expressions, including in unevaluated operands. String length
 and string indexing are permitted. Labels use the shared switch's
 lexical scope, so a preceding case's local can shadow a module constant.
 Folding emits only existing slot lengths and case-table values; it adds no
-runtime evaluation or additional format changes. Current IR/bytecode is **1.7**.
+runtime evaluation or additional format changes. Current IR/bytecode is **1.8**.
 
 ### Mutable static storage
 
@@ -544,7 +592,7 @@ verification → bytecode → VM.
 The seed does not materialize separate HIR, Typed IR and MIR representations yet.
 The implemented subset has no ownership model yet.
 
-IR and bytecode are versioned independently, currently both **1.7**.
+IR and bytecode are versioned independently, currently both **1.8**.
 Bytecode 1.1 added a 32-bit length per slot (0 for scalars), `bounds_check` and
 `clear`; 1.2 added a per-function `switch` case-entry table and the `switch`/`trap`
 opcodes. Version 1.3 added a global-data table and `global.load`/`global.store`.
@@ -553,8 +601,9 @@ Version 1.4 added nominal struct metadata, 32-bit type IDs and the `struct.make`
 Version 1.5 added nominal enum metadata, enum-typed scalar storage and
 fields, and enum equality/switches without adding opcodes. Version 1.6 added the
 `byte` type, byte arrays and `byte.checked`/`byte.to_int` conversion opcodes.
-Version 1.7 adds `string`, a binary string-pool table, `string.length` and
+Version 1.7 added `string`, a binary string-pool table, `string.length` and
 `string.index`; equality compares string bytes.
+Version 1.8 adds four stream opcodes without changing the table/instruction layout.
 The loader accepts only the exact format version; recompile older
 artifacts from source. The verifier checks instruction types, jump targets, unique
 register definitions, dominance, slot initialization, array metadata, addressing
@@ -584,6 +633,10 @@ operand/result types and dominating definitions. String arrays and switches are
 rejected. The loader owns a copy of each entry's bytes; duplicate-content entries
 are valid and compare equal even when their indices differ. Loaded tables count
 every entry and its bytes toward the limits, including duplicates.
+Stream reads define an `int` SSA register. Stream writes define no register
+(`dst == L_NONE`) and require a dominating `byte` or `string` source, as appropriate.
+Extern declarations lower to normal callable functions with fixed intrinsic bodies;
+there is no runtime symbol lookup or serialized extern metadata.
 The `switch` operands are `a` = selector register, `b` = table offset, `c` = entry
 count and `dst` = fallback PC. A low-level `dst == L_NONE` traps on an unmatched
 value; source switches without `default` instead continue after the switch.
@@ -593,7 +646,7 @@ cannot bypass safety by omitting a preceding `bounds_check`.
 `inspect` displays the IR, including string lengths and hexadecimal contents,
 not an ABI-stable text representation.
 
-The 1.7 header is magic (4 bytes), major/minor (2 bytes each), function count,
+The 1.8 header is magic (4 bytes), major/minor (2 bytes each), function count,
 entry function index, global count, struct count, enum count and string count
 (4 bytes each). Global, struct, enum and string counts start at byte offsets
 16, 20, 24 and 28; the complete header is 32 bytes. Struct entries
@@ -630,10 +683,15 @@ Both use the existing instruction layout and ignore `b`/`c`.
 `string.length` (opcode 31) uses `dst` = int register and `a` = string register,
 ignoring `b`/`c`. `string.index` (opcode 32) uses `dst` = byte register,
 `a` = string register and `b` = int index register, ignoring `c`. Each index
-operation performs its own runtime bounds check. Existing type/opcode IDs are
-preserved. **Migration:** recompile all older artifacts, including 1.6; the new
-header/table layout is accepted only under version 1.7. Rename source identifiers
-called `string` because it is now a keyword.
+operation performs its own runtime bounds check.
+
+`io.read_byte` (opcode 33) uses `dst` = int register, ignoring `a`/`b`/`c`.
+`io.write_byte` (34) uses `a` = byte register; `io.write_string` (35) and
+`io.write_error` (36) use `a` = string register. All three writes require
+`dst == L_NONE` and ignore `b`/`c`. Existing type/opcode IDs are preserved.
+**Migration:** recompile all older artifacts, including 1.7. Even artifacts
+without I/O require the exact 1.8 version header. Rename source identifiers
+called `extern` because it is now a keyword (`string` remains reserved).
 
 Artifacts contain no timestamps or absolute source paths. Identical source
 dependency closures and package identities produce identical bytecode after
@@ -686,6 +744,17 @@ and after serialization, covering pool/resource limits, references, operand type
 dominance, forbidden operations, duplicate-content equality and empty strings.
 Format tests truncate every byte, corrupt metadata and verify that loaded strings
 survive overwriting the input buffer.
+I/O tests compare source and bytecode stdout/stderr as raw buffers, exercise all
+256 input/output byte values, empty streams/strings, repeated EOF, import forms,
+signature restrictions, reproducibility and broken pipes. Fault injection covers
+read errors, buffered/unbuffered output failures, already-reported errors and
+empty-write flush failures. Twenty I/O IR cases check source/destination types,
+register ranges, definitions, dominance and control flow directly and after
+serialization. Another 512 potentially cyclic I/O verifier graphs are never run.
+The fuzz suite adds 128 independent stream-state models, checking input position,
+exact stdout/stderr bytes, return values, short-circuit/nested-call order and
+output retained before traps. Each source/deserialized program runs three times
+on caller-owned streams, with trap cleanup and fresh statics between executions.
 Storage/dispatch tests reuse 423 integer-expression BigInt models in lengths and
 labels, checking folded metadata, errors, duplicates, visibility and shadowing.
 The fuzz suite adds 128 bounded constant-shape programs checked against separate
@@ -731,9 +800,9 @@ model-based testing, not an exhaustive or coverage-guided fuzzing campaign.
 `make coverage` measures all stage-0 C files without source exclusions and fails
 below 100% line, function **or branch coverage**. It also runs fault-injection,
 verifier and bytecode-mutation tests. The report is `build/coverage/report.json`.
-The 1.7 slice measures 2467/2467 lines, 156/156 functions and 2484/2484 branches.
-Its suites pass 842 integration checks, 7870 module checks, 182 frontend cases,
-44 fault cases and 270 verifier cases plus format mutations. Deterministic fuzzing
-covers 26578 bytecode inputs, 2849 semantic programs, 7112 VM executions and 1536
+The 1.8 slice measures 2528/2528 lines, 161/161 functions and 2561/2561 branches.
+Its suites pass 842 integration checks, 8015 module checks, 182 frontend cases,
+52 fault cases and 290 verifier cases plus format mutations. Deterministic fuzzing
+covers 28139 bytecode inputs, 2977 semantic programs, 7881 VM executions and 2048
 verification-only control-flow graphs.
 100% coverage does not establish correctness or full language conformance.

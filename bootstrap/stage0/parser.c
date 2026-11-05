@@ -357,9 +357,11 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
             *constants = constant;
             continue;
         }
+        bool is_extern = take(p, TK_EXTERN);
         if (ast->function_count++ >= L_MAX_FUNCTIONS) token_fail(p->ctx, peek(p), "too many functions (maximum 256)");
         Function *fn = allocate(p->ctx, sizeof(*fn));
         fn->module = ast->entry; fn->scope = scope; fn->exported = exported;
+        fn->is_extern = is_extern;
         fn->result = parse_type(p, &fn->result_name);
         fn->name = expect(p, TK_NAME, "expected function name");
         expect(p, '(', "expected '(' after function name");
@@ -371,8 +373,9 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
             } while (take(p, ','));
             expect(p, ')', "expected ')' after parameters");
         }
-        if (peek(p).kind != '{') token_fail(p->ctx, peek(p), "expected function body");
-        fn->body = statement(p);
+        if (is_extern) expect(p, ';', "expected ';' after extern declaration");
+        else if (peek(p).kind != '{') token_fail(p->ctx, peek(p), "expected function body");
+        if (!is_extern) fn->body = statement(p);
         *tail = fn; tail = &fn->next;
     }
     if (nested) expect(p, '}', "expected '}' after namespace");
