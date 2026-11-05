@@ -349,8 +349,14 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
             constant->is_static = is_static;
             constant->type = parse_type(p, &constant->type_name);
             constant->name = expect(p, TK_NAME, is_static ? "expected static storage name" : "expected module constant name");
-            expect(p, '=', is_static ? "static storage requires a scalar constant initializer" : "module constants require a scalar initializer");
-            constant->value = expression(p, 1);
+            if (is_static && take(p, '[')) {
+                constant->length = expression(p, 1);
+                expect(p, ']', "expected ']' after static array length");
+                if (peek(p).kind == '=') token_fail(p->ctx, peek(p), "static arrays initialize to zero and cannot have an initializer");
+            } else {
+                expect(p, '=', is_static ? "static storage requires a scalar constant initializer" : "module constants require a scalar initializer");
+                constant->value = expression(p, 1);
+            }
             expect(p, ';', is_static ? "expected ';' after static declaration" : "expected ';' after module constant");
             Global **constants = &ast->globals;
             while (*constants) constants = &(*constants)->next;
