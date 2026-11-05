@@ -1,6 +1,7 @@
 #include "l.h"
 
 #include <errno.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -33,6 +34,10 @@ static void protect_inputs(Context *ctx, const char *output, const char *manifes
 }
 
 int l_main(int argc, char **argv) {
+#ifdef SIGPIPE
+    /* Broken pipes must report stream failures, not terminate the CLI by signal. */
+    (void)signal(SIGPIPE, SIG_IGN);
+#endif
     if (argc < 3) return usage();
     bool compile = !strcmp(argv[1], "compile");
     bool check = !strcmp(argv[1], "check");

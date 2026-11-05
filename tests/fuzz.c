@@ -19,6 +19,7 @@ static size_t struct_programs;
 static size_t enum_programs;
 static size_t byte_programs;
 static size_t string_programs;
+static size_t io_programs;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -129,7 +130,9 @@ static void fuzz_bytecode(void) {
         "using Text=string;const Text initial=\"a\\0\\xff\";static string cell=initial;struct P{string s;};"
             "string swap(string s){string old=cell;cell=s;return old;}"
             "int main(){P p=P{swap(\"*\")};if(p.s.length!=3||int(p.s[1])!=0||int(p.s[2])!=255||cell!=\"*\")return 1;"
-            "if(\"\"!=\"\"||p.s!=initial)return 1;return int(cell[0]);}"
+            "if(\"\"!=\"\"||p.s!=initial)return 1;return int(cell[0]);}",
+        "module std.io;pub extern int read_byte();pub extern void write_byte(byte b);"
+            "pub extern void write_string(string s);pub extern void write_error(string s);int main(){return 42;}"
     };
     Seed seeds[sizeof(sources) / sizeof(*sources)];
     Context *ctx = context("fuzz-seed");
@@ -907,6 +910,126 @@ static void string_cases(void) {
     }
 }
 
+/* Independent stream state: no VM opcodes, register layout or verifier routines. */
+typedef struct {
+    unsigned char input[256], output[8192], error[8192];
+    size_t length, position, output_length, error_length;
+    int32_t sum, visits;
+} IoModel;
+static int32_t io_read(IoModel *m) {
+    return m->position < m->length ? m->input[m->position++] : -1;
+}
+static void io_write(IoModel *m, const unsigned char *bytes, size_t length, bool error) {
+    size_t *used = error ? &m->error_length : &m->output_length;
+    unsigned char *output = error ? m->error : m->output;
+    if (length > sizeof(m->output) - *used) failed("I/O model exceeds its output buffer");
+    memcpy(output + *used, bytes, length); *used += length;
+}
+static int32_t io_emit(IoModel *m) {
+    int32_t value = io_read(m);
+    unsigned char byte = value < 0 ? 0 : (unsigned char)value;
+    io_write(m, &byte, 1, false); ++m->visits; return byte;
+}
+static void io_compare(FILE *file, const unsigned char *expected, size_t length, unsigned repeat) {
+    rewind(file);
+    for (unsigned n = 0; n < repeat; ++n)
+        for (size_t j = 0; j < length; ++j)
+            if (fgetc(file) != expected[j]) failed("stream bytes differ from independent I/O model");
+    if (fgetc(file) != EOF || ferror(file)) failed("stream contains unexpected output or an error");
+    if (fseek(file, 0, SEEK_END)) failed("VM did not preserve caller-owned streams");
+}
+static void io_execute(const Program *p, const IoModel *m, int status) {
+    FILE *input = tmpfile(), *output = tmpfile(), *error = tmpfile();
+    if (!input || !output || !error) failed("could not create I/O test streams");
+    if (fwrite(m->input, 1, m->length, input) != m->length) failed("could not seed I/O input");
+    Context *ctx = context("io-model-execution");
+    for (unsigned repeat = 1; repeat <= 3; ++repeat) {
+        rewind(input); ctx->status = 0; ++executions;
+        if (!setjmp(ctx->failure)) {
+            if (execute_program_io(ctx, p, input, output, error) != m->sum + m->visits)
+                failed("I/O return value differs from independent model");
+        }
+        if (ctx->status != status) failed("I/O trap status differs from independent model");
+        if (!status && ctx->allocated) failed("successful I/O execution leaked memory");
+        if (ftell(input) != (long)m->position) failed("I/O input consumption differs from independent model");
+        io_compare(output, m->output, m->output_length, repeat);
+        io_compare(error, m->error, m->error_length, repeat);
+        if (p->globals[0].initial != 0) failed("I/O execution changed initializer metadata");
+        cleanup(ctx);
+    }
+    dispose(ctx); fclose(input); fclose(output); fclose(error);
+}
+static void io_semantic_case(const IoModel *m, int status) {
+    ++programs; ++io_programs;
+    fprintf(stderr, "I/O model %zu: input=%zu output=%zu error=%zu status=%d\n%s\n",
+            io_programs, m->length, m->output_length, m->error_length, status, source);
+    Context *ctx = context("io-model-source");
+    if (setjmp(ctx->failure)) failed("I/O model program was rejected");
+    Program *p = compile(ctx, source), *loaded = roundtrip(ctx, p);
+    io_execute(p, m, status); io_execute(loaded, m, status);
+    dispose(ctx);
+}
+static void io_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        IoModel m = {0};
+        m.length = test == 0 ? 256 : test == 1 ? 0 : random_number(257);
+        for (size_t n = 0; n < m.length; ++n) m.input[n] = test == 0 ? (unsigned char)n : (unsigned char)random_number(256);
+        StringModel strings[4] = {{0, {0}}, {3, {0, 128, 255}}, {1, {10}}, {16, {0}}};
+        for (unsigned n = 0; n < strings[3].length; ++n) strings[3].bytes[n] = (unsigned char)random_number(256);
+        source_length = 0;
+        append("module std.io;pub extern int read_byte();pub extern void write_byte(byte b);"
+               "pub extern void write_string(string s);pub extern void write_error(string s);");
+        for (unsigned n = 0; n < 4; ++n) { append("const string c%u=", n); string_literal(strings[n]); append(";"); }
+        append("static int visits=0;byte take(){int value=read_byte();if(value<0)return byte(0);return byte(value);}"
+               "byte emit(byte b){write_byte(b);visits++;return b;}int pair(byte a,byte b){return int(a)*3+int(b);}"
+               "string pass(string s){write_error(s);return s;}int main(){int sum=0;");
+        for (unsigned op = 0; op < (test < 2 ? 0u : 24u); ++op) {
+            unsigned selected = random_number(4), delta = random_number(256);
+            switch (random_number(10)) {
+            case 0: append("emit(take());"); (void)io_emit(&m); break;
+            case 1: {
+                append("sum=sum+pair(emit(take()),emit(take()));");
+                int32_t a = io_emit(&m), b = io_emit(&m); m.sum += a * 3 + b; break;
+            }
+            case 2: case 3: {
+                bool error = op % 2 != 0;
+                append("%s(c%u);", error ? "write_error" : "write_string", selected);
+                io_write(&m, strings[selected].bytes, strings[selected].length, error); break;
+            }
+            case 4:
+                append("if(read_byte()==-1)sum=sum+7;else sum=sum+3;"); m.sum += io_read(&m) < 0 ? 7 : 3; break;
+            case 5:
+                append("{bool a=false&&read_byte()!=-1;bool b=true||read_byte()!=-1;}"); break;
+            case 6: {
+                append("{int value=read_byte();if(value>=0){write_byte(byte((value+%u)%%256));sum=sum+value;}else sum=sum-1;}", delta);
+                int32_t value = io_read(&m);
+                if (value < 0) --m.sum;
+                else { unsigned char byte = (unsigned char)((value + (int32_t)delta) % 256); io_write(&m, &byte, 1, false); m.sum += value; }
+                break;
+            }
+            case 7:
+                append("write_string(pass(c%u));", selected);
+                io_write(&m, strings[selected].bytes, strings[selected].length, true);
+                io_write(&m, strings[selected].bytes, strings[selected].length, false); break;
+            case 8: {
+                append("write_byte(byte(%u));", delta); unsigned char byte = (unsigned char)delta; io_write(&m, &byte, 1, false); break;
+            }
+            case 9: append("sum=sum+read_byte();"); m.sum += io_read(&m); break;
+            }
+        }
+        append("for(;;){int value=read_byte();if(value==-1)break;write_byte(byte(value));sum=sum+value;}"
+               "sum=sum+read_byte()+read_byte();");
+        for (int32_t value; (value = io_read(&m)) >= 0;) {
+            unsigned char byte = (unsigned char)value; io_write(&m, &byte, 1, false); m.sum += value;
+        }
+        m.sum -= 2;
+        int status = test % 4 == 3 ? 70 : 0;
+        if (status) append("write_byte(byte(read_byte()));"); // EOF must trap before the write, preserving earlier output.
+        append("return sum+visits;}");
+        io_semantic_case(&m, status);
+    }
+}
+
 /* Enumerate (PC, defined-value set) states instead of using the verifier's meet algorithm. */
 enum { GRAPH_REGISTERS = 6, GRAPH_SLOTS = 2, GRAPH_CODE = 13, GRAPH_STATES = 1u << (GRAPH_REGISTERS + GRAPH_SLOTS) };
 static bool graph_model(const IrFunction *f) {
@@ -928,12 +1051,13 @@ static bool graph_model(const IrFunction *f) {
             break;
         case OP_GLOBAL_STORE: uses = 1u << i.a; break;
         case OP_ADD: case OP_STRING_INDEX: uses = (1u << i.a) | (1u << i.b); break;
+        case OP_WRITE_BYTE: case OP_WRITE_STRING: case OP_WRITE_ERROR:
         case OP_BRANCH: case OP_SWITCH: case OP_RETURN: case OP_TO_BYTE: case OP_TO_INT: case OP_STRING_LENGTH: uses = 1u << i.a; break;
         default: break;
         }
         if ((bits & uses) != uses) return false;
         if (i.op == OP_CONST || i.op == OP_LOAD || i.op == OP_ADD || i.op == OP_GLOBAL_LOAD || i.op == OP_TO_BYTE || i.op == OP_TO_INT ||
-            i.op == OP_STRING_LENGTH || i.op == OP_STRING_INDEX) {
+            i.op == OP_STRING_LENGTH || i.op == OP_STRING_INDEX || i.op == OP_READ_BYTE) {
             reachable |= 1u << i.dst; bits |= 1u << i.dst;
         }
         if (i.op == OP_CLEAR || (i.op == OP_STORE && !i.c)) bits |= 1u << (GRAPH_REGISTERS + i.dst);
@@ -1024,6 +1148,13 @@ static void graph_cases(void) {
         code[9] = random_number(2) ? ins(OP_GLOBAL_LOAD, 4, 1, 0, 0) : ins(OP_LOAD, 4, 1, 0, 0);
         code[10] = ins(OP_STRING_LENGTH, 5, random_number(2) ? 2 : 4, 0, 0);
         graph_case(&p, graph_model(&f));
+        /* Stream reads define values; writes only consume them. Cyclic graphs are never executed. */
+        code[1] = ins(OP_READ_BYTE, 1, 0, 0, 0);
+        code[4] = ins(OP_WRITE_ERROR, L_NONE, random_number(2) ? 2 : 4, 0, 0);
+        code[8] = random_number(2) ? ins(OP_WRITE_STRING, L_NONE, random_number(2) ? 2 : 4, 0, 0) :
+            ins(OP_WRITE_BYTE, L_NONE, 3, 0, 0);
+        if (random_number(2)) code[10] = ins(OP_READ_BYTE, 5, 0, 0, 0);
+        graph_case(&p, graph_model(&f));
     }
     if (!valid_graphs || !invalid_graphs) failed("graph model did not exercise acceptance and rejection");
 }
@@ -1048,6 +1179,7 @@ int main(void) {
     enum_cases();
     byte_cases();
     string_cases();
+    io_cases();
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
@@ -1059,5 +1191,6 @@ int main(void) {
     printf("fuzz: %zu enum programs matched independent value, dispatch and state models\n", enum_programs);
     printf("fuzz: %zu byte programs matched independent storage, conversion and state models\n", byte_programs);
     printf("fuzz: %zu string programs matched independent byte, equality, bounds and state models\n", string_programs);
+    printf("fuzz: %zu I/O programs matched independent input, output, error, EOF and trap models\n", io_programs);
     return 0;
 }

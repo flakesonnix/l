@@ -918,6 +918,88 @@ static void check_string(int which, bool serialized) {
     if (ctx->status != expected) { fprintf(stderr, "string verifier case %d: expected %d, got %d\n", which, expected, ctx->status); exit(1); }
     cleanup(ctx); free(ctx);
 }
+enum {
+    I_VALID, I_EMPTY, I_READ_TYPE, I_READ_REGISTER, I_READ_NONE, I_READ_DUPLICATE,
+    I_BYTE_TYPE, I_STRING_TYPE, I_ERROR_TYPE, I_BYTE_REGISTER, I_STRING_REGISTER, I_ERROR_REGISTER,
+    I_BYTE_DEST, I_STRING_DEST, I_ERROR_DEST, I_BYTE_UNDEFINED, I_STRING_UNDEFINED, I_ERROR_UNDEFINED,
+    I_READ_UNREACHABLE, I_FALL_OFF, I_COUNT
+};
+static void io_fixture(Fixture *x) {
+    reset(x);
+    x->program.string_count = 1; x->program.strings = x->strings;
+    static const unsigned char bytes[] = {0, 128, 255};
+    x->strings[0] = (IrString){sizeof(bytes), bytes};
+    IrFunction *f = &x->functions[0];
+    f->slot_count = 0; f->register_count = 5; f->code_count = 10;
+    x->registers[0][0] = x->registers[0][3] = x->registers[0][4] = TY_INT;
+    x->registers[0][1] = TY_BYTE; x->registers[0][2] = TY_STRING;
+    x->code[0][0] = ins(OP_READ_BYTE, 0, 0, 0, 0);
+    x->code[0][1] = ins(OP_CONST, 1, 255, 0, 0);
+    x->code[0][2] = ins(OP_WRITE_BYTE, L_NONE, 1, 0, 0);
+    x->code[0][3] = ins(OP_CONST, 2, 0, 0, 0);
+    x->code[0][4] = ins(OP_WRITE_STRING, L_NONE, 2, 0, 0);
+    x->code[0][5] = ins(OP_WRITE_ERROR, L_NONE, 2, 0, 0);
+    x->code[0][6] = ins(OP_READ_BYTE, 3, 0, 0, 0);
+    x->code[0][7] = ins(OP_CONST, 4, 42, 0, 0);
+    x->code[0][8] = ins(OP_WRITE_STRING, L_NONE, 2, 0, 0);
+    x->code[0][9] = ins(OP_RETURN, 0, 4, 0, 0);
+}
+static void check_io(int which, bool serialized) {
+    Context *ctx = calloc(1, sizeof(*ctx)); if (!ctx) exit(1);
+    ctx->filename = "io-verifier-test";
+    if (!setjmp(ctx->failure)) {
+        Fixture x; io_fixture(&x);
+        switch (which) {
+        case I_EMPTY: x.strings[0].length = 0; break;
+        case I_READ_TYPE: x.registers[0][0] = TY_BYTE; break;
+        case I_READ_REGISTER: x.code[0][0].dst = 5; break;
+        case I_READ_NONE: x.code[0][0].dst = L_NONE; break;
+        case I_READ_DUPLICATE: x.code[0][6].dst = 0; break;
+        case I_BYTE_TYPE: x.code[0][2].a = 0; break;
+        case I_STRING_TYPE: x.code[0][4].a = 1; break;
+        case I_ERROR_TYPE: x.code[0][5].a = 0; break;
+        case I_BYTE_REGISTER: x.code[0][2].a = L_NONE; break;
+        case I_STRING_REGISTER: x.code[0][4].a = 5; break;
+        case I_ERROR_REGISTER: x.code[0][5].a = UINT32_MAX; break;
+        case I_BYTE_DEST: x.code[0][2].dst = 0; break;
+        case I_STRING_DEST: x.code[0][4].dst = 2; break;
+        case I_ERROR_DEST: x.code[0][5].dst = UINT32_MAX - 1; break;
+        case I_BYTE_UNDEFINED:
+            x.code[0][0] = x.code[0][2]; x.code[0][2] = ins(OP_READ_BYTE, 0, 0, 0, 0); break;
+        case I_STRING_UNDEFINED:
+            x.code[0][0] = x.code[0][4]; x.code[0][4] = ins(OP_READ_BYTE, 0, 0, 0, 0); break;
+        case I_ERROR_UNDEFINED:
+            x.code[0][0] = x.code[0][5]; x.code[0][5] = ins(OP_READ_BYTE, 0, 0, 0, 0); break;
+        case I_READ_UNREACHABLE:
+            x.code[0][0] = ins(OP_JUMP, 0, 2, 0, 0); x.code[0][1] = ins(OP_READ_BYTE, 0, 0, 0, 0);
+            x.code[0][2] = ins(OP_CONST, 1, 255, 0, 0); break;
+        case I_FALL_OFF: x.code[0][9] = ins(OP_WRITE_STRING, L_NONE, 2, 0, 0); break;
+        default: break;
+        }
+        Program *p = &x.program;
+        if (serialized) {
+            write_bytecode(ctx, p, "build/verifier-io.lbc");
+            size_t size; unsigned char *bytes = read_file(ctx, "build/verifier-io.lbc", &size);
+            p = read_bytecode(ctx, bytes, size);
+        } else verify(ctx, p);
+        if (which > I_EMPTY) { fprintf(stderr, "I/O verifier accepted invalid case %d\n", which); exit(1); }
+        FILE *input = tmpfile(), *output = tmpfile(), *error = tmpfile();
+        if (!input || !output || !error) exit(1);
+        size_t allocated = ctx->allocated;
+        if (execute_program_io(ctx, p, input, output, error) != 42 || ctx->allocated != allocated) exit(1);
+        rewind(output); rewind(error);
+        if (fgetc(output) != 255) exit(1);
+        for (unsigned repeat = 0; repeat < 2; ++repeat)
+            for (unsigned n = 0; n < x.strings[0].length; ++n)
+                if (fgetc(output) != x.strings[0].bytes[n]) exit(1);
+        for (unsigned n = 0; n < x.strings[0].length; ++n)
+            if (fgetc(error) != x.strings[0].bytes[n]) exit(1);
+        if (fgetc(output) != EOF || fgetc(error) != EOF) exit(1);
+        fclose(input); fclose(output); fclose(error);
+    }
+    if (ctx->status != (which <= I_EMPTY ? 0 : 65)) { fprintf(stderr, "unexpected I/O verifier status: %d\n", which); exit(1); }
+    cleanup(ctx); free(ctx);
+}
 static void string_bytes(void) {
     Context *ctx = calloc(1, sizeof(*ctx)); if (!ctx) exit(1);
     ctx->filename = "string-format-test"; if (setjmp(ctx->failure)) exit(1);
@@ -990,7 +1072,9 @@ int main(void) {
     for (int which = 0; which < E_COUNT; ++which) check_enum(which);
     for (int which = 0; which < B_COUNT; ++which) { check_byte(which, false); check_byte(which, true); }
     for (int which = 0; which < T_COUNT; ++which) { check_string(which, false); check_string(which, true); }
+    for (int which = 0; which < I_COUNT; ++which) { check_io(which, false); check_io(which, true); }
     remove("build/verifier-byte.lbc");
+    remove("build/verifier-io.lbc");
     global_bytes();
     struct_bytes();
     enum_bytes();
@@ -1007,7 +1091,7 @@ int main(void) {
     check_bytes(original, size, true);
     for (size_t length = 0; length < size; ++length) check_bytes(original, length, false);
     static const struct { size_t offset; uint32_t value; unsigned width; } corruptions[] = {
-        {0, 0, 1}, {4, 2, 2}, {6, L_BC_MINOR + 1, 2}, {6, 0, 2}, {6, 1, 2}, {6, 2, 2}, {6, 3, 2}, {6, 4, 2}, {6, 5, 2}, {6, 6, 2}, {8, 0, 4}, {8, L_MAX_FUNCTIONS + 1, 4},
+        {0, 0, 1}, {4, 2, 2}, {6, L_BC_MINOR + 1, 2}, {6, 0, 2}, {6, 1, 2}, {6, 2, 2}, {6, 3, 2}, {6, 4, 2}, {6, 5, 2}, {6, 6, 2}, {6, 7, 2}, {8, 0, 4}, {8, L_MAX_FUNCTIONS + 1, 4},
         {12, 2, 4}, {16, L_MAX_GLOBALS + 1, 4}, {20, L_MAX_STRUCTS + 1, 4}, {24, L_MAX_ENUMS + 1, 4}, {28, L_MAX_STRINGS + 1, 4}, {32, 0, 4}, {32, UINT32_MAX, 4}, {36, 0, 1},
         {48, L_MAX_SLOTS + 1, 4}, {52, L_MAX_REGISTERS + 1, 4},
         {56, L_MAX_CODE + 1, 4}, {60, L_MAX_ARGS + 1, 4}, {64, L_MAX_CASES + 1, 4},
@@ -1025,6 +1109,6 @@ int main(void) {
     memcpy(bytes, original, size); bytes[size] = 0;
     check_bytes(bytes, size + 1, false);
     free(bytes); cleanup(ctx); free(ctx); remove("build/verifier.lbc"); remove("build/verifier-case.lbc");
-    printf("verifier: %d IR cases plus truncation/format mutations passed\n", CASE_COUNT + S_COUNT + E_COUNT + B_COUNT + T_COUNT);
+    printf("verifier: %d IR cases plus truncation/format mutations passed\n", CASE_COUNT + S_COUNT + E_COUNT + B_COUNT + T_COUNT + I_COUNT);
     return 0;
 }

@@ -84,6 +84,31 @@ static bool signature(const Function *fn, const Type *types, uint32_t count) {
     for (Decl *p = fn->parameters; p; p = p->next) if (p->type != types[n++]) return false;
     return true;
 }
+static bool token_text(Token token, const char *text) {
+    return token.length == strlen(text) && !memcmp(token.text, text, token.length);
+}
+static Intrinsic intrinsic_of(Token name, Type result, const Type *parameters, uint32_t count) {
+    if (count == 1 && result == TY_VOID) {
+        if (token_text(name, "write_byte") && parameters[0] == TY_BYTE) return IN_WRITE_BYTE;
+        if (token_text(name, "write_string") && parameters[0] == TY_STRING) return IN_WRITE_STRING;
+        if (token_text(name, "write_error") && parameters[0] == TY_STRING) return IN_WRITE_ERROR;
+    }
+    if (token_text(name, "read_byte") && result == TY_INT && !count) return IN_READ_BYTE;
+    return IN_NONE;
+}
+static void check_intrinsic(Context *ctx, Function *fn) {
+    /* The VM supplies the only supported extern bodies: the fixed std.io stream intrinsics. */
+    if (!fn->is_extern) return;
+    if (!fn->exported) token_fail(ctx, fn->name, "extern declarations must be public");
+    if (fn->scope.length) token_fail(ctx, fn->name, "extern declarations must not be declared in namespaces");
+    if (!token_text(fn->module->name, "std.io"))
+        token_fail(ctx, fn->name, "extern declarations are only supported in module std.io");
+    Type parameters[L_MAX_SLOTS]; uint32_t count = 0;
+    for (Decl *p = fn->parameters; p; p = p->next) parameters[count++] = p->type;
+    Intrinsic intrinsic = intrinsic_of(fn->name, fn->result, parameters, count);
+    if (intrinsic == IN_NONE) token_fail(ctx, fn->name, "unsupported std.io intrinsic declaration");
+    fn->intrinsic = intrinsic;
+}
 static Function *overload(Semantic *s, Module *module, Token path, const Type *types, uint32_t count) {
     bool found = false, visible = false, inaccessible = false;
     for (Function *fn = s->ast->functions; fn; fn = fn->next) {
@@ -680,6 +705,7 @@ void analyze(Context *ctx, Ast *ast) {
             ast->entrypoint = fn;
             if (fn->result != TY_INT || fn->parameter_count) token_fail(ctx, fn->name, "entry point must have signature int main()");
         }
+        check_intrinsic(ctx, fn);
     }
     if (!main_found) { ctx->filename = ast->entry->path; fail(ctx, 0, 0, "missing entry point int main()"); }
     for (Enum *enumeration = ast->enums; enumeration; enumeration = enumeration->next) {
@@ -715,6 +741,7 @@ void analyze(Context *ctx, Ast *ast) {
         ctx->filename = fn->module->path;
         Semantic s = { ctx, ast, fn, NULL, 0, 0, NULL, true, false };
         for (Decl *p = fn->parameters; p; p = p->next) bind(&s, p);
+        if (fn->is_extern) continue; /* VM intrinsics have no L body to analyze. */
         /* Parameters and the outermost function block share one scope. */
         bool falls = analyze_sequence(&s, fn->body->body);
         if (falls && fn->result != TY_VOID) token_fail(ctx, fn->name, "not all control-flow paths return a value");
