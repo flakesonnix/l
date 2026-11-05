@@ -106,6 +106,8 @@
           };
           shell = pkgs.mkShell {
             inputsFrom = [ compiler ];
+            # Keep direct `make coverage` compatible with its -O0 instrumentation.
+            hardeningDisable = [ "fortify" ];
             packages = [
               pkgs.gnumake
               pkgs.nodejs_22
