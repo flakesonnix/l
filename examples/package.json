@@ -2,7 +2,10 @@
   "version": 1,
   "package": "examples",
   "module_roots": [
-    {"package": "examples", "prefix": "examples", "path": "."}
+    {"package": "examples", "prefix": "examples", "path": "."},
+    {"package": "stdlib", "prefix": "std", "path": "../stdlib"}
   ],
-  "dependencies": []
+  "dependencies": [
+    {"from": "examples", "to": "stdlib"}
+  ]
 }

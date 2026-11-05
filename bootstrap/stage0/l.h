@@ -8,9 +8,9 @@
 #include <setjmp.h>
 
 #define L_IR_MAJOR 1
-#define L_IR_MINOR 7
+#define L_IR_MINOR 8
 #define L_BC_MAJOR 1
-#define L_BC_MINOR 7
+#define L_BC_MINOR 8
 #define L_NONE UINT32_MAX
 #define L_MAX_FUNCTIONS 256u
 #define L_MAX_MODULES 256u
@@ -58,7 +58,7 @@ enum {
     TK_MODULE, TK_EQ, TK_NE, TK_LE, TK_GE, TK_AND, TK_OR, TK_INC, TK_DEC,
     TK_BREAK, TK_CONTINUE, TK_SWITCH, TK_CASE, TK_DEFAULT,
     TK_IMPORT, TK_AS, TK_PUB, TK_NAMESPACE, TK_SCOPE, TK_STATIC, TK_USING, TK_STRUCT, TK_ENUM, TK_BYTE,
-    TK_STRING, TK_TEXT
+    TK_STRING, TK_EXTERN, TK_TEXT
 };
 
 typedef struct Expr Expr;
@@ -92,6 +92,7 @@ struct Expr {
     Global *global;
 };
 struct Decl { Token name, type_name; Type type; bool immutable; uint32_t slot; uint32_t array; Expr *value, *length; Decl *next; };
+typedef enum { IN_NONE, IN_READ_BYTE, IN_WRITE_BYTE, IN_WRITE_STRING, IN_WRITE_ERROR } Intrinsic;
 typedef enum { ST_BLOCK, ST_DECL, ST_EXPR, ST_IF, ST_WHILE, ST_FOR, ST_RETURN, ST_EMPTY, ST_BREAK, ST_CONTINUE, ST_SWITCH } StmtKind;
 struct Stmt {
     StmtKind kind;
@@ -113,6 +114,8 @@ struct Function {
     uint32_t lengths[L_MAX_SLOTS];
     Stmt *body;
     Function *next;
+    Intrinsic intrinsic;
+    bool is_extern;
 };
 struct Global {
     Token name, scope, type_name;
@@ -192,7 +195,8 @@ typedef enum {
     OP_NEG, OP_NOT, OP_EQ, OP_NE, OP_LT, OP_LE, OP_GT, OP_GE,
     OP_JUMP, OP_BRANCH, OP_CALL, OP_RETURN, OP_BOUNDS, OP_CLEAR, OP_SWITCH, OP_TRAP,
     OP_GLOBAL_LOAD, OP_GLOBAL_STORE, OP_STRUCT, OP_FIELD, OP_FIELD_STORE, OP_TO_BYTE, OP_TO_INT,
-    OP_STRING_LENGTH, OP_STRING_INDEX, OP_COUNT
+    OP_STRING_LENGTH, OP_STRING_INDEX,
+    OP_READ_BYTE, OP_WRITE_BYTE, OP_WRITE_STRING, OP_WRITE_ERROR, OP_COUNT
 } Opcode;
 typedef struct { Opcode op; uint32_t dst, a, b, c, line, column; } Instruction;
 typedef struct { int32_t value; uint32_t target; } SwitchEntry;
@@ -259,6 +263,7 @@ void write_bytecode(Context *, const Program *, const char *);
 Program *read_bytecode(Context *, const unsigned char *, size_t);
 void inspect(const Program *, FILE *);
 int32_t execute_program(Context *, const Program *);
+int32_t execute_program_io(Context *, const Program *, FILE *, FILE *, FILE *);
 int l_main(int, char **);
 
 #endif

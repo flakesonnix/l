@@ -188,7 +188,8 @@ void inspect(const Program *p, FILE *file) {
         "const", "load", "store", "add.checked", "sub.checked", "mul.checked", "div.checked", "rem.checked",
         "neg.checked", "not", "eq", "ne", "lt", "le", "gt", "ge", "jump", "branch", "call", "return",
         "bounds_check", "clear", "switch", "trap", "global.load", "global.store", "struct.make", "field.load", "field.store",
-        "byte.checked", "byte.to_int", "string.length", "string.index"
+        "byte.checked", "byte.to_int", "string.length", "string.index",
+        "io.read_byte", "io.write_byte", "io.write_string", "io.write_error"
     };
     fprintf(file, "LIR %u.%u; bytecode %u.%u; entry f%u\n", L_IR_MAJOR, L_IR_MINOR, L_BC_MAJOR, L_BC_MINOR, p->entry);
     for (uint32_t n = 0; n < p->string_count; ++n) {

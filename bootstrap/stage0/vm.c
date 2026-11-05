@@ -2,11 +2,19 @@
 
 #include <string.h>
 
-typedef struct { Context *ctx; const Program *program; uint64_t steps; int32_t *globals; } Vm;
+typedef struct {
+    Context *ctx; const Program *program; uint64_t steps; int32_t *globals;
+    FILE *input, *output, *error;
+} Vm;
 
 static _Noreturn void trap(Vm *vm, Instruction i, const char *message) {
     vm->ctx->status = 70;
     fail(vm->ctx, i.line, i.column, "VM trap: %s", message);
+}
+/* Flush each write so buffered failures are reported by the operation that caused them. */
+static void write_stream(Vm *vm, Instruction i, FILE *file, const void *text, uint32_t length) {
+    size_t written = length ? fwrite(text, 1, length, file) : 0;
+    if (written != length || ferror(file) || fflush(file) != 0) trap(vm, i, "output write failure");
 }
 static int32_t checked(Vm *vm, Instruction i, int64_t value) {
     if (value < INT32_MIN || value > INT32_MAX) trap(vm, i, "integer overflow");
@@ -63,6 +71,21 @@ static void run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, Ins
             IrString string = vm->program->strings[R(i.a)];
             if ((uint32_t)R(i.b) >= string.length) trap(vm, i, "string index out of bounds");
             R(i.dst) = string.bytes[R(i.b)]; break;
+        }
+        case OP_READ_BYTE: {
+            int value = fgetc(vm->input);
+            /* A failed stream is a trap; a spent stream yields the documented EOF value. */
+            if (ferror(vm->input)) trap(vm, i, "input read failure");
+            R(i.dst) = value == EOF ? -1 : value; break;
+        }
+        case OP_WRITE_BYTE: {
+            unsigned char value = (unsigned char)R(i.a); /* Verified byte values are in 0..255. */
+            write_stream(vm, i, vm->output, &value, 1); break;
+        }
+        case OP_WRITE_STRING: case OP_WRITE_ERROR: {
+            IrString string = vm->program->strings[R(i.a)];
+            write_stream(vm, i, i.op == OP_WRITE_STRING ? vm->output : vm->error,
+                string.bytes, string.length); break;
         }
         case OP_LOAD:
             if (!i.c) {
@@ -148,7 +171,12 @@ static void run(Vm *vm, uint32_t index, const int32_t *args, uint32_t depth, Ins
 #undef R
 
 int32_t execute_program(Context *ctx, const Program *p) {
-    Vm vm = {.ctx = ctx, .program = p, .globals = allocate(ctx, p->global_count * sizeof(int32_t))};
+    return execute_program_io(ctx, p, stdin, stdout, stderr);
+}
+
+int32_t execute_program_io(Context *ctx, const Program *p, FILE *input, FILE *output, FILE *error) {
+    Vm vm = {.ctx = ctx, .program = p, .globals = allocate(ctx, p->global_count * sizeof(int32_t)),
+        .input = input, .output = output, .error = error};
     for (uint32_t n = 0; n < p->global_count; ++n) vm.globals[n] = p->globals[n].initial;
     Instruction entry = {0};
     int32_t value;

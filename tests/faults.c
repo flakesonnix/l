@@ -17,6 +17,7 @@ static int fail_read;
 static bool fail_close;
 static const char *fail_stat_path;
 static int fail_stat_error;
+static FILE *io_stream;
 
 void *__wrap_calloc(size_t count, size_t size) {
     if (fail_allocation) { fail_allocation = false; return NULL; }
@@ -267,6 +268,32 @@ static void many_switch_entries(Context *ctx) {
     Ast *ast = frontend(ctx, generated); analyze(ctx, ast); (void)lower(ctx, ast);
 }
 
+static void io_failure(Context *ctx, unsigned mode) {
+    static const char *const bodies[] = {
+        "return read_byte();", "write_byte(byte(255));return 0;", "write_string(\"\\0\\xff\");return 0;",
+        "write_error(\"\\xff\\0\");return 0;", "write_error(\"x\");return 0;",
+        "write_string(\"\");return 0;", "return read_byte();", "write_error(\"\");return 0;"
+    };
+    char text[512];
+    snprintf(text, sizeof(text), "module std.io;pub extern int read_byte();pub extern void write_byte(byte b);"
+        "pub extern void write_string(string s);pub extern void write_error(string s);int main(){%s}", bodies[mode]);
+    Ast *ast = frontend(ctx, text); analyze(ctx, ast); Program *p = lower(ctx, ast); verify(ctx, p);
+    io_stream = mode == 0 ? fopen(".", "rb") : mode == 5 || mode == 6 ? tmpfile() : fopen("/dev/full", "wb");
+    if (!io_stream) exit(1);
+    if (setvbuf(io_stream, NULL, mode == 2 || mode == 4 ? _IONBF : _IOFBF, BUFSIZ)) exit(1);
+    if (mode == 5 || mode == 6) fail_read = 2; /* Reported errors even on empty/EOF operations. */
+    if (mode == 7 && fputc('x', io_stream) == EOF) exit(1); /* Empty writes must flush pending failures. */
+    (void)execute_program_io(ctx, p, io_stream, io_stream, io_stream);
+}
+static void io_read_failure(Context *ctx) { io_failure(ctx, 0); }
+static void io_byte_flush_failure(Context *ctx) { io_failure(ctx, 1); }
+static void io_string_write_failure(Context *ctx) { io_failure(ctx, 2); }
+static void io_error_flush_failure(Context *ctx) { io_failure(ctx, 3); }
+static void io_error_write_failure(Context *ctx) { io_failure(ctx, 4); }
+static void io_reported_write_failure(Context *ctx) { io_failure(ctx, 5); }
+static void io_reported_read_failure(Context *ctx) { io_failure(ctx, 6); }
+static void io_empty_flush_failure(Context *ctx) { io_failure(ctx, 7); }
+
 static void check(void (*action)(Context *), int expected) {
     Context *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) exit(1);
@@ -275,6 +302,7 @@ static void check(void (*action)(Context *), int expected) {
     if (ctx->status != expected) {
         fprintf(stderr, "fault test: expected %d, got %d\n", expected, ctx->status); exit(1);
     }
+    if (io_stream) { fclose(io_stream); io_stream = NULL; }
     cleanup(ctx); free(ctx);
 }
 
@@ -294,10 +322,13 @@ int main(void) {
     check(continue_in_switch_lower, 65); check(many_switch_labels, 65); check(many_switch_entries, 65);
     check(many_functions, 65); check(many_parameters, 65); check(many_locals, 65);
     check(many_temps, 65); check(many_registers, 65); check(many_instructions, 65); check(many_arguments, 65);
+    check(io_read_failure, 70); check(io_byte_flush_failure, 70); check(io_string_write_failure, 70);
+    check(io_error_flush_failure, 70); check(io_error_write_failure, 70);
+    check(io_reported_write_failure, 70); check(io_reported_read_failure, 70); check(io_empty_flush_failure, 70);
     char *args[] = {"l", "check", "examples/answer.l", NULL};
     fail_allocation = true;
     if (l_main(3, args) != 71) return 1;
     remove("build/fault-input"); remove("build/fault-output.lbc");
-    puts("fault injection: 44 cases passed");
+    puts("fault injection: 52 cases passed");
     return 0;
 }

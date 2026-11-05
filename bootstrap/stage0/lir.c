@@ -300,6 +300,21 @@ Program *lower(Context *ctx, Ast *ast) {
         memcpy(f->slot_lengths, fn->lengths, fn->slot_count * sizeof(*f->slot_lengths));
         if (fn == ast->entrypoint) p->entry = index;
         Lower l = { ctx, p, f, NULL };
+        if (fn->is_extern) {
+            /* Intrinsics keep normal call signatures but receive fixed VM bodies. */
+            if (fn->intrinsic == IN_READ_BYTE) {
+                uint32_t r = reg(&l, TY_INT);
+                emit(&l, fn->name, OP_READ_BYTE, r, 0, 0, 0);
+                emit(&l, fn->name, OP_RETURN, 0, r, 0, 0);
+            } else {
+                uint32_t r = reg(&l, fn->intrinsic == IN_WRITE_BYTE ? TY_BYTE : TY_STRING);
+                emit(&l, fn->name, OP_LOAD, r, 0, 0, 0);
+                emit(&l, fn->name, fn->intrinsic == IN_WRITE_BYTE ? OP_WRITE_BYTE :
+                    fn->intrinsic == IN_WRITE_ERROR ? OP_WRITE_ERROR : OP_WRITE_STRING, L_NONE, r, 0, 0);
+                emit(&l, fn->name, OP_RETURN, 0, L_NONE, 0, 0);
+            }
+            continue;
+        }
         if (lower_stmt(&l, fn->body)) emit(&l, fn->name, OP_RETURN, 0, L_NONE, 0, 0);
     }
     ctx->filename = saved;
@@ -351,7 +366,8 @@ static void access_mode(Context *ctx, const IrFunction *f, uint32_t slot, Instru
 }
 static bool defines(Opcode op) {
     return op <= OP_LOAD || (op >= OP_ADD && op <= OP_GE) || op == OP_CALL || op == OP_GLOBAL_LOAD ||
-        op == OP_STRUCT || op == OP_FIELD || op == OP_TO_BYTE || op == OP_TO_INT || op == OP_STRING_LENGTH || op == OP_STRING_INDEX;
+        op == OP_STRUCT || op == OP_FIELD || op == OP_TO_BYTE || op == OP_TO_INT || op == OP_STRING_LENGTH ||
+        op == OP_STRING_INDEX || op == OP_READ_BYTE;
 }
 static unsigned successors(Context *ctx, const IrFunction *f, uint32_t pc, uint32_t next[L_MAX_CASES + 1]) {
     Instruction i = f->code[pc];
@@ -423,7 +439,8 @@ static void dataflow(Context *ctx, const IrFunction *f, bool **seen_out) {
         case OP_STRUCT:
             for (uint32_t j = 0; j < i.b; ++j) use(ctx, bits, f->arguments[i.a + j]);
             break;
-        case OP_NEG: case OP_NOT: case OP_BRANCH: case OP_TO_BYTE: case OP_TO_INT: case OP_STRING_LENGTH: use(ctx, bits, i.a); break;
+        case OP_NEG: case OP_NOT: case OP_BRANCH: case OP_TO_BYTE: case OP_TO_INT: case OP_STRING_LENGTH:
+        case OP_WRITE_BYTE: case OP_WRITE_STRING: case OP_WRITE_ERROR: use(ctx, bits, i.a); break;
         case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_REM:
         case OP_EQ: case OP_NE: case OP_LT: case OP_LE: case OP_GT: case OP_GE: case OP_STRING_INDEX:
             use(ctx, bits, i.a); use(ctx, bits, i.b); break;
@@ -528,6 +545,11 @@ void verify(Context *ctx, const Program *p) {
                 same(ctx, register_type(ctx, f, i.a), TY_STRING);
                 if (i.op == OP_STRING_INDEX) same(ctx, register_type(ctx, f, i.b), TY_INT);
                 break;
+            case OP_READ_BYTE:
+                same(ctx, register_type(ctx, f, i.dst), TY_INT); break;
+            case OP_WRITE_BYTE: case OP_WRITE_STRING: case OP_WRITE_ERROR:
+                if (i.dst != L_NONE) invalid(ctx, "stream write defines a register");
+                same(ctx, register_type(ctx, f, i.a), i.op == OP_WRITE_BYTE ? TY_BYTE : TY_STRING); break;
             case OP_STRUCT: {
                 const IrStruct *s = struct_type(ctx, p, register_type(ctx, f, i.dst));
                 if (i.b != s->field_count || i.a > f->argument_count || i.b > f->argument_count - i.a)
