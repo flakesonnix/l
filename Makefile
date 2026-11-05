@@ -25,6 +25,8 @@ test: build/l
 	./build/faults-test
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DL_NO_MAIN $(SOURCES) tests/verifier.c $(LDFLAGS) -o build/verifier-test
 	./build/verifier-test
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DL_NO_MAIN $(SOURCES) tests/observer.c $(LDFLAGS) -o build/observer-test
+	./build/observer-test
 	$(MAKE) fuzz
 
 fuzz:
