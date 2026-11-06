@@ -22,7 +22,7 @@ function command(status, args, options = {}) {
 }
 const bytes = value => Buffer.isBuffer(value) ? value : Buffer.from(value, 'latin1');
 const quote = value => `"${[...bytes(value)].map(byte => `\\x${byte.toString(16).padStart(2, '0')}`).join('')}"`;
-const keywords = Object.fromEntries([
+const keywords = new Map([
   'int', 'bool', 'void', 'auto', 'const', 'true', 'false', 'if', 'else', 'while', 'for',
   'return', 'module', 'break', 'continue', 'switch', 'case', 'default', 'import', 'as',
   'pub', 'namespace', 'static', 'using', 'struct', 'enum', 'byte', 'string', 'extern',
@@ -54,7 +54,7 @@ function model(input) {
     const integer = /^[0-9]+/.exec(tail);
     const literal = /^"(?:[\x20-\x21\x23-\x5b\x5d-\x7e]|\\(?:["\\nrt0]|x[0-9a-fA-F]{2}))*"/.exec(tail);
     let kind, length, fields = {};
-    if (name) { kind = keywords[name[0]] ?? 'Name'; length = name[0].length; }
+    if (name) { kind = keywords.get(name[0]) ?? 'Name'; length = name[0].length; }
     else if (integer) {
       assert.ok(BigInt(integer[0]) <= 2147483648n);
       assert.doesNotMatch(tail.slice(integer[0].length), /^[A-Za-z_]/);
@@ -84,8 +84,14 @@ good('empty', '');
 good('whitespace', ' \t\r\n\r\n  ');
 good('punctuation', Object.keys(singles).join(' ') + ' ' + Object.keys(pairs).join(' '));
 good('maximal munch', '=== !== <== >== && || +++ --- ::: a/**/b//tail\nZ');
-for (const word of Object.keys(keywords)) {
+for (const word of keywords.keys()) {
   good(`keyword ${word}`, [word, `${word}x`, `x${word}`, word.toUpperCase(), word.slice(0, -1)].join(' '));
+}
+for (const name of ['constructor', '__defineGetter__', '__defineSetter__', 'hasOwnProperty',
+  '__lookupGetter__', '__lookupSetter__', 'isPrototypeOf', 'propertyIsEnumerable',
+  'toString', 'valueOf', '__proto__', 'toLocaleString']) {
+  assert.equal(model(name)[0].kind, 'Name');
+  good(`prototype identifier ${name}`, name);
 }
 good('numbers', '0 00 00017 2147483647 2147483648 -2147483648 0002147483648 12.3');
 good('strings', '"" "hello" "\\n\\r\\t\\0\\\\\\\"" "\\x00\\x7f\\x80\\xFF\\xAa\\xaA"');
@@ -125,7 +131,7 @@ for (let value = 0; value < 256; ++value) {
 }
 let state = 0x51a9c037;
 function random(limit) { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state % limit; }
-const atoms = [...Object.keys(keywords), ...Object.keys(singles), ...Object.keys(pairs),
+const atoms = [...keywords.keys(), ...Object.keys(singles), ...Object.keys(pairs),
   '_', 'Name09', 'intx', 'xint', '2147483648', '00042', '""', '"\\x00\\xff"', '"a\\n"'];
 const separators = [' ', '\t', '\r', '\n', '/*x*/', '//x\n', '/*\n*/'];
 for (let index = 0; index < 64; ++index) {
