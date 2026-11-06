@@ -172,7 +172,10 @@ rendered('qualified case labels', { kind: 'Switch', selector: named('state'), la
 good('nearest dangling else', 'if(a)if(b);else;', statement('If', 0, 2, { condition: expression('Name', 3, 1),
   body: statement('If', 5, 2, { condition: expression('Name', 8, 1), body: statement('Empty', 10, 1), other: statement('Empty', 15, 1) }) }));
 let state = 0x1b7c304f;
-function random(limit) { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state % limit; }
+function random(limit) {
+  state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+  return Math.floor(state / 0x100000000 * limit);
+}
 function value() {
   const leaves = [integer(random(10000)), bool(!!random(2)), named('ns::value'), { kind: 'Text', text: `x${String.fromCharCode(random(256))}` }];
   if (random(2)) return leaves[random(leaves.length)];
@@ -192,7 +195,16 @@ function tree(depth) {
     default: return tree(0);
   }
 }
+const generatedStart = fixtures.length;
 for (let index = 0; index < 96; ++index) rendered(`tree ${index}`, tree(3));
+const generatedStatements = fixtures.slice(generatedStart).flatMap(fixture =>
+  flatten([fixture.tree], ['body', 'other', 'next']).nodes);
+const generatedExpressions = flatten(generatedStatements.flatMap(node =>
+  [node.expression, node.init, node.condition, node.step].filter(Boolean)), ['left', 'right', 'next']).nodes;
+const generatedKinds = new Set(generatedExpressions.map(node => node.kind));
+for (const kind of ['Integer', 'Bool', 'Text', 'Name']) {
+  assert.ok(generatedKinds.has(kind), `generated statement corpus must cover ${kind} leaves`);
+}
 for (const [input, error, marker] of [
   ['{', 'ExpectedClose', ''], ['if true;', 'ExpectedOpen', 'true'], ['if(true];', 'ExpectedClose', ']'],
   ['while(true)', 'Expression', ''], ['for(a b;;);', 'ExpectedSemicolon', 'b'],
