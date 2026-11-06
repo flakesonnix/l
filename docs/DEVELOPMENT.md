@@ -124,7 +124,7 @@ in the [README](../README.md#vm-execution-observation); it adds no trace file fo
 
 ## Continuous integration
 
-The workflow in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) checks
+The workflow in [`.github/workflows/ci.yml`](https://github.com/flakesonnix/l/blob/main/.github/workflows/ci.yml) checks
 regular tests, sanitizers and coverage in separate Ubuntu jobs with GCC and
 Node.js 22. A separate job runs the pinned Nix checks when the branch contains a
 flake. Earlier review slices explicitly report that Nix support has not arrived
