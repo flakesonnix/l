@@ -4,6 +4,9 @@ C11 bootstrap for the first end-to-end slice of the L 0.1.0 specification.
 **Not yet L 0.1 conformant, and not yet a complete L-Core implementation.**
 No LLVM or external library dependencies.
 
+Build, Nix and CI instructions: [development guide](docs/DEVELOPMENT.md).
+GitHub review order and merge instructions: [review guide](docs/REVIEWING.md).
+
 ```sh
 make
 ./build/l check examples/answer.l --manifest examples/package.json
