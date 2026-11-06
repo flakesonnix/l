@@ -47,6 +47,8 @@
               install -Dm755 build/l "$out/bin/l"
               mkdir -p "$out/share/l"
               cp -r examples spec stdlib README.md "$out/share/l/"
+              mkdir -p "$out/share/l/bootstrap"
+              cp -r bootstrap/stage1 "$out/share/l/bootstrap/"
               if test -d docs; then cp -r docs "$out/share/l/"; fi
               runHook postInstall
             '';
@@ -55,6 +57,7 @@
               runHook preInstallCheck
               "$out/bin/l" check "$out/share/l/examples/answer.l" --manifest "$out/share/l/examples/package.json"
               "$out/bin/l" check "$out/share/l/examples/io_demo.l" --manifest "$out/share/l/examples/package.json"
+              "$out/bin/l" check "$out/share/l/bootstrap/stage1/main.l" --manifest "$out/share/l/bootstrap/stage1/package.json"
               runHook postInstallCheck
             '';
             meta = {

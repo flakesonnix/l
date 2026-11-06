@@ -28,6 +28,27 @@ make sanitize
 make coverage                                  # Requires GCC/gcov and Node.js 22+
 ```
 
+## First L-written slice: lexer
+
+[`bootstrap/stage1/`](bootstrap/stage1/README.md) contains an L-written lexer
+and a stdin lexical-check driver, compiled and executed by Stage 0. It recognizes
+the existing Stage 0 token subset; it is **not a parser, compiler or self-hosted
+bootstrap**. Even syntactically invalid token sequences can pass lexical checks.
+
+```sh
+make stage1
+./build/l run build/stage1-lexer.lbc < examples/answer.l
+node tests/stage1.mjs ./build/l
+```
+
+The initial scanner has a 65535-byte input buffer and inherits the VM's execution
+limits. Independent regex/BigInt models check token kinds, raw spans, byte-based
+locations, decimal magnitudes, decoded strings, failures and reset/replay behavior
+through both source and serialized execution. `make test`, sanitizers, Nix and
+the Stage 0 coverage runner include these tests. The **100% coverage gate still
+measures Stage 0 C code**, not coverage of the L-written lexer. No syntax or
+IR/bytecode-format change is introduced; artifacts remain at **1.9**.
+
 ## Supported subset
 
 - ASCII identifiers, decimal literals, `//` and `/* … */` comments.
