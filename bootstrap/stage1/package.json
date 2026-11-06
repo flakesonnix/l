@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "package": "l_compiler",
+  "module_roots": [
+    {"package": "l_compiler", "prefix": "l.compiler", "path": "."},
+    {"package": "stdlib", "prefix": "std", "path": "../../stdlib"}
+  ],
+  "dependencies": [
+    {"from": "l_compiler", "to": "stdlib"}
+  ]
+}
