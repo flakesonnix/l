@@ -34,18 +34,20 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
 ## L-written frontend slices
 
 [`bootstrap/stage1/`](bootstrap/stage1/README.md) contains an L-written lexer,
-expression parser and stdin syntax-check drivers, compiled and executed by Stage
-0. They recognize the existing Stage 0 lexical/expression grammar. There is **no
-statement/module parser, semantic checker, code generator or self-hosted compiler**
-yet. The lexer checks tokens only; the expression driver checks syntax, not types
-or values.
+expression parser, control-flow statement parser and stdin syntax-check drivers,
+compiled and executed by Stage 0. They use existing Stage 0 syntax; local
+declarations and module parsing remain unimplemented. There is **no semantic
+checker, code generator or self-hosted compiler** yet. These drivers do not check
+types, resolve names or evaluate the input.
 
 ```sh
 make stage1
 ./build/l run build/stage1-lexer.lbc < examples/answer.l
 printf 'a = f(1, 2) + -3' | ./build/l run build/stage1-expression.lbc
+printf '{ while(ready) { step(); } return result; }' | ./build/l run build/stage1-statement.lbc
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
+node tests/stage1-statements.mjs ./build/l
 ```
 
 The initial scanner has a 65535-byte input buffer and inherits the VM's execution
@@ -55,6 +57,8 @@ through both source and serialized execution. `make test`, sanitizers, Nix and
 the Stage 0 coverage runner include these tests. The expression parser adds a
 2048-node arena, a 48-level recursion bound, retained string bytes and independent
 AST checks using shunting-yard precedence models and generated trees. The
+statement parser adds a separate 1024-node arena for blocks, control flow and
+switch labels; expression/statement recursion shares one 48-level syntax budget.
 **100% coverage gate still measures Stage 0 C code**, not L-source coverage. No
 syntax or IR/bytecode-format change is introduced; artifacts remain at **1.9**.
 

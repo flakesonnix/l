@@ -23,6 +23,7 @@ invoke('sh', ['tests/run.sh', resolve(directory, 'l')]);
 invoke('node', ['tests/modules.mjs', resolve(directory, 'l')]);
 invoke('node', ['tests/stage1.mjs', resolve(directory, 'l')]);
 invoke('node', ['tests/stage1-expressions.mjs', resolve(directory, 'l')]);
+invoke('node', ['tests/stage1-statements.mjs', resolve(directory, 'l')]);
 invoke(cc, ['-std=c11', '--coverage', ...objects, 'tests/frontend.c', '-o', resolve(directory, 'frontend-test')]);
 invoke(resolve(directory, 'frontend-test'), []);
 for (const name of ['faults', 'verifier', 'observer', 'fuzz']) {
