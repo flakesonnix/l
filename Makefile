@@ -16,15 +16,19 @@ build/l: $(SOURCES) bootstrap/stage0/l.h
 	mkdir -p build
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(SOURCES) $(LDFLAGS) -o $@
 
-stage1: build/stage1-lexer.lbc
+stage1: build/stage1-lexer.lbc build/stage1-expression.lbc
 
 build/stage1-lexer.lbc: build/l bootstrap/stage1/lexer.l bootstrap/stage1/main.l bootstrap/stage1/package.json stdlib/io.l
 	./build/l compile bootstrap/stage1/main.l --manifest bootstrap/stage1/package.json -o $@
+
+build/stage1-expression.lbc: build/l bootstrap/stage1/lexer.l bootstrap/stage1/expressions.l bootstrap/stage1/expression_main.l bootstrap/stage1/package.json stdlib/io.l
+	./build/l compile bootstrap/stage1/expression_main.l --manifest bootstrap/stage1/package.json -o $@
 
 test: build/l
 	sh tests/run.sh ./build/l
 	node tests/modules.mjs ./build/l
 	node tests/stage1.mjs ./build/l
+	node tests/stage1-expressions.mjs ./build/l
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DL_NO_MAIN $(SOURCES) tests/frontend.c $(LDFLAGS) -o build/frontend-test
 	./build/frontend-test
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DL_NO_MAIN $(SOURCES) tests/faults.c $(LDFLAGS) -Wl,--wrap=calloc,--wrap=fread,--wrap=ferror,--wrap=fclose,--wrap=stat -o build/faults-test
@@ -48,4 +52,4 @@ coverage:
 	CC='$(CC)' node tests/coverage.mjs
 
 clean:
-	rm -f build/l build/stage1-lexer.lbc
+	rm -f build/l build/stage1-lexer.lbc build/stage1-expression.lbc

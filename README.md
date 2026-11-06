@@ -31,26 +31,32 @@ make sanitize
 make coverage                                  # Requires GCC/gcov and Node.js 22+
 ```
 
-## First L-written slice: lexer
+## L-written frontend slices
 
-[`bootstrap/stage1/`](bootstrap/stage1/README.md) contains an L-written lexer
-and a stdin lexical-check driver, compiled and executed by Stage 0. It recognizes
-the existing Stage 0 token subset; it is **not a parser, compiler or self-hosted
-bootstrap**. Even syntactically invalid token sequences can pass lexical checks.
+[`bootstrap/stage1/`](bootstrap/stage1/README.md) contains an L-written lexer,
+expression parser and stdin syntax-check drivers, compiled and executed by Stage
+0. They recognize the existing Stage 0 lexical/expression grammar. There is **no
+statement/module parser, semantic checker, code generator or self-hosted compiler**
+yet. The lexer checks tokens only; the expression driver checks syntax, not types
+or values.
 
 ```sh
 make stage1
 ./build/l run build/stage1-lexer.lbc < examples/answer.l
+printf 'a = f(1, 2) + -3' | ./build/l run build/stage1-expression.lbc
 node tests/stage1.mjs ./build/l
+node tests/stage1-expressions.mjs ./build/l
 ```
 
 The initial scanner has a 65535-byte input buffer and inherits the VM's execution
 limits. Independent regex/BigInt models check token kinds, raw spans, byte-based
 locations, decimal magnitudes, decoded strings, failures and reset/replay behavior
 through both source and serialized execution. `make test`, sanitizers, Nix and
-the Stage 0 coverage runner include these tests. The **100% coverage gate still
-measures Stage 0 C code**, not coverage of the L-written lexer. No syntax or
-IR/bytecode-format change is introduced; artifacts remain at **1.9**.
+the Stage 0 coverage runner include these tests. The expression parser adds a
+2048-node arena, a 48-level recursion bound, retained string bytes and independent
+AST checks using shunting-yard precedence models and generated trees. The
+**100% coverage gate still measures Stage 0 C code**, not L-source coverage. No
+syntax or IR/bytecode-format change is introduced; artifacts remain at **1.9**.
 
 ## Supported subset
 
