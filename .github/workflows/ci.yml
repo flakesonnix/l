@@ -10,7 +10,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  # Keep push, PR, and manual checks independent; cancel only superseded runs.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -32,6 +33,9 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: '22'
+      - name: Verify workflow concurrency
+        if: matrix.target == 'test'
+        run: node tests/workflow.mjs
       - name: Build and verify
         env:
           TARGET: ${{ matrix.target }}

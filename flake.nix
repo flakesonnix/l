@@ -98,9 +98,16 @@
               touch "$out"
             '';
             workflow =
-              pkgs.runCommand "language-l-workflow-lint" { nativeBuildInputs = [ pkgs.actionlint ]; }
+              pkgs.runCommand "language-l-workflow-lint"
+                {
+                  nativeBuildInputs = [
+                    pkgs.actionlint
+                    pkgs.nodejs_22
+                  ];
+                }
                 ''
                   actionlint ${./.github/workflows/ci.yml}
+                  node ${./tests/workflow.mjs} ${./.github/workflows/ci.yml}
                   touch "$out"
                 '';
           };
