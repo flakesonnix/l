@@ -1,9 +1,10 @@
-# Stage 1: L-written lexer and expression parser
+# Stage 1: L-written frontend slices
 
 These are the first L-written implementation slices. Stage 0 compiles them to
 existing **1.9 bytecode**, and the Stage 0 VM executes them. There is no L-written
-statement/module parser, semantic checker, code generator or complete compiler
-yet. Running a lexer over its own source is **not self-hosting**.
+declaration/module parser, semantic checker, code generator or complete compiler
+yet. The statement parser supports control flow, not declarations. Running a
+lexer over its own source is **not self-hosting**.
 
 ## Build and run
 
@@ -15,8 +16,10 @@ make stage1
 ./build/l run build/stage1-lexer.lbc < examples/answer.l
 ./build/l run build/stage1-lexer.lbc < bootstrap/stage1/lexer.l
 printf 'a = f(1, 2) + -3' | ./build/l run build/stage1-expression.lbc
+printf '{ while(ready) { step(); } return result; }' | ./build/l run build/stage1-statement.lbc
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
+node tests/stage1-statements.mjs ./build/l
 ```
 
 Alternatively run the driver directly from source:
@@ -39,6 +42,18 @@ with `bootstrap/stage1/expression_main.l` and the same manifest. It does **not**
 evaluate expressions, resolve names or check types: `1 + true`, `unknown(42)` and
 the boundary magnitude `2147483648` are syntactically accepted. The later semantic
 checker must enforce the integer boundary's use under unary minus, as Stage 0 does.
+
+The statement driver (`bootstrap/stage1/statement_main.l`, with the same manifest)
+checks exactly one statement or block. It uses the same 0/65/70 success, diagnostic
+and stream-trap conventions. Blocks, expression/empty statements, `if`/`else`,
+`while`, `for`, `return`, `break`, `continue`, and `switch` labels are supported.
+For initializers may be expressions or empty, **not declarations**. Local
+declarations of any type are unimplemented. Statement sequences must be wrapped
+in a block; full source files with modules/functions are not accepted.
+
+This is still syntax only: `break;` outside a loop, non-bool conditions, unknown
+names and duplicate switch labels are not semantically checked. Input loops,
+calls and other expressions are parsed, **never executed**.
 
 The manifest explicitly registers the `l.compiler` and `std` roots and the compiler
 package's direct standard-library dependency. Nothing is implicitly searched.
@@ -73,7 +88,7 @@ not part of that span.
 
 Integer magnitudes are stored as **minus the written decimal value**, allowing
 `2147483648` to be represented as `-2147483648` using only an existing 32-bit int.
-Signs are separate tokens. A future parser must decide where that boundary
+Signs are separate tokens. The later semantic checker must decide where that boundary
 magnitude is legal; the lexer does not accept it as an ordinary positive int value.
 
 The recognized keywords, ASCII identifiers, decimal literals, punctuation,
@@ -105,7 +120,7 @@ Load bytes through the existing lexer API, then call `expressions::parse()`:
   their precedence need not match Stage 0's full-file lexical prepass.
 - Repeating `parse()` replays the same input and resets both failures and storage.
   Loading another input requires the lexer's `reset()` as before. Node IDs expire
-  at the next parse or source replacement; they are not generation-checked handles.
+  at the next parse/begin or source replacement; they are not generation-checked handles.
 
 Each `Node` contains an integer `kind` and `op` tag (from the module's `kind`/`op`
 namespaces), an associated token's start/length/line/column, `value`, `text_length`,
@@ -124,6 +139,42 @@ discarded, while unary minus is retained rather than evaluated or folded.
   returns a retained decoded byte, or -1 outside that text node. Rewinding or
   advancing the lexer does not replace those copies; parsing again does.
 
+The larger statement parser uses internal streaming operations:
+`begin()` resets the expression arena/cursor, `current()` exposes the current
+token, `consume(kind)` advances a matching token, and `parse_next()` parses an
+expression without requiring EOF. They retain multiple roots in one arena.
+Balanced `enter()`/`leave()` calls share the syntax-depth budget. Streaming callers
+must check diagnostics and call `discard()` on failure; unlike standalone
+`parse()`, intermediate streaming operations are not whole-input transactions.
+`statements::parse()` owns that transaction and hides both arenas on failure.
+
+## Current control-flow statement contract
+
+`statements::parse()` rewinds the loaded source, resets both syntax arenas, and
+returns a statement root ID or -1. It requires EOF after that one statement.
+`node_count()`, `node(id)` and `diagnostic()` follow the expression parser's
+checked-access/replay conventions. Invalid statement IDs produce zero token
+metadata and -1 for all child/expression links. Failed parses expose no partial
+statement or expression nodes. IDs expire at the next parse/source replacement.
+
+Statement and expression IDs are **different arenas**:
+
+- `expression` refers to an expression-statement value, return operand, switch
+  selector or case label in `expressions.l`.
+- `condition` refers to an if/while/for condition. For loops additionally use
+  `init` and `step` as expression IDs; omitted header expressions are -1.
+- `body` is a statement ID: a block's first child, a control statement's body, a
+  switch's first label, or a label's first child. `other` is an if's else branch.
+- `next` links block/label-body siblings or switch labels. Empty case chaining
+  and fallthrough structure are preserved, without executing dispatch.
+
+Nodes have an integer `kind` tag and the associated opening/keyword token's
+start/length/line/column; expression statements refer to their first token.
+These are not whole-statement spans. All absent links are -1. Diagnostics carry
+the statement error plus underlying expression/lexer errors where applicable;
+the first detected error is preserved. All these interfaces remain internal,
+with no serialized statement or AST format.
+
 ## Limits and verification
 
 The **65535-byte total input limit is this Stage 1 seed's buffer profile**, not a
@@ -132,11 +183,14 @@ quotes and escapes consume input capacity. The existing VM still enforces its
 10-million-instruction, 256-call-depth and 128-MiB working-memory limits; satisfying
 the input-size bound does not disable those limits.
 
-The parser additionally permits **2048 AST nodes** and **48 active expression
-parses**. These are separate arena and recursion budgets, not language rules or
-the VM's stack limit. A bare literal uses one parse level, so 47 nested grouping
-pairs or prefix operators fit. Exhaustion reports a normal diagnostic before an
-out-of-bounds access or VM call-depth trap. Argument links reuse existing nodes;
+The expression arena permits **2048 nodes**, the statement arena **1024 nodes**,
+and both parsers share **48 active syntax parses**. These are separate arena and
+recursion budgets, not language rules or the VM's stack limit. A standalone bare
+literal uses one parse level, so 47 nested grouping pairs or prefix operators fit.
+A bare expression statement uses an additional statement level. A block counts
+as a statement node/level; 47 nested blocks around an empty statement fit, and a
+flat block can contain 1023 empty children. Exhaustion reports a normal diagnostic
+before an out-of-bounds access or VM call-depth trap. Argument links reuse nodes;
 the retained text pool cannot exceed the raw input's byte bound.
 
 `tests/stage1.mjs` uses regex spans, BigInt decimal values and independently derived
@@ -154,7 +208,14 @@ argument/name links, retained decoded bytes, diagnostics, replay and recovery.
 Exact arena/depth boundaries and their first rejected cases are exercised. Input
 expressions are **parsed, never evaluated** by this test suite.
 
-Driver tests cover diagnostics, maximum-size input and overflow. Both suites run
+`tests/stage1-statements.mjs` generates control-flow trees before emitting syntax,
+then checks all statement fields and all referenced expression fields, unique
+reachable IDs in both arenas, copied strings, dangling-else binding, switch
+fallthrough and optional for headers. It checks first-error diagnostics, replay,
+recovery, shared-depth limits and both arena boundaries through source and
+serialized execution. Existing expression-only tests remain unchanged in meaning.
+
+Driver tests cover diagnostics, maximum-size input and overflow. All suites run
 under `make test`, `make sanitize`, `make coverage` and the Nix checks. The existing
 **100% line/function/branch gate applies to Stage 0 C code only**; there is not yet
 a coverage gate for L source. No arbitrary mutant bytecode or cyclic verifier

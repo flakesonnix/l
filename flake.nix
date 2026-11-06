@@ -59,6 +59,7 @@
               "$out/bin/l" check "$out/share/l/examples/io_demo.l" --manifest "$out/share/l/examples/package.json"
               "$out/bin/l" check "$out/share/l/bootstrap/stage1/main.l" --manifest "$out/share/l/bootstrap/stage1/package.json"
               "$out/bin/l" check "$out/share/l/bootstrap/stage1/expression_main.l" --manifest "$out/share/l/bootstrap/stage1/package.json"
+              "$out/bin/l" check "$out/share/l/bootstrap/stage1/statement_main.l" --manifest "$out/share/l/bootstrap/stage1/package.json"
               runHook postInstallCheck
             '';
             meta = {

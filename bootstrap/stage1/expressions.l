@@ -296,10 +296,17 @@ int primary() {
     return result;
 }
 
-int expression(int minimum) {
-    if (failure != Error::None) return -1;
-    if (depth == max_depth) { reject(Error::TooDeep, look()); return -1; }
+// Balanced by the statement parser too, so mixed syntax shares one depth budget.
+pub bool enter() {
+    if (failure != Error::None) return false;
+    if (depth == max_depth) { reject(Error::TooDeep, look()); return false; }
     depth++;
+    return true;
+}
+pub void leave() { depth--; }
+
+int expression(int minimum) {
+    if (!enter()) return -1;
     int left = primary();
     while (failure == Error::None && precedence(current_kind) >= minimum) {
         lexer::Token at = look();
@@ -311,12 +318,12 @@ int expression(int minimum) {
         int right = expression(next);
         left = make_node(tag, operation(at.kind), at, left, right);
     }
-    depth--;
+    leave();
     return left;
 }
 
-// Parse exactly one expression from the lexer's current source, replaying it.
-pub int parse() {
+// Internal streaming entry points used by larger syntax parsers.
+pub void begin() {
     used = 0;
     text_used = 0;
     depth = 0;
@@ -328,9 +335,18 @@ pub int parse() {
     failure_column = 1;
     lexer::rewind();
     advance();
-    int root = expression(1);
+}
+pub lexer::Token current() { return look(); }
+pub bool consume(lexer::Kind kind) { return take(kind); }
+pub int parse_next() { return expression(1); }
+pub void discard() { used = 0; text_used = 0; }
+
+// Parse exactly one expression from the lexer's current source, replaying it.
+pub int parse() {
+    begin();
+    int root = parse_next();
     if (failure == Error::None && current_kind != lexer::Kind::End) reject(Error::TrailingInput, look());
-    if (failure != Error::None) { used = 0; text_used = 0; return -1; }
+    if (failure != Error::None) { discard(); return -1; }
     return root;
 }
 
