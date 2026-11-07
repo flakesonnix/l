@@ -34,9 +34,9 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
 ## L-written frontend slices
 
 [`bootstrap/stage1/`](bootstrap/stage1/README.md) contains an L-written lexer,
-expression parser, control-flow statement parser and stdin syntax-check drivers,
-compiled and executed by Stage 0. They use existing Stage 0 syntax; local
-declarations and module parsing remain unimplemented. There is **no semantic
+expression parser, statement/local-declaration parser and stdin syntax-check
+drivers, compiled and executed by Stage 0. They use existing Stage 0 syntax;
+module/top-level declaration parsing remains unimplemented. There is **no semantic
 checker, code generator or self-hosted compiler** yet. These drivers do not check
 types, resolve names or evaluate the input.
 
@@ -44,7 +44,7 @@ types, resolve names or evaluate the input.
 make stage1
 ./build/l run build/stage1-lexer.lbc < examples/answer.l
 printf 'a = f(1, 2) + -3' | ./build/l run build/stage1-expression.lbc
-printf '{ while(ready) { step(); } return result; }' | ./build/l run build/stage1-statement.lbc
+printf '{ int sum=0; for(int i=0;i<3;i++) sum=sum+i; return sum; }' | ./build/l run build/stage1-statement.lbc
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
 node tests/stage1-statements.mjs ./build/l
@@ -57,8 +57,10 @@ through both source and serialized execution. `make test`, sanitizers, Nix and
 the Stage 0 coverage runner include these tests. The expression parser adds a
 2048-node arena, a 48-level recursion bound, retained string bytes and independent
 AST checks using shunting-yard precedence models and generated trees. The
-statement parser adds a separate 1024-node arena for blocks, control flow and
-switch labels; expression/statement recursion shares one 48-level syntax budget.
+statement parser adds a separate 1024-node arena for blocks, local declarations,
+control flow and switch labels; expression/statement recursion shares one 48-level
+syntax budget. Local declarations record types, names, `const`, scalar initializers
+and array-length expressions without resolving or evaluating them.
 **100% coverage gate still measures Stage 0 C code**, not L-source coverage. No
 syntax or IR/bytecode-format change is introduced; artifacts remain at **1.9**.
 

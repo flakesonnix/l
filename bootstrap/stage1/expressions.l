@@ -223,6 +223,32 @@ int arguments(lexer::Kind closing, bool trailing_comma) {
     return first;
 }
 
+// Read a type/name prefix without consuming a following declaration identifier.
+pub int parse_name() {
+    if (failure != Error::None) return -1;
+    if (current_kind != lexer::Kind::Name) { reject(Error::ExpectedName, look()); return -1; }
+    int result = make_node(kind::Name, op::None, look(), -1, -1);
+    int last = result;
+    advance();
+    while (take(lexer::Kind::Scope)) {
+        if (current_kind != lexer::Kind::Name) { reject(Error::ExpectedName, look()); break; }
+        int part = make_node(kind::Name, op::None, look(), -1, -1);
+        if (part == -1) break;
+        rights[last] = part;
+        last = part;
+        advance();
+    }
+    if (failure != Error::None) return -1;
+    return result;
+}
+
+int conversion(lexer::Token at) {
+    expect(lexer::Kind::LeftParen, Error::ExpectedOpen);
+    int value = expression(1);
+    expect(lexer::Kind::RightParen, Error::ExpectedClose);
+    return make_node(kind::Convert, operation(at.kind), at, value, -1);
+}
+
 int primary() {
     if (failure != Error::None) return -1;
     lexer::Token at = look();
@@ -246,23 +272,10 @@ int primary() {
         }
         advance();
     } else if (at.kind == lexer::Kind::Name) {
-        result = make_node(kind::Name, op::None, at, -1, -1);
-        int last = result;
-        advance();
-        while (take(lexer::Kind::Scope)) {
-            if (current_kind != lexer::Kind::Name) { reject(Error::ExpectedName, look()); break; }
-            int part = make_node(kind::Name, op::None, look(), -1, -1);
-            if (part == -1) break;
-            rights[last] = part;
-            last = part;
-            advance();
-        }
+        result = parse_name();
     } else if (at.kind == lexer::Kind::Int || at.kind == lexer::Kind::Byte) {
         advance();
-        expect(lexer::Kind::LeftParen, Error::ExpectedOpen);
-        int value = expression(1);
-        expect(lexer::Kind::RightParen, Error::ExpectedClose);
-        result = make_node(kind::Convert, operation(at.kind), at, value, -1);
+        result = conversion(at);
     } else if (take(lexer::Kind::LeftParen)) {
         result = expression(1);
         expect(lexer::Kind::RightParen, Error::ExpectedClose);
@@ -272,8 +285,12 @@ int primary() {
         result = make_node(kind::Unary, operation(at.kind), at, value, -1);
     } else reject(Error::ExpectedExpression, at);
 
+    return postfix(result);
+}
+
+int postfix(int result) {
     while (failure == Error::None) {
-        at = look();
+        lexer::Token at = look();
         if (take(lexer::Kind::LeftParen)) {
             int first = arguments(lexer::Kind::RightParen, false);
             result = make_node(kind::Call, op::None, at, result, first);
@@ -296,18 +313,17 @@ int primary() {
     return result;
 }
 
-// Balanced by the statement parser too, so mixed syntax shares one depth budget.
-pub bool enter() {
+bool enter_at(lexer::Token at) {
     if (failure != Error::None) return false;
-    if (depth == max_depth) { reject(Error::TooDeep, look()); return false; }
+    if (depth == max_depth) { reject(Error::TooDeep, at); return false; }
     depth++;
     return true;
 }
+// Balanced by the statement parser too, so mixed syntax shares one depth budget.
+pub bool enter() { return enter_at(look()); }
 pub void leave() { depth--; }
 
-int expression(int minimum) {
-    if (!enter()) return -1;
-    int left = primary();
+int continuation(int left, int minimum) {
     while (failure == Error::None && precedence(current_kind) >= minimum) {
         lexer::Token at = look();
         int level = precedence(at.kind);
@@ -318,8 +334,37 @@ int expression(int minimum) {
         int right = expression(next);
         left = make_node(tag, operation(at.kind), at, left, right);
     }
+    return left;
+}
+
+int expression(int minimum) {
+    if (!enter()) return -1;
+    int left = primary();
+    left = continuation(left, minimum);
     leave();
     return left;
+}
+
+// Resume a disambiguated prefix, retaining the original depth-error location.
+pub int parse_from_name(int id, lexer::Token at) {
+    if (!enter_at(at)) return -1;
+    if (id < 0 || id >= used || kinds[id] != kind::Name) reject(Error::ExpectedName, at);
+    int result = postfix(id);
+    result = continuation(result, 1);
+    leave();
+    if (failure != Error::None) return -1;
+    return result;
+}
+
+pub int parse_from_conversion(lexer::Token at) {
+    if (!enter_at(at)) return -1;
+    if (at.kind != lexer::Kind::Int && at.kind != lexer::Kind::Byte) reject(Error::ExpectedExpression, at);
+    int result = conversion(at);
+    result = postfix(result);
+    result = continuation(result, 1);
+    leave();
+    if (failure != Error::None) return -1;
+    return result;
 }
 
 // Internal streaming entry points used by larger syntax parsers.

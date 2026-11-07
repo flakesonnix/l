@@ -2,8 +2,8 @@
 
 These are the first L-written implementation slices. Stage 0 compiles them to
 existing **1.9 bytecode**, and the Stage 0 VM executes them. There is no L-written
-declaration/module parser, semantic checker, code generator or complete compiler
-yet. The statement parser supports control flow, not declarations. Running a
+module/top-level declaration parser, semantic checker, code generator or complete
+compiler yet. The statement parser includes local declarations. Running a
 lexer over its own source is **not self-hosting**.
 
 ## Build and run
@@ -16,7 +16,7 @@ make stage1
 ./build/l run build/stage1-lexer.lbc < examples/answer.l
 ./build/l run build/stage1-lexer.lbc < bootstrap/stage1/lexer.l
 printf 'a = f(1, 2) + -3' | ./build/l run build/stage1-expression.lbc
-printf '{ while(ready) { step(); } return result; }' | ./build/l run build/stage1-statement.lbc
+printf '{ int sum=0; for(int i=0;i<3;i++) sum=sum+i; return sum; }' | ./build/l run build/stage1-statement.lbc
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
 node tests/stage1-statements.mjs ./build/l
@@ -47,9 +47,9 @@ The statement driver (`bootstrap/stage1/statement_main.l`, with the same manifes
 checks exactly one statement or block. It uses the same 0/65/70 success, diagnostic
 and stream-trap conventions. Blocks, expression/empty statements, `if`/`else`,
 `while`, `for`, `return`, `break`, `continue`, and `switch` labels are supported.
-For initializers may be expressions or empty, **not declarations**. Local
-declarations of any type are unimplemented. Statement sequences must be wrapped
-in a block; full source files with modules/functions are not accepted.
+Local scalar/array declarations are supported, including declaration initializers
+in `for` headers. Statement sequences must be wrapped in a block; full source files
+with modules/functions are not accepted.
 
 This is still syntax only: `break;` outside a loop, non-bool conditions, unknown
 names and duplicate switch labels are not semantically checked. Input loops,
@@ -148,7 +148,7 @@ must check diagnostics and call `discard()` on failure; unlike standalone
 `parse()`, intermediate streaming operations are not whole-input transactions.
 `statements::parse()` owns that transaction and hides both arenas on failure.
 
-## Current control-flow statement contract
+## Current statement and local-declaration contract
 
 `statements::parse()` rewinds the loaded source, resets both syntax arenas, and
 returns a statement root ID or -1. It requires EOF after that one statement.
@@ -162,7 +162,9 @@ Statement and expression IDs are **different arenas**:
 - `expression` refers to an expression-statement value, return operand, switch
   selector or case label in `expressions.l`.
 - `condition` refers to an if/while/for condition. For loops additionally use
-  `init` and `step` as expression IDs; omitted header expressions are -1.
+  `init` and `step` as expression IDs; omitted header expressions are -1. A
+  declaration initializer instead uses `declaration` as a statement ID and leaves
+  `init` at -1. These initializer forms are mutually exclusive.
 - `body` is a statement ID: a block's first child, a control statement's body, a
   switch's first label, or a label's first child. `other` is an if's else branch.
 - `next` links block/label-body siblings or switch labels. Empty case chaining
@@ -174,6 +176,44 @@ These are not whole-statement spans. All absent links are -1. Diagnostics carry
 the statement error plus underlying expression/lexer errors where applicable;
 the first detected error is preserved. All these interfaces remain internal,
 with no serialized statement or AST format.
+
+### Local declarations
+
+The existing Stage 0 declaration grammar is recognized: an optional `const`, a
+primitive or qualified named type, one variable name, and either `= expression;`
+for scalars or `[expression];` for arrays. Scalars require an initializer; array
+initializers, empty array lengths, multidimensional arrays and comma-separated
+declarators are rejected syntactically. `int(...)`/`byte(...)` remain conversion
+expressions, while a qualified name followed by another identifier is a named-type
+declaration. This disambiguation is one-pass: no source rewind or decoder snapshot
+is needed.
+
+A `Declaration` node keeps the original fields and additionally records:
+
+- `declared_type`: an integer tag in `type_kind` (`Int`, `Bool`, `Byte`, `String`,
+  `Void`, `Auto` or `Named`; `Invalid` on non-declaration nodes).
+- `type_name`: an expression-arena `Name` chain for a named type, otherwise -1.
+- `name_start`/`name_length`: the variable identifier's raw source span.
+- `immutable`: whether `const` was written.
+- `expression`: the scalar initializer, or -1 for an array.
+- `array`: the length expression, or -1 for a scalar.
+
+Its associated token is the leading `const` or type token. Non-declaration nodes
+have zero name metadata, false `immutable`, and absent `type_name`/`array` links.
+The `declaration` link is only used by a `For` node. Type references and array
+lengths also consume expression-arena nodes and participate in whole-parse rollback.
+
+Types, inference, visibility, duplicate bindings, constant array lengths, element
+restrictions and readonly writes are **not checked**. For example,
+`void value=1;` and `int items[true];` are syntactically accepted here but are not
+valid typed Stage 0 programs. The driver does not allocate or initialize input
+arrays, run initializers, or execute loop bodies.
+
+Internal prefix operations `parse_name()`, `parse_from_name()` and
+`parse_from_conversion()` let the statement parser distinguish declarations from
+expressions without losing postfix/binary operators. Captured starting tokens
+preserve the original location when the shared syntax-depth limit is exceeded.
+These are provisional compiler-internal operations, not standard-library APIs.
 
 ## Limits and verification
 
@@ -213,7 +253,11 @@ then checks all statement fields and all referenced expression fields, unique
 reachable IDs in both arenas, copied strings, dangling-else binding, switch
 fallthrough and optional for headers. It checks first-error diagnostics, replay,
 recovery, shared-depth limits and both arena boundaries through source and
-serialized execution. Existing expression-only tests remain unchanged in meaning.
+serialized execution. Declaration models check primitive/named types, exact name
+spans, qualifiers, scalar/array forms, for-initializer links and prefix ambiguity.
+Generated corpora assert coverage of all declared-type and expression-leaf kinds.
+Large success and failure fixtures are isolated to avoid exhausting the VM budget
+through test batching. Existing expression-only tests remain unchanged in meaning.
 
 Driver tests cover diagnostics, maximum-size input and overflow. All suites run
 under `make test`, `make sanitize`, `make coverage` and the Nix checks. The existing

@@ -25,7 +25,9 @@ function command(status, args, options = {}) {
 const expression = (kind, start, length, fields = {}) => ({ kind, op: 'None', start, length,
   value: 0, text: '', left: null, right: null, next: null, ...fields });
 const statement = (kind, start, length, fields = {}) => ({ kind, start, length,
-  expression: null, init: null, condition: null, step: null, body: null, other: null, next: null, ...fields });
+  expression: null, init: null, condition: null, step: null, body: null, other: null, next: null,
+  declaredType: 'Invalid', typeName: null, nameStart: 0, nameLength: 0, immutable: false,
+  array: null, declaration: null, ...fields });
 const fixtures = [];
 function good(name, input, tree) { fixtures.push({ name, input, tree }); }
 function bad(input, error, start = input.length, length = start === input.length ? 0 : 1,
@@ -91,6 +93,18 @@ function rendered(name, tree) {
     return first;
   }
   function stmt(tree) {
+    if (tree.kind === 'Declaration') {
+      const start = input.length;
+      const firstLength = tree.immutable ? 5 : tree.type === 'Named' ? tree.typeName.split('::')[0].length : tree.type.toLowerCase().length;
+      const node = statement('Declaration', start, firstLength, { declaredType: tree.type, immutable: !!tree.immutable });
+      if (tree.immutable) put('const ');
+      if (tree.type === 'Named') node.typeName = expr({ kind: 'Name', name: tree.typeName });
+      else put(tree.type.toLowerCase());
+      put(' '); node.nameStart = put(tree.name); node.nameLength = tree.name.length;
+      if (tree.array) { put('['); node.array = expr(tree.array); put(']'); }
+      else { put(' = '); node.expression = expr(tree.value); }
+      put(';'); return node;
+    }
     if (tree.kind === 'Block') {
       const node = statement('Block', put('{'), 1); node.body = list(tree.children); put('\n}'); return node;
     }
@@ -109,7 +123,8 @@ function rendered(name, tree) {
     const keyword = tree.kind.toLowerCase(), node = statement(tree.kind, put(keyword), keyword.length);
     put('(');
     if (tree.kind === 'For') {
-      if (tree.init) node.init = expr(tree.init); put(';');
+      if (tree.declaration) node.declaration = stmt(tree.declaration);
+      else { if (tree.init) node.init = expr(tree.init); put(';'); }
       if (tree.condition) node.condition = expr(tree.condition); put(';');
       if (tree.step) node.step = expr(tree.step);
     } else if (tree.kind === 'Switch') node.expression = expr(tree.selector);
@@ -140,12 +155,59 @@ const named = name => ({ kind: 'Name', name });
 const bool = value => ({ kind: 'Bool', bool: value });
 const empty = () => ({ kind: 'Empty' });
 const block = children => ({ kind: 'Block', children });
+const declaration = (type, options = {}) => ({ kind: 'Declaration', type, name: 'local', value: integer(1), ...options });
+// Check resumed name prefixes with every precedence pair, independently reduced.
+const binaryLevels = { '=': 1, '||': 2, '&&': 3, '==': 4, '!=': 4, '<': 5, '>': 5, '<=': 5, '>=': 5,
+  '+': 6, '-': 6, '*': 7, '/': 7, '%': 7 };
+const binaryNames = { '=': 'Assign', '||': 'Or', '&&': 'And', '==': 'Equal', '!=': 'NotEqual',
+  '<': 'Less', '>': 'Greater', '<=': 'LessEqual', '>=': 'GreaterEqual', '+': 'Plus', '-': 'Minus',
+  '*': 'Star', '/': 'Slash', '%': 'Percent' };
+for (const first of Object.keys(binaryLevels)) for (const second of Object.keys(binaryLevels)) {
+  const input = `a ${first} b ${second} c;`, values = [], stack = [];
+  function reduce() {
+    const operator = stack.pop(), right = values.pop(), left = values.pop();
+    values.push(expression(operator.op === '=' ? 'Assign' : 'Binary', operator.start, operator.op.length,
+      { op: binaryNames[operator.op], left, right }));
+  }
+  for (const token of [{ name: 'a', start: 0 }, { op: first, start: 2 }, { name: 'b', start: first.length + 3 },
+    { op: second, start: first.length + 5 }, { name: 'c', start: first.length + second.length + 6 }]) {
+    if (token.name) values.push(expression('Name', token.start, 1));
+    else {
+      while (stack.length && (binaryLevels[stack.at(-1).op] > binaryLevels[token.op] ||
+        (binaryLevels[stack.at(-1).op] === binaryLevels[token.op] && token.op !== '='))) reduce();
+      stack.push(token);
+    }
+  }
+  while (stack.length) reduce();
+  good(`resumed precedence ${first} ${second}`, input, statement('Expression', 0, 1, { expression: values[0] }));
+}
 rendered('empty', empty());
 rendered('empty block', block([]));
 rendered('return', { kind: 'Return' });
 rendered('syntax-only context', block([{ kind: 'Break' }, { kind: 'Continue' }, { kind: 'Return', value: integer('2147483648') }]));
 rendered('strings survive multiple expressions', block(['first\0', '\xff\x80', 'last'].map(text =>
   ({ kind: 'Expression', value: { kind: 'Text', text } }))));
+for (const type of ['Int', 'Bool', 'Byte', 'String', 'Void', 'Auto', 'Named']) {
+  for (const immutable of [false, true]) for (const array of [null, integer(3)]) {
+    rendered(`declaration ${type} ${immutable} ${!!array}`,
+      declaration(type, { typeName: 'pkg::ns::Type', immutable, array }));
+  }
+}
+for (const name of ['constructor', 'toString', '__proto__']) rendered(`declaration name ${name}`, declaration('Int', { name }));
+for (const typeName of ['T', 'ns::T', 'A::B::C']) rendered(`named type ${typeName}`, declaration('Named', { typeName }));
+rendered('declarations, copies and string retention', block([
+  declaration('Named', { typeName: 'Pair', value: { kind: 'Struct', left: named('Pair'), arguments: [integer(1)] } }),
+  declaration('String', { name: 'text', value: { kind: 'Text', text: 'a\0\xff' } }),
+  declaration('Byte', { name: 'octet', value: { kind: 'Convert', operator: 'byte', left: integer(255) } }),
+  declaration('Int', { name: 'text', immutable: true, array: named('size') }),
+]));
+for (const type of ['Int', 'Named']) rendered(`for declaration ${type}`, { kind: 'For',
+  declaration: declaration(type, { typeName: 'ns::Counter', name: 'i', value: integer(0) }),
+  condition: { kind: 'Binary', operator: '<', left: named('i'), right: integer(3) },
+  step: { kind: 'Postfix', left: named('i') }, body: block([{ kind: 'Continue' }]) });
+rendered('for array declaration', { kind: 'For', declaration: declaration('Int', { array: integer(2) }), body: empty() });
+rendered('conversion statement disambiguation', { kind: 'Expression', value: { kind: 'Convert', operator: 'int',
+  left: { kind: 'Convert', operator: 'byte', left: integer(42) } } });
 for (let mask = 0; mask < 8; ++mask) rendered(`for header ${mask}`, { kind: 'For',
   init: mask & 1 ? named('init') : null, condition: mask & 2 ? bool(true) : null,
   step: mask & 4 ? named('step') : null, body: empty() });
@@ -181,14 +243,20 @@ function value() {
   if (random(2)) return leaves[random(leaves.length)];
   return { kind: 'Binary', operator: ['+', '*', '=', '<', '&&'][random(5)], left: leaves[random(4)], right: integer(random(10)) };
 }
+function local() {
+  const type = ['Int', 'Bool', 'Byte', 'String', 'Void', 'Auto', 'Named'][random(7)];
+  return declaration(type, { typeName: 'ns::Record', name: `v${random(10)}`, immutable: !!random(2),
+    array: random(3) === 0 ? integer(random(8) + 1) : null, value: value() });
+}
 function tree(depth) {
   if (depth === 0) return [{ kind: 'Expression', value: value() }, { kind: 'Return', value: value() },
-    { kind: 'Break' }, { kind: 'Continue' }, empty()][random(5)];
+    { kind: 'Break' }, { kind: 'Continue' }, empty(), local()][random(6)];
   switch (random(6)) {
     case 0: return block([tree(depth - 1), tree(depth - 1)]);
     case 1: return { kind: 'If', condition: value(), body: block([tree(depth - 1)]), other: block([tree(depth - 1)]) };
     case 2: return { kind: 'While', condition: value(), body: block([tree(depth - 1)]) };
-    case 3: return { kind: 'For', init: value(), condition: value(), step: value(), body: block([tree(depth - 1)]) };
+    case 3: return { kind: 'For', declaration: random(2) ? local() : null,
+      init: value(), condition: value(), step: value(), body: block([tree(depth - 1)]) };
     case 4: return { kind: 'Switch', selector: value(), labels: [
       { kind: 'Case', value: value(), children: [tree(depth - 1)] }, { kind: 'Default', children: [tree(depth - 1)] },
     ] };
@@ -198,16 +266,20 @@ function tree(depth) {
 const generatedStart = fixtures.length;
 for (let index = 0; index < 96; ++index) rendered(`tree ${index}`, tree(3));
 const generatedStatements = fixtures.slice(generatedStart).flatMap(fixture =>
-  flatten([fixture.tree], ['body', 'other', 'next']).nodes);
+  flatten([fixture.tree], ['declaration', 'body', 'other', 'next']).nodes);
 const generatedExpressions = flatten(generatedStatements.flatMap(node =>
-  [node.expression, node.init, node.condition, node.step].filter(Boolean)), ['left', 'right', 'next']).nodes;
+  [node.expression, node.init, node.condition, node.step, node.typeName, node.array].filter(Boolean)), ['left', 'right', 'next']).nodes;
 const generatedKinds = new Set(generatedExpressions.map(node => node.kind));
 for (const kind of ['Integer', 'Bool', 'Text', 'Name']) {
   assert.ok(generatedKinds.has(kind), `generated statement corpus must cover ${kind} leaves`);
 }
+const generatedTypes = new Set(generatedStatements.filter(node => node.kind === 'Declaration').map(node => node.declaredType));
+for (const type of ['Int', 'Bool', 'Byte', 'String', 'Void', 'Auto', 'Named']) {
+  assert.ok(generatedTypes.has(type), `generated declaration corpus must cover ${type}`);
+}
 for (const [input, error, marker] of [
   ['{', 'ExpectedClose', ''], ['if true;', 'ExpectedOpen', 'true'], ['if(true];', 'ExpectedClose', ']'],
-  ['while(true)', 'Expression', ''], ['for(a b;;);', 'ExpectedSemicolon', 'b'],
+  ['while(true)', 'Expression', ''], ['for(a b;;);', 'ExpectedInitializer', ';'],
   ['for(;;a];', 'ExpectedClose', ']'], ['return 1', 'ExpectedSemicolon', ''],
   ['break', 'ExpectedSemicolon', ''], ['continue x;', 'ExpectedSemicolon', 'x'],
   ['switch(1);', 'ExpectedOpen', ';'], ['switch(1){;}', 'ExpectedLabel', ';'],
@@ -220,9 +292,47 @@ for (const [input, error, marker] of [
   bad(input, error, start, length, error === 'Expression' ? 'ExpectedExpression' : 'None');
 }
 bad('', 'Expression', 0, 0, 'ExpectedExpression');
-bad('int x=1;', 'Expression', 4, 1, 'ExpectedOpen');
-bad('T x=1;', 'ExpectedSemicolon', 2);
-bad('for(int i=0;;);', 'Expression', 8, 1, 'ExpectedOpen');
+bad('int x;', 'ExpectedInitializer', 5);
+bad('T x;', 'ExpectedInitializer', 3);
+bad('for(int i;;);', 'ExpectedInitializer', 9);
+bad('const;', 'ExpectedType', 5);
+bad('const 1;', 'ExpectedType', 6);
+bad('const int(1);', 'ExpectedName', 9);
+bad('int 1=2;', 'ExpectedName', 4);
+bad('ns::T var;', 'ExpectedInitializer', 9);
+bad('int x=;', 'Expression', 6, 1, 'ExpectedExpression');
+bad('int xs[];', 'Expression', 7, 1, 'ExpectedExpression');
+bad('int xs[2', 'ExpectedClose', 8, 0);
+bad('int xs[2]=0;', 'ArrayInitializer', 9);
+bad('int xs[2][3];', 'ExpectedSemicolon', 9);
+bad('int a=1,b=2;', 'ExpectedSemicolon', 7);
+bad('int x=0', 'ExpectedSemicolon', 7, 0);
+good('qualified assignment not a declaration', 'ns:: x=0;', statement('Expression', 0, 2, {
+  expression: expression('Assign', 6, 1, { op: 'Assign',
+    left: expression('Name', 0, 2, { right: expression('Name', 5, 1) }),
+    right: expression('Integer', 7, 1) }),
+}));
+good('bare named call assignment', 'ns::x = f(1);', statement('Expression', 0, 2, {
+  expression: expression('Assign', 6, 1, { op: 'Assign',
+    left: expression('Name', 0, 2, { right: expression('Name', 4, 1) }),
+    right: expression('Call', 9, 1, { left: expression('Name', 8, 1),
+      right: expression('Integer', 10, 1, { value: -1 }) }) }),
+}));
+good('bare conversion infix continuation', 'int(1)+2;', statement('Expression', 0, 3, {
+  expression: expression('Binary', 6, 1, { op: 'Plus',
+    left: expression('Convert', 0, 3, { op: 'Int', left: expression('Integer', 4, 1, { value: -1 }) }),
+    right: expression('Integer', 7, 1, { value: -2 }) }),
+}));
+good('bare conversion postfix continuation', 'byte(255)++;', statement('Expression', 0, 4, {
+  expression: expression('Postfix', 9, 2, { op: 'Increment', left: expression('Convert', 0, 4,
+    { op: 'Byte', left: expression('Integer', 5, 3, { value: -255 }) }) }),
+}));
+const spacedType = 'ns /*t*/ :: T /*gap*/ x=0;';
+good('qualified type with trivia', spacedType, statement('Declaration', 0, 2, {
+  declaredType: 'Named', nameStart: spacedType.indexOf('x'), nameLength: 1,
+  typeName: expression('Name', 0, 2, { right: expression('Name', spacedType.indexOf('T'), 1) }),
+  expression: expression('Integer', spacedType.indexOf('0'), 1),
+}));
 bad('return @;', 'Expression', 7, 1, 'Lexical', 'UnsupportedCharacter');
 bad('{"old";"\\q";}', 'Expression', 7, 3, 'Lexical', 'UnsupportedEscape');
 let deep = statement('Empty', 47, 1);
@@ -252,6 +362,24 @@ let large = expression('Name', 0, 1);
 for (let index = 0; index < 2047; ++index) large = expression('Postfix', index * 2 + 1, 2, { op: 'Increment', left: large });
 good('full shared expression arena', 'x' + '++'.repeat(2047) + ';', statement('Expression', 0, 1, { expression: large }));
 bad('x' + '++'.repeat(2048) + ';', 'Expression', 4095, 2, 'TooManyNodes');
+let declarations = statement('Block', 0, 1), previous = null;
+for (let index = 0; index < 1023; ++index) {
+  const start = 1 + index * 8;
+  const node = statement('Declaration', start, 3, { declaredType: 'Int', nameStart: start + 4, nameLength: 1,
+    expression: expression('Integer', start + 6, 1) });
+  if (previous) previous.next = node; else declarations.body = node;
+  previous = node;
+}
+good('maximum declaration arena', '{' + 'int x=0;'.repeat(1023) + '}', declarations);
+bad('{' + 'int x=0;'.repeat(1024) + '}', 'TooManyNodes', 8185, 3);
+bad('{' + 'ns::T x=0;'.repeat(683) + '}', 'Expression', 6829, 1, 'TooManyNodes');
+let mixedDeclaration = statement('Declaration', 46, 1, { declaredType: 'Named', nameStart: 48, nameLength: 1,
+  typeName: expression('Name', 46, 1), expression: expression('Integer', 50, 1, { value: -1 }) });
+for (let index = 45; index >= 0; --index) mixedDeclaration = statement('Block', index, 1, { body: mixedDeclaration });
+good('maximum declaration depth', '{'.repeat(46) + 'T x=1;' + '}'.repeat(46), mixedDeclaration);
+bad('{'.repeat(47) + 'T x=1;' + '}'.repeat(47), 'TooDeep', 51, 1, 'TooDeep');
+bad('{'.repeat(47) + 'int(1);' + '}'.repeat(47), 'TooDeep', 47, 3, 'TooDeep');
+bad('{'.repeat(47) + 'ns::f();' + '}'.repeat(47), 'TooDeep', 47, 2, 'TooDeep');
 
 function flatten(roots, links) {
   const nodes = [], ids = new Map(), pending = [...roots].reverse();
@@ -276,15 +404,19 @@ bool invalid(int id) {
     statements::Node node = statements::node(id);
     return node.kind == statements::kind::Invalid && node.start == 0 && node.length == 0 &&
         node.line == 0 && node.column == 0 && node.expression == -1 && node.init == -1 && node.condition == -1 &&
-        node.step == -1 && node.body == -1 && node.other == -1 && node.next == -1;
+        node.step == -1 && node.body == -1 && node.other == -1 && node.next == -1 &&
+        node.declared_type == statements::type_kind::Invalid && node.type_name == -1 && node.name_start == 0 &&
+        node.name_length == 0 && !node.immutable && node.array == -1 && node.declaration == -1;
 }
 bool check_s(int index, int kind, int start, int length, int line, int column,
-             int expression, int init, int condition, int step, int body, int other, int next) {
+             int expression, int init, int condition, int step, int body, int other, int next,
+             int declared_type, int type_name, int name_start, int name_length, bool immutable, int array, int declaration) {
     int id = sids[index];
     if (id < 0 || id >= statements::node_count() || sseen[id]) return false;
     sseen[id] = true;
     statements::Node node = statements::node(id);
     if (node.kind != kind || node.start != start || node.length != length || node.line != line || node.column != column) return false;
+    if (node.declared_type != declared_type || node.name_start != name_start || node.name_length != name_length || node.immutable != immutable) return false;
     if (expression == -1) { if (node.expression != -1) return false; } else eids[expression] = node.expression;
     if (init == -1) { if (node.init != -1) return false; } else eids[init] = node.init;
     if (condition == -1) { if (node.condition != -1) return false; } else eids[condition] = node.condition;
@@ -292,6 +424,9 @@ bool check_s(int index, int kind, int start, int length, int line, int column,
     if (body == -1) { if (node.body != -1) return false; } else sids[body] = node.body;
     if (other == -1) { if (node.other != -1) return false; } else sids[other] = node.other;
     if (next == -1) { if (node.next != -1) return false; } else sids[next] = node.next;
+    if (type_name == -1) { if (node.type_name != -1) return false; } else eids[type_name] = node.type_name;
+    if (array == -1) { if (node.array != -1) return false; } else eids[array] = node.array;
+    if (declaration == -1) { if (node.declaration != -1) return false; } else sids[declaration] = node.declaration;
     return true;
 }
 bool check_e(int index, int kind, int op, int start, int length, int line, int column,
@@ -307,6 +442,28 @@ bool check_e(int index, int kind, int op, int start, int length, int line, int c
     if (next == -1) { if (node.next != -1) return false; } else eids[next] = node.next;
     for (int at = 0; at < text.length; at++) if (expressions::text_byte(id, at) != int(text[at])) return false;
     return expressions::text_byte(id, -1) == -1 && expressions::text_byte(id, text.length) == -1;
+}
+bool prefix_errors() {
+    if (!load("name")) return false;
+    expressions::begin();
+    lexer::Token start = expressions::current();
+    if (expressions::parse_from_name(9999, start) != -1) return false;
+    if (expressions::diagnostic().kind != expressions::Error::ExpectedName) return false;
+    expressions::begin();
+    if (expressions::parse_from_conversion(start) != -1) return false;
+    if (expressions::diagnostic().kind != expressions::Error::ExpectedExpression) return false;
+    if (!load("1")) return false;
+    expressions::begin();
+    start = expressions::current();
+    int id = expressions::parse_next();
+    if (expressions::parse_from_name(id, start) != -1) return false;
+    if (expressions::diagnostic().kind != expressions::Error::ExpectedName) return false;
+    if (!load("name::")) return false;
+    expressions::begin();
+    if (expressions::parse_name() != -1) return false;
+    if (expressions::diagnostic().kind != expressions::Error::ExpectedName) return false;
+    expressions::discard();
+    return expressions::node_count() == 0;
 }
 `;
 let batches = 0;
@@ -324,15 +481,16 @@ function runBatch(batch) {
             error.lexical != lexer::Error::${fixture.lexical} || error.start != ${fixture.start} || error.length != ${fixture.length} ||
             error.line != ${at.line} || error.column != ${at.column}) return false;`;
     } else {
-      const s = flatten([fixture.tree], ['body', 'other', 'next']);
-      const e = flatten(s.nodes.flatMap(node => [node.expression, node.init, node.condition, node.step].filter(Boolean)), ['left', 'right', 'next']);
+      const s = flatten([fixture.tree], ['declaration', 'body', 'other', 'next']);
+      const e = flatten(s.nodes.flatMap(node => [node.expression, node.init, node.condition, node.step, node.typeName, node.array].filter(Boolean)), ['left', 'right', 'next']);
       const chunks = [];
       const assertions = [
         ...s.nodes.map((node, id) => {
           const at = position(fixture.input, node.start);
           return `if (!check_s(${id},statements::kind::${node.kind},${node.start},${node.length},${at.line},${at.column},
             ${[node.expression, node.init, node.condition, node.step].map(value => e.ids.get(value) ?? -1).join(',')},
-            ${[node.body, node.other, node.next].map(value => s.ids.get(value) ?? -1).join(',')})) return false;`;
+            ${[node.body, node.other, node.next].map(value => s.ids.get(value) ?? -1).join(',')},
+            statements::type_kind::${node.declaredType},${e.ids.get(node.typeName) ?? -1},${node.nameStart},${node.nameLength},${node.immutable},${e.ids.get(node.array) ?? -1},${s.ids.get(node.declaration) ?? -1})) return false;`;
         }),
         ...e.nodes.map((node, id) => {
           const at = position(fixture.input, node.start);
@@ -362,17 +520,19 @@ function runBatch(batch) {
     cases.push(`if (!case_${index}()) return ${index + 1};`);
   }
   const source = resolve(work, 'main.l'), output = resolve(work, 'model.lbc');
-  writeFileSync(source, `module tests.main;\nimport l.compiler.lexer as lexer;\nimport l.compiler.expressions as expressions;\nimport l.compiler.statements as statements;\n${helpers}\n${functions.join('\n')}\nint main(){${cases.join('\n')}return 0;}`);
+  writeFileSync(source, `module tests.main;\nimport l.compiler.lexer as lexer;\nimport l.compiler.expressions as expressions;\nimport l.compiler.statements as statements;\n${helpers}\n${functions.join('\n')}\nint main(){${cases.join('\n')}if(!prefix_errors())return 63;return 0;}`);
   try {
     assert.equal(command(0, ['run', source, '--manifest', manifest]).stderr, '');
     command(0, ['compile', source, '--manifest', manifest, '-o', output]);
     command(0, ['check', output]); assert.equal(command(0, ['run', output]).stderr, '');
-  } catch (error) { error.message += `\nFixtures: ${batch.map(f => f.name).join(', ')}`; throw error; }
+  } catch (error) {
+    throw new Error(`Fixtures: ${batch.map(f => f.name).join(', ')}\n${error.message}`, { cause: error });
+  }
   ++batches;
 }
 let batch = [];
 for (const fixture of fixtures) {
-  if (fixture.tree && (flatten([fixture.tree], ['body', 'other', 'next']).nodes.length > 100 || fixture.input.length > 1000)) {
+  if (fixture.input.length > 1000 || (fixture.tree && flatten([fixture.tree], ['declaration', 'body', 'other', 'next']).nodes.length > 100)) {
     if (batch.length) runBatch(batch);
     batch = []; runBatch([fixture]);
   } else {
@@ -386,6 +546,8 @@ const output = resolve(work, 'statements.lbc');
 command(0, ['compile', driver, '--manifest', driverManifest, '-o', output]);
 for (const [input, status, error] of [
   ['{ for(i=0;i<3;i++) { if(i==1) continue; } return i; }', 0, ''],
+  ['{ ns::Pair p = ns::Pair{1,2}; const byte bytes[3]; for(int i=0;i<3;i++) p.x=i; }', 0, ''],
+  ['{ int(1); byte(2); ns::call(); ns::Type value=seed; }', 0, ''],
   ['break;', 0, ''], ['if(1)return unknown;', 0, ''],
   ['', 65, 'statement:1:1: error: expected expression\n'],
   ['{', 65, 'statement:1:2: error: expected closing delimiter\n'],
@@ -398,7 +560,10 @@ for (const [input, status, error] of [
   ['@;', 65, 'statement:1:1: error: unsupported character in Stage 0 source\n'],
   ['{'.repeat(48) + ';' + '}'.repeat(48), 65, 'statement:1:49: error: syntax nesting exceeds 48\n'],
   ['{' + ';'.repeat(1024) + '}', 65, 'statement:1:1025: error: statement exceeds 1024 AST nodes\n'],
-  ['int x=1;', 65, "statement:1:5: error: expected '(' after conversion type\n"],
+  ['int x;', 65, 'statement:1:6: error: local scalar declarations require an initializer\n'],
+  ['const;', 65, 'statement:1:6: error: expected local declaration type\n'],
+  ['int 1=2;', 65, 'statement:1:5: error: expected variable name\n'],
+  ['int a[2]=0;', 65, 'statement:1:9: error: arrays initialize to zero and cannot have an initializer\n'],
   [Buffer.concat([Buffer.alloc(65534, 32), Buffer.from(';')]), 0, ''],
   [Buffer.alloc(65536, 32), 65, 'statement: source exceeds 65535 bytes\n'],
 ]) for (const args of [['run', driver, '--manifest', driverManifest], ['run', output]]) {
