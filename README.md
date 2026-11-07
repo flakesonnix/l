@@ -34,9 +34,10 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
 ## L-written frontend slices
 
 [`bootstrap/stage1/`](bootstrap/stage1/README.md) contains an L-written lexer,
-expression parser, statement/local-declaration parser and stdin syntax-check
-drivers, compiled and executed by Stage 0. They use existing Stage 0 syntax;
-module/top-level declaration parsing remains unimplemented. There is **no semantic
+expression parser, statement/local-declaration parser, module/import header parser
+and stdin syntax-check drivers, compiled and executed by Stage 0. They use existing
+Stage 0 syntax; full source-file/top-level declaration parsing remains unimplemented.
+There is **no semantic
 checker, code generator or self-hosted compiler** yet. These drivers do not check
 types, resolve names or evaluate the input.
 
@@ -45,9 +46,11 @@ make stage1
 ./build/l run build/stage1-lexer.lbc < examples/answer.l
 printf 'a = f(1, 2) + -3' | ./build/l run build/stage1-expression.lbc
 printf '{ int sum=0; for(int i=0;i<3;i++) sum=sum+i; return sum; }' | ./build/l run build/stage1-statement.lbc
+printf 'module app.main; import std.io; import app.types::{Pair as P,};' | ./build/l run build/stage1-header.lbc
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
 node tests/stage1-statements.mjs ./build/l
+node tests/stage1-headers.mjs ./build/l
 ```
 
 The initial scanner has a 65535-byte input buffer and inherits the VM's execution
@@ -61,6 +64,9 @@ statement parser adds a separate 1024-node arena for blocks, local declarations,
 control flow and switch labels; expression/statement recursion shares one 48-level
 syntax budget. Local declarations record types, names, `const`, scalar initializers
 and array-length expressions without resolving or evaluating them.
+The header parser records dotted module paths, import aliases and selective
+imports in a separate 2048-node arena. Its streaming entry point stops at the first
+body token; its standalone driver accepts header-only input, not full source files.
 **100% coverage gate still measures Stage 0 C code**, not L-source coverage. No
 syntax or IR/bytecode-format change is introduced; artifacts remain at **1.9**.
 
