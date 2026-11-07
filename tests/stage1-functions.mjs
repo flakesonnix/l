@@ -40,6 +40,7 @@ const named = name => ({ kind: 'Name', name });
 const empty = () => ({ kind: 'Empty' });
 const block = children => ({ kind: 'Block', children });
 const fn = (options = {}) => ({ type: 'Int', name: 'f', parameters: [], body: block([]), ...options });
+const namespace = (name, children = []) => ({ kind: 'Namespace', name, children });
 const parameter = (type, options = {}) => ({ type, name: 'p', ...options });
 const local = (type, options = {}) => ({ kind: 'Declaration', type, name: 'local', value: integer(1), ...options });
 
@@ -127,29 +128,40 @@ function rendered(name, tree, options = {}) {
     if (lastImport) lastImport.next = item; else heading.items = item;
     lastImport = item;
   }
-  let last = null;
-  for (const functionTree of tree.functions ?? []) {
-    put(gap);
-    const item = fnode('Function', input.length, functionTree.exported ? 3 : functionTree.external ? 6 : functionTree.type === 'Named' ? (functionTree.typeName ?? 'ns::T').split('::')[0].length : functionTree.type.toLowerCase().length,
-      { declaredType: functionTree.type, exported: !!functionTree.exported, external: !!functionTree.external });
-    if (functionTree.exported) put(`pub${gap}`);
-    if (functionTree.external) put(`extern${gap}`);
-    item.typeName = type(functionTree); put(gap); item.nameStart = put(functionTree.name); item.nameLength = functionTree.name.length; put('(');
-    let previous = null;
-    for (const tree of functionTree.parameters) {
-      if (previous) put(`,${gap}`);
-      const part = fnode('Parameter', input.length, tree.immutable ? 5 : tree.type === 'Named' ? (tree.typeName ?? 'ns::T').split('::')[0].length : tree.type.toLowerCase().length,
-        { declaredType: tree.type, immutable: !!tree.immutable });
-      if (tree.immutable) put(`const${gap}`);
-      part.typeName = type(tree); put(gap); part.nameStart = put(tree.name); part.nameLength = tree.name.length;
-      if (previous) previous.next = part; else item.items = part;
-      previous = part;
+  function declarations(trees) {
+    let first = null, last = null;
+    for (const functionTree of trees) {
+      put(gap);
+      if (functionTree.kind === 'Namespace') {
+        const item = fnode('Namespace', put('namespace'), 9);
+        put(gap); item.nameStart = put(functionTree.name); item.nameLength = functionTree.name.length;
+        put('{'); item.items = declarations(functionTree.children); put('}');
+        if (last) last.next = item; else first = item;
+        last = item; continue;
+      }
+      const item = fnode('Function', input.length, functionTree.exported ? 3 : functionTree.external ? 6 : functionTree.type === 'Named' ? (functionTree.typeName ?? 'ns::T').split('::')[0].length : functionTree.type.toLowerCase().length,
+        { declaredType: functionTree.type, exported: !!functionTree.exported, external: !!functionTree.external });
+      if (functionTree.exported) put(`pub${gap}`);
+      if (functionTree.external) put(`extern${gap}`);
+      item.typeName = type(functionTree); put(gap); item.nameStart = put(functionTree.name); item.nameLength = functionTree.name.length; put('(');
+      let previous = null;
+      for (const tree of functionTree.parameters) {
+        if (previous) put(`,${gap}`);
+        const part = fnode('Parameter', input.length, tree.immutable ? 5 : tree.type === 'Named' ? (tree.typeName ?? 'ns::T').split('::')[0].length : tree.type.toLowerCase().length,
+          { declaredType: tree.type, immutable: !!tree.immutable });
+        if (tree.immutable) put(`const${gap}`);
+        part.typeName = type(tree); put(gap); part.nameStart = put(tree.name); part.nameLength = tree.name.length;
+        if (previous) previous.next = part; else item.items = part;
+        previous = part;
+      }
+      put(')');
+      if (functionTree.external) put(';'); else item.body = stmt(functionTree.body);
+      if (last) last.next = item; else first = item;
+      last = item;
     }
-    put(')');
-    if (functionTree.external) put(';'); else item.body = stmt(functionTree.body);
-    if (last) last.next = item; else result.items = item;
-    last = item;
+    return first;
   }
+  result.items = declarations(tree.functions ?? []);
   put(options.trailing ?? '');
   const fixture = { name, input, tree: result }; fixtures.push(fixture); return fixture;
 }
@@ -175,6 +187,21 @@ rendered('syntax-only contexts and duplicate names', { functions: [
     local('Void'), local('Int', { immutable: true, array: named('unknown') }), { kind: 'Return', value: named('missing') }]) }),
   fn(), fn({ external: true }),
 ] });
+rendered('empty namespace', { functions: [namespace('n')] });
+rendered('nested and reopened namespaces', { imports: [{ path: 'pkg.types', alias: 'types' }], functions: [
+  fn({ name: 'before' }),
+  namespace('n', [fn({ name: 'private_value' }), namespace('inner', [fn({ name: 'public_value', exported: true,
+    type: 'Named', typeName: 'types::T', parameters: [parameter('Named', { typeName: 'types::T', immutable: true })],
+    body: block([{ kind: 'Return', value: { kind: 'Text', text: 'kept\0\xff' } }]) })])]),
+  namespace('n', [fn({ name: 'private_value', external: true, exported: true })]),
+  fn({ name: 'after', type: 'Named', body: block([{ kind: 'Return', value: named('n::inner::value') }]) }),
+] });
+for (const name of ['constructor', '__proto__', 'Namespace', 'namespaceX']) {
+  rendered(`namespace identifier ${name}`, { functions: [namespace(name, [fn()])] });
+}
+for (const gap of ['\n', '\t', '/*gap*/', '//gap\n']) rendered(`namespace trivia ${JSON.stringify(gap)}`, {
+  functions: [namespace('outer', [namespace('inner', [fn({ exported: true })]), namespace('inner')])],
+}, { gap, leading: '\n/*before\xff*/\t', trailing: '\n//after\xff' });
 let state = 0x29bc361f;
 function random(n) { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return Math.floor(state / 0x100000000 * n); }
 const types = ['Int', 'Bool', 'Byte', 'String', 'Void', 'Auto', 'Named'];
@@ -214,7 +241,7 @@ for (const [text, error, marker, nested] of [
   ['int @', 'Expression', '@', { expressionError: 'Lexical', lexical: 'UnsupportedCharacter' }],
   ['ns:: f(){}', 'ExpectedName', '('], ['int f(){} }', 'ExpectedType', '}'],
   ['using T=int;', 'ExpectedType', 'using'], ['struct T{};', 'ExpectedType', 'struct'], ['enum E{};', 'ExpectedType', 'enum'],
-  ['namespace n{}', 'ExpectedType', 'namespace'], ['const int x=1;', 'ExpectedType', 'const'], ['static int x=1;', 'ExpectedType', 'static'],
+  ['const int x=1;', 'ExpectedType', 'const'], ['static int x=1;', 'ExpectedType', 'static'],
 ]) {
   // Empty text after a valid header is valid; test its missing module separately.
   if (!text) continue;
@@ -252,6 +279,82 @@ bad(depthOverflow.input, 'Statement', deepest.start, deepest.length, { statement
 rendered('independent full header arena', { module: Array(2047).fill('x').join('.'), functions: [fn({ external: true })] });
 const headerOverflow = 'module ' + Array(2048).fill('x').join('.') + ';';
 bad(headerOverflow, 'Header', headerOverflow.length - 2, 1, { headerError: 'TooManyNodes' });
+
+for (const [text, error, marker] of [
+  ['namespace {}', 'ExpectedNamespaceName', '{'], ['namespace const {}', 'ExpectedNamespaceName', 'const'],
+  ['namespace n;', 'ExpectedNamespaceOpen', ';'], ['namespace a.b{}', 'ExpectedNamespaceOpen', '.'],
+  ['namespace a::b{}', 'ExpectedNamespaceOpen', '::'], ['namespace n{', 'ExpectedNamespaceClose', ''],
+  ['namespace n{namespace inner{}', 'ExpectedNamespaceClose', ''],
+  ['pub namespace n{}', 'NamespaceVisibility', 'pub'], ['namespace n{pub namespace inner{}}', 'NamespaceVisibility', 'pub'],
+  ['namespace n{import p;}', 'MisplacedHeader', 'import'], ['namespace n{pub import p;}', 'MisplacedHeader', 'import'],
+  ['namespace n{module other;}', 'MisplacedHeader', 'module other'], ['namespace n{} import p;', 'MisplacedHeader', 'import'],
+  ['namespace n{};', 'ExpectedType', ';'], ['namespace n{using T=int;}', 'ExpectedType', 'using'],
+  ['extern namespace n{}', 'ExpectedType', 'namespace'],
+]) {
+  const input = 'module m; ' + text;
+  const start = marker ? input.indexOf(marker, 10) : input.length;
+  const length = marker && /^[A-Za-z]/.test(marker) ? marker.split(' ')[0].length : marker === '::' ? 2 : undefined;
+  bad(input, error, start, length);
+}
+bad('module m; namespace n{int f(){return @;}}', 'Statement', 37, 1,
+  { statementError: 'Expression', expressionError: 'Lexical', lexical: 'UnsupportedCharacter' });
+bad('module m; namespace n{@}', 'Expression', 22, 1,
+  { expressionError: 'Lexical', lexical: 'UnsupportedCharacter' });
+let deepNamespace = namespace('n');
+for (let index = 1; index < 48; index++) deepNamespace = namespace('n', [deepNamespace]);
+rendered('maximum namespace depth', { functions: [deepNamespace] });
+const namespaceDepthOverflow = rendered('overflow namespace depth', { functions: [namespace('n', [deepNamespace])] });
+fixtures.pop(); let deepestNamespace = namespaceDepthOverflow.tree.items; while (deepestNamespace.items) deepestNamespace = deepestNamespace.items;
+bad(namespaceDepthOverflow.input, 'TooDeep', deepestNamespace.start, deepestNamespace.length, { expressionError: 'TooDeep' });
+let mixedNamespace = fn();
+for (let index = 0; index < 47; index++) mixedNamespace = namespace('n', [mixedNamespace]);
+rendered('maximum namespace and body depth', { functions: [mixedNamespace] });
+const mixedNamespaceOverflow = rendered('overflow namespace and body depth', { functions: [namespace('n', [mixedNamespace])] });
+fixtures.pop(); let deepestFunction = mixedNamespaceOverflow.tree.items; while (deepestFunction.kind === 'Namespace') deepestFunction = deepestFunction.items;
+bad(mixedNamespaceOverflow.input, 'Statement', deepestFunction.body.start, 1, { statementError: 'TooDeep', expressionError: 'TooDeep' });
+rendered('full namespace arena and no function count', { functions: Array.from({ length: 1023 }, () => namespace('n')) });
+const namespaceArenaOverflow = rendered('overflow namespace arena', { functions: Array.from({ length: 1024 }, () => namespace('n')) });
+fixtures.pop(); let lastNamespace = namespaceArenaOverflow.tree.items; while (lastNamespace.next) lastNamespace = lastNamespace.next;
+bad(namespaceArenaOverflow.input, 'TooManyNodes', lastNamespace.start, 9);
+rendered('namespace parameter arena', { functions: [namespace('n', [fn({ external: true, parameters: Array.from({ length: 1021 }, () => parameter('Int')) })])] });
+const namespaceParameterOverflow = rendered('overflow namespace parameters', { functions: [namespace('n', [fn({ external: true, parameters: Array.from({ length: 1022 }, () => parameter('Int')) })])] });
+fixtures.pop(); let finalParameter = namespaceParameterOverflow.tree.items.items.items; while (finalParameter.next) finalParameter = finalParameter.next;
+bad(namespaceParameterOverflow.input, 'TooManyNodes', finalParameter.start, finalParameter.length);
+rendered('function count across namespaces', { functions: ['a', 'b'].map(name => namespace(name,
+  Array.from({ length: 128 }, (_, i) => fn({ name: `f${i}`, external: true })))) });
+const namespaceFunctionOverflow = rendered('overflow namespace function count', { functions: ['a', 'b'].map((name, index) => namespace(name,
+  Array.from({ length: 128 + index }, (_, i) => fn({ name: `f${i}`, external: true })))) });
+fixtures.pop(); let finalFunction = namespaceFunctionOverflow.tree.items.next.items; while (finalFunction.next) finalFunction = finalFunction.next;
+bad(namespaceFunctionOverflow.input, 'TooManyFunctions', finalFunction.start, finalFunction.length);
+rendered('statement budget across namespaces', { functions: [namespace('a', [fn({ body: block(Array.from({ length: 1021 }, empty)) })]),
+  namespace('b', [fn({ body: block([empty()]) })])] });
+const namespaceStatementOverflow = rendered('overflow namespace statements', { functions: [namespace('a', [fn({ body: block(Array.from({ length: 1021 }, empty)) })]),
+  namespace('b', [fn({ body: block([empty(), empty()]) })])] });
+fixtures.pop(); const namespaceExtra = namespaceStatementOverflow.tree.items.next.items.body.body.next;
+bad(namespaceStatementOverflow.input, 'Statement', namespaceExtra.start, 1, { statementError: 'TooManyNodes' });
+rendered('expression budget across namespaces', { functions: [namespace('a', [fn({ body: block([{ kind: 'Return', value: { kind: 'Chain', count: 2046 } }]) })]),
+  namespace('b', [fn({ type: 'Named', typeName: 'T' })])] });
+const namespaceExpressionOverflow = rendered('overflow namespace expressions', { functions: [namespace('a', [fn({ body: block([{ kind: 'Return', value: { kind: 'Chain', count: 2046 } }]) })]),
+  namespace('b', [fn({ type: 'Named', typeName: 'ns::T' })])] });
+fixtures.pop(); const namespaceMissing = namespaceExpressionOverflow.tree.items.next.items.typeName.right;
+bad(namespaceExpressionOverflow.input, 'Expression', namespaceMissing.start, 1, { expressionError: 'TooManyNodes' });
+
+const generatedNamespaceStart = fixtures.length;
+function namespaceTree(depth) {
+  const children = Array.from({ length: random(3) + 1 }, (_, i) => {
+    if (depth && random(2)) return namespaceTree(depth - 1);
+    return fn({ name: `f${i}`, type: types[random(7)], exported: !!random(2), external: !!random(2),
+      parameters: [parameter(types[random(7)], { immutable: !!random(2) })],
+      body: block([local('String', { value: { kind: 'Text', text: `ns${String.fromCharCode(random(256))}` } }), { kind: 'Return', value: value() }]) });
+  });
+  return namespace(`n${random(3)}`, children);
+}
+for (let index = 0; index < 32; index++) rendered(`generated namespace ${index}`, { functions: [namespaceTree(3), fn({ name: 'between' }), namespaceTree(2)] });
+const generatedNamespaceNodes = fixtures.slice(generatedNamespaceStart).flatMap(f => flatten([f.tree], ['items', 'next']).nodes);
+for (const kind of ['Namespace', 'Function', 'Parameter']) assert.ok(generatedNamespaceNodes.some(n => n.kind === kind), `missing generated namespace ${kind}`);
+assert.ok(generatedNamespaceNodes.some(n => n.kind === 'Namespace' && n.items?.kind === 'Namespace'), 'generated namespaces must nest');
+assert.ok(generatedNamespaceNodes.some(n => n.kind === 'Function' && n.exported), 'generated namespaces must contain pub functions');
+assert.ok(generatedNamespaceNodes.some(n => n.kind === 'Function' && n.external), 'generated namespaces must contain extern functions');
 
 function flatten(roots, links) {
   const nodes = [], ids = new Map(), pending = [...roots].reverse();
@@ -404,6 +507,7 @@ command(0, ['compile', driver, '--manifest', driverManifest, '-o', output]);
 for (const [input, status, error] of [
   ['module app.main; import pkg.io::{print as p,}; pub int main(){int x=0;for(int i=0;i<3;i++)x=x+i;return x;} extern ns::T copy(const ns::T value);', 0, ''],
   ['module m;', 0, ''], ['module m; void f(void x){break;return unknown;} int f(){}', 0, ''],
+  ['module m; namespace n{pub int f(){return 1;}namespace inner{extern ns::T copy(const ns::T p);}}namespace n{int g(){return missing;}}', 0, ''],
   ['module m; int main(){for(;;);}', 0, ''],
   [readFileSync(resolve(root, 'examples/answer.l')), 0, ''],
   [readFileSync(resolve(root, 'examples/io_demo.l')), 0, ''],
@@ -414,7 +518,11 @@ for (const [input, status, error] of [
   ['module m; int f(){return @;}', 65, 'function:1:26: error: unsupported character in Stage 0 source\n'],
   ['module m; @', 65, 'function:1:11: error: unsupported character in Stage 0 source\n'],
   ['module m; int @', 65, 'function:1:15: error: unsupported character in Stage 0 source\n'],
-  ['module m; int f(){} import p;', 65, 'function:1:21: error: module and import declarations must precede functions\n'],
+  ['module m; int f(){} import p;', 65, 'function:1:21: error: module and import declarations must precede other declarations\n'],
+  ['module m; pub namespace n{}', 65, 'function:1:11: error: namespaces do not change declaration visibility\n'],
+  ['module m; namespace n{', 65, "function:1:23: error: expected '}' after namespace\n"],
+  ['module m; namespace n{import p;}', 65, 'function:1:23: error: module and import declarations must precede other declarations\n'],
+  [namespaceDepthOverflow.input, 65, `function:1:${deepestNamespace.start + 1}: error: syntax nesting exceeds 48\n`],
   [Buffer.concat([Buffer.from('module m;'), Buffer.alloc(65526, 32)]), 0, ''],
   [Buffer.alloc(65536, 32), 65, 'function: source exceeds 65535 bytes\n'],
 ]) for (const args of [['run', driver, '--manifest', driverManifest], ['run', output]]) assert.equal(command(status, args, { input }).stderr, error);
