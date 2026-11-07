@@ -170,7 +170,7 @@ int condition() {
     return result;
 }
 
-int primitive(lexer::Kind type) {
+pub int primitive(lexer::Kind type) {
     switch (type) {
         case lexer::Kind::Int: return type_kind::Int;
         case lexer::Kind::Bool: return type_kind::Bool;
@@ -344,7 +344,8 @@ int statement() {
     return result;
 }
 
-pub int parse() {
+// Streaming callers own rollback and must retain the shared expression cursor.
+pub void begin() {
     used = 0;
     failure = Error::None;
     expression_failure = expressions::Error::None;
@@ -354,9 +355,14 @@ pub int parse() {
     failure_line = 1;
     failure_column = 1;
     expressions::begin();
-    int root = statement();
+}
+pub int parse_next() { return statement(); }
+pub void discard() { used = 0; expressions::discard(); }
+pub int parse() {
+    begin();
+    int root = parse_next();
     if (ok() && !at(lexer::Kind::End)) reject(Error::TrailingInput, current());
-    if (!ok()) { used = 0; expressions::discard(); return -1; }
+    if (!ok()) { discard(); return -1; }
     return root;
 }
 pub int node_count() { return used; }

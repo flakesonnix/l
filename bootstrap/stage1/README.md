@@ -1,10 +1,11 @@
 # Stage 1: L-written frontend slices
 
 These are the first L-written implementation slices. Stage 0 compiles them to
-existing **1.9 bytecode**, and the Stage 0 VM executes them. There is no L-written
-full source-file/top-level declaration parser, semantic checker, code generator or
-complete compiler yet. The statement parser includes local declarations; the
-header parser handles module/import prefixes only. Running a
+existing **1.9 bytecode**, and the Stage 0 VM executes them. The file parser accepts
+headers and functions only; global/namespace/type declarations remain unimplemented.
+There is no semantic checker, code generator or complete compiler yet. The
+statement parser includes local declarations; the separate header driver handles
+module/import prefixes only. Running a
 lexer over its own source is **not self-hosting**.
 
 ## Build and run
@@ -19,10 +20,12 @@ make stage1
 printf 'a = f(1, 2) + -3' | ./build/l run build/stage1-expression.lbc
 printf '{ int sum=0; for(int i=0;i<3;i++) sum=sum+i; return sum; }' | ./build/l run build/stage1-statement.lbc
 printf 'module app.main; import std.io; import app.types::{Pair as P,};' | ./build/l run build/stage1-header.lbc
+./build/l run build/stage1-function.lbc < examples/answer.l
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
 node tests/stage1-statements.mjs ./build/l
 node tests/stage1-headers.mjs ./build/l
+node tests/stage1-functions.mjs ./build/l
 ```
 
 Alternatively run the driver directly from source:
@@ -65,6 +68,17 @@ selected names, selective aliases and optional trailing selection commas follow
 the existing Stage 0 grammar and the normative module specification. Empty
 selection lists and wildcard imports are rejected. Top-level bodies are rejected
 as trailing input: this driver does **not** check complete source files.
+
+The function-file driver (`bootstrap/stage1/function_main.l`, with the same
+manifest) accepts a module/import header followed by zero or more function
+definitions or `extern` declarations and EOF. `pub`, primitive/qualified result
+and parameter types, and optional `const` parameters use existing Stage 0 syntax.
+Arrays/default initializers/trailing commas are not supported in parameter lists;
+non-extern functions require block bodies. Top-level globals, namespaces, aliases,
+structs and enums are not supported by this slice. The driver uses the same
+0/65/70 conventions and never invokes the input's `main`, follows its imports,
+executes its bodies, or requires a semantic entry point. The example above checks
+`answer.l`'s syntax and returns 0, not its program result.
 
 The manifest explicitly registers the `l.compiler` and `std` roots and the compiler
 package's direct standard-library dependency. Nothing is implicitly searched.
@@ -188,6 +202,13 @@ the statement error plus underlying expression/lexer errors where applicable;
 the first detected error is preserved. All these interfaces remain internal,
 with no serialized statement or AST format.
 
+Internal statement streaming operations compose function bodies: `begin()` resets
+the statement arena/diagnostics and shared expression arena/cursor; `parse_next()`
+parses one statement without requiring EOF or resetting storage; `discard()` hides
+both arenas while retaining diagnostics. Streaming callers own rollback and must
+check diagnostics. `primitive(lexer::Kind)` exposes the existing primitive type-tag
+mapping to the function parser. These are provisional compiler internals.
+
 ### Local declarations
 
 The existing Stage 0 declaration grammar is recognized: an optional `const`, a
@@ -271,6 +292,58 @@ not check import placement inside or after an unparsed top-level body. These
 semantic and whole-file responsibilities still belong to Stage 0; this slice does
 not claim a complete implementation of the module system.
 
+`headers::discard()` exposes the existing header/expression rollback operation to
+the enclosing file parser; it retains the header diagnostic.
+
+## Current function-file contract
+
+`functions::parse()` rewinds the loaded source, resets all four syntax arenas and
+their diagnostics, parses the header and all function declarations, and requires
+EOF. It returns a `Module` root in the **function arena**, or -1 on failure. A
+header-only file is syntax-valid. The parser rejects misplaced module/import
+declarations after functions. It performs no entry-point, duplicate/overload,
+binding, visibility, type, return-flow, lvalue, or extern-implementation checks.
+For example, unknown named types, `void`/`auto` parameters, duplicate signatures,
+and `break` outside a loop remain syntax-valid.
+
+The separate function arena permits **1024 nodes** (including the root and
+parameters), with **256 functions** per file. Header, statement and expression
+arenas retain their existing limits; their budgets cover the entire file, **not
+each function separately**. Parameter/result named types also use expression
+`Name` chains. Function headers are parsed iteratively, without an extra shared
+syntax-depth level; body recursion retains the existing 48-level budget.
+
+Each function `Node` records its integer `kind` (`Module`, `Function`, `Parameter`),
+associated token's start/length/line/column, `declared_type`, `type_name`,
+`name_start`/`name_length`, `exported`, `external`, `immutable`, and four links:
+
+- A `Module`'s `header` is a **header-arena ID**, and `items` is its first
+  **function-arena** `Function`. Other type/name metadata is empty.
+- A `Function` records its result type using `statements::type_kind` and an
+  optional **expression-arena** `type_name` chain. The name span refers to its
+  identifier; `exported`/`external` record `pub`/`extern`. `items` is the first
+  **function-arena** `Parameter`; `body` is a **statement-arena** block or -1 for
+  an extern declaration. `immutable` and `header` are unused.
+- A `Parameter` uses the same type/name fields, with `immutable` recording `const`.
+  Other flags/links are empty apart from its sibling `next`.
+- `next` links functions or parameters; the root's `next` is absent. Metadata
+  belongs to the leading modifier/type token, not the full declaration span.
+
+All absent links are -1; unused type/name fields are `Invalid`/zero and flags are
+false. `node_count()`/`node(id)` provide checked access; invalid IDs return an
+`Invalid` sentinel with zero metadata and absent links. IDs expire at the next
+file parse or source replacement. The arenas have different ID spaces.
+
+Any file failure hides **all four arenas**, including earlier successful headers,
+signatures, bodies and retained strings. `diagnostic()` records the first file,
+header, statement or expression failure with nested error kinds, lexer error and
+source location. Replay resets every failure and arena. Diagnostics still reflect
+streaming detection rather than Stage 0's full-file lexical prepass.
+
+These ASTs remain provisional and are not serialized. Parsing the driver itself
+or an I/O/infinite-loop example only checks syntax; it is not self-hosting or input
+execution. Stage 0 still compiles and runs the parser implementation.
+
 ## Limits and verification
 
 The **65535-byte total input limit is this Stage 1 seed's buffer profile**, not a
@@ -322,6 +395,15 @@ replay, failure rollback, shared-cursor handoff, repository-source prefixes and
 the exact path/import/selection/alias arena boundaries through source and bytecode
 execution. The header driver also rejects actual top-level bodies and checks input
 capacity and diagnostics. Parsing imports never loads files or evaluates input.
+
+`tests/stage1-functions.mjs` independently emits function files and checks every
+field and unique/reachable link in all four arenas, including strings retained
+across later signatures/bodies. Generated corpora assert all seven function and
+parameter type kinds, modifiers, expression-leaf and body-statement coverage.
+Tests cover extern/definition syntax, parameter restrictions, diagnostics, replay,
+all-arena rollback, streaming body parsing, shared arena exhaustion across functions,
+exact function/parameter/header/depth bounds, and source/bytecode drivers. Actual
+examples and the driver's own syntax are accepted without executing input.
 
 Driver tests cover diagnostics, maximum-size input and overflow. All suites run
 under `make test`, `make sanitize`, `make coverage` and the Nix checks. The existing
