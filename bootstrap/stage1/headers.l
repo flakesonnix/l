@@ -147,7 +147,7 @@ int import_item(lexer::Token at) {
     items[result] = first;
     return result;
 }
-void discard() { used = 0; expressions::discard(); }
+pub void discard() { used = 0; expressions::discard(); }
 
 // Replay the loaded source, leaving the first body token on the shared cursor.
 pub int parse_prefix() {
