@@ -142,6 +142,7 @@ for (let index = 0; index < 64; ++index) {
 for (const path of ['bootstrap/stage1/lexer.l', 'bootstrap/stage1/main.l',
   'bootstrap/stage1/expressions.l', 'bootstrap/stage1/expression_main.l', 'stdlib/io.l',
   'bootstrap/stage1/statements.l', 'bootstrap/stage1/statement_main.l',
+  'bootstrap/stage1/headers.l', 'bootstrap/stage1/header_main.l',
   'examples/struct_demo.l', 'examples/enum_demo.l', 'examples/static_buffers.l']) {
   good(path, readFileSync(resolve(root, path)));
 }

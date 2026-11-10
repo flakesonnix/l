@@ -2,8 +2,9 @@
 
 These are the first L-written implementation slices. Stage 0 compiles them to
 existing **1.9 bytecode**, and the Stage 0 VM executes them. There is no L-written
-module/top-level declaration parser, semantic checker, code generator or complete
-compiler yet. The statement parser includes local declarations. Running a
+full source-file/top-level declaration parser, semantic checker, code generator or
+complete compiler yet. The statement parser includes local declarations; the
+header parser handles module/import prefixes only. Running a
 lexer over its own source is **not self-hosting**.
 
 ## Build and run
@@ -17,9 +18,11 @@ make stage1
 ./build/l run build/stage1-lexer.lbc < bootstrap/stage1/lexer.l
 printf 'a = f(1, 2) + -3' | ./build/l run build/stage1-expression.lbc
 printf '{ int sum=0; for(int i=0;i<3;i++) sum=sum+i; return sum; }' | ./build/l run build/stage1-statement.lbc
+printf 'module app.main; import std.io; import app.types::{Pair as P,};' | ./build/l run build/stage1-header.lbc
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
 node tests/stage1-statements.mjs ./build/l
+node tests/stage1-headers.mjs ./build/l
 ```
 
 Alternatively run the driver directly from source:
@@ -54,6 +57,14 @@ with modules/functions are not accepted.
 This is still syntax only: `break;` outside a loop, non-bool conditions, unknown
 names and duplicate switch labels are not semantically checked. Input loops,
 calls and other expressions are parsed, **never executed**.
+
+The header driver (`bootstrap/stage1/header_main.l`, with the same manifest)
+checks a module declaration followed by zero or more imports and EOF. It uses the
+same 0/65/70 conventions. Dotted paths, module aliases, selective imports, qualified
+selected names, selective aliases and optional trailing selection commas follow
+the existing Stage 0 grammar and the normative module specification. Empty
+selection lists and wildcard imports are rejected. Top-level bodies are rejected
+as trailing input: this driver does **not** check complete source files.
 
 The manifest explicitly registers the `l.compiler` and `std` roots and the compiler
 package's direct standard-library dependency. Nothing is implicitly searched.
@@ -215,6 +226,51 @@ expressions without losing postfix/binary operators. Captured starting tokens
 preserve the original location when the shared syntax-depth limit is exceeded.
 These are provisional compiler-internal operations, not standard-library APIs.
 
+## Current module/import header contract
+
+`headers.l` uses the shared expression cursor, but allocates only header nodes:
+
+- `parse_prefix()` rewinds the loaded source, resets the header and expression
+  arenas/cursor, and parses one module declaration followed by consecutive imports.
+  It leaves the first non-import body token in `expressions::current()`. This is a
+  handoff boundary, **not validation of the remaining body**. The one-token
+  lookahead can detect a lexical error at that boundary; later body errors are not
+  scanned. Subsequent expression parsing does not change the header arena.
+- `parse()` uses the same prefix parser but additionally requires EOF. A repeated
+  module declaration at the header boundary is rejected by both entry points.
+- On failure, both the header and expression arenas are hidden. `diagnostic()`
+  preserves the first detected error's raw span, line/column and lexer error kind.
+  Repeating either parse entry point replays the source and resets diagnostics.
+- `node_count()` and `node(id)` expose successful nodes. Invalid IDs produce an
+  `Invalid` node with zero metadata and absent (-1) links. IDs expire at the next
+  header parse or source replacement; they are not generation-checked handles.
+
+The separate **2048-node header arena** stores `Module`, `Import`, `Selection`
+and `Name` integer tags in `kind`. Each `Node` has start/length/line/column metadata
+and four links (`path`, `alias`, `items`, `next`), all in that same arena:
+
+- A `Module` root's `path` is a `Name` chain, and `items` is its first `Import`.
+- An `Import`'s `path` is its dotted module-name chain; `alias` is the optional
+  explicit alias `Name`; `items` is its first selective `Selection` or -1.
+- A `Selection`'s `path` is its `::`-qualified name chain; `alias` is an explicit
+  rename or -1. With no rename, the eventual binding is the path's final segment;
+  the parser does not synthesize a second name node.
+- `Name.next` links path components. `Import.next` and `Selection.next` link their
+  respective sibling lists. Other links are absent. The token metadata belongs
+  to `module`/`import`, the selection's first identifier, or each name segment;
+  spans are not whole-declaration spans. Names refer to the original source bytes.
+
+All path/list parsing is iterative, without recursive syntax-depth growth. Node
+exhaustion is a seed resource diagnostic, not a language restriction. No header
+AST format or new standard-library API is introduced.
+
+There is no package/file lookup, canonical-path checking, dependency graph, alias
+uniqueness, selective-binding resolution, visibility checking or cycle detection.
+Duplicate/conflicting imports remain syntax-valid here. Header-only parsing does
+not check import placement inside or after an unparsed top-level body. These
+semantic and whole-file responsibilities still belong to Stage 0; this slice does
+not claim a complete implementation of the module system.
+
 ## Limits and verification
 
 The **65535-byte total input limit is this Stage 1 seed's buffer profile**, not a
@@ -258,6 +314,14 @@ spans, qualifiers, scalar/array forms, for-initializer links and prefix ambiguit
 Generated corpora assert coverage of all declared-type and expression-leaf kinds.
 Large success and failure fixtures are isolated to avoid exhausting the VM budget
 through test batching. Existing expression-only tests remain unchanged in meaning.
+
+`tests/stage1-headers.mjs` emits headers from independent trees, checks every field
+and unique/reachable node, and asserts generated coverage of every node/import
+form. It checks exact spans with comments/newlines, alias/default-binding forms,
+replay, failure rollback, shared-cursor handoff, repository-source prefixes and
+the exact path/import/selection/alias arena boundaries through source and bytecode
+execution. The header driver also rejects actual top-level bodies and checks input
+capacity and diagnostics. Parsing imports never loads files or evaluates input.
 
 Driver tests cover diagnostics, maximum-size input and overflow. All suites run
 under `make test`, `make sanitize`, `make coverage` and the Nix checks. The existing
