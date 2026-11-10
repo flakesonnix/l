@@ -2,8 +2,8 @@
 
 These are the first L-written implementation slices. Stage 0 compiles them to
 existing **1.9 bytecode**, and the Stage 0 VM executes them. The file parser accepts
-headers, functions, type aliases and namespaces; global storage and struct/enum
-declarations remain unimplemented.
+headers, functions, aliases, module constants, static storage and namespaces;
+struct/enum declarations remain unimplemented.
 There is no semantic checker, code generator or complete compiler yet. The
 statement parser includes local declarations; the separate header driver handles
 module/import prefixes only. Running a
@@ -23,6 +23,7 @@ printf '{ int sum=0; for(int i=0;i<3;i++) sum=sum+i; return sum; }' | ./build/l 
 printf 'module app.main; import std.io; import app.types::{Pair as P,};' | ./build/l run build/stage1-header.lbc
 ./build/l run build/stage1-function.lbc < examples/answer.l
 printf 'module app.main; pub using Count=int; namespace math{pub Count answer(){return 42;}}' | ./build/l run build/stage1-function.lbc
+printf 'module app.data; pub const int answer=42; namespace buffers{static byte data[8];}' | ./build/l run build/stage1-function.lbc
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
 node tests/stage1-statements.mjs ./build/l
@@ -73,13 +74,13 @@ as trailing input: this driver does **not** check complete source files.
 
 The function-file driver (`bootstrap/stage1/function_main.l`, with the same
 manifest) accepts a module/import header followed by function definitions,
-`extern` declarations, type aliases or namespaces containing those declarations,
-then EOF.
+`extern` declarations, aliases, module constants, static scalar/array declarations
+or namespaces containing those declarations, then EOF.
 Empty files after the header and empty namespaces are accepted.
 `pub`, primitive/qualified result
 and parameter types, and optional `const` parameters use existing Stage 0 syntax.
 Arrays/default initializers/trailing commas are not supported in parameter lists;
-non-extern functions require block bodies. Global storage, structs and enums
+non-extern functions require block bodies. Structs and enums
 are not supported by this slice, including inside namespaces. The driver uses the same
 0/65/70 conventions and never invokes the input's `main`, follows its imports,
 executes its bodies, or requires a semantic entry point. The example above checks
@@ -303,7 +304,7 @@ the enclosing file parser; it retains the header diagnostic.
 ## Current function-file contract
 
 `functions::parse()` rewinds the loaded source, resets all four syntax arenas and
-their diagnostics, parses the header and all function/namespace/alias declarations,
+their diagnostics, parses the header and all supported declarations,
 and requires EOF. It returns a `Module` root in the **function arena**, or -1 on failure. A
 header-only file is syntax-valid. The parser rejects misplaced module/import
 declarations after functions or inside namespaces. It performs no entry-point, duplicate/overload,
@@ -312,22 +313,22 @@ For example, unknown named types, `void`/`auto` parameters, duplicate signatures
 and `break` outside a loop remain syntax-valid.
 
 The separate function arena permits **1024 nodes** (including the root,
-namespaces, parameters and aliases), with **256 functions** per file. Namespaces
-and aliases do not count as functions. Header, statement and expression
+namespaces, parameters, aliases and globals), with **256 functions** per file.
+Other declaration kinds do not count as functions. Header, statement and expression
 arenas retain their existing limits; their budgets cover the entire file, **not
-each function separately**. Parameter/result/alias named types also use expression
+each function separately**. Named declaration types also use expression
 `Name` chains. Function headers are parsed iteratively, without an extra shared
 syntax-depth level. Each active namespace uses one level of the same **48-level**
 budget as nested statements/expressions. Thus 48 nested empty namespaces fit, or
 47 around an empty function block; the next level reports a normal diagnostic.
 
 Each function `Node` records its integer `kind` (`Module`, `Function`, `Parameter`,
-`Namespace`, `Alias`),
+`Namespace`, `Alias`, `Constant`, `Static`),
 associated token's start/length/line/column, `declared_type`, `type_name`,
-`name_start`/`name_length`, `exported`, `external`, `immutable`, and four links:
+`name_start`/`name_length`, `exported`, `external`, `immutable`, and the links below:
 
 - A `Module`'s `header` is a **header-arena ID**, and `items` is its first
-  **function-arena** declaration (`Function`, `Namespace` or `Alias`). Other type/name metadata is empty.
+  **function-arena** declaration. Other type/name metadata is empty.
 - A `Function` records its result type using `statements::type_kind` and an
   optional **expression-arena** `type_name` chain. The name span refers to its
   identifier; `exported`/`external` record `pub`/`extern`. `items` is the first
@@ -336,7 +337,7 @@ associated token's start/length/line/column, `declared_type`, `type_name`,
 - A `Parameter` uses the same type/name fields, with `immutable` recording `const`.
   Other flags/links are empty apart from its sibling `next`.
 - A `Namespace` records its single identifier in `name_start`/`name_length`;
-  `items` is its first nested function/namespace/alias declaration. Other type/flag/link
+  `items` is its first nested supported declaration. Other type/flag/link
   fields are empty apart from its sibling `next`. Its associated token is the
   leading `namespace` keyword.
 - An `Alias` records its target type in `declared_type` and an optional
@@ -344,6 +345,14 @@ associated token's start/length/line/column, `declared_type`, `type_name`,
   `name_start`/`name_length`, and `exported` records `pub`. `external`/`immutable`
   are false; `header`, `items` and `body` are absent. The associated token is the
   leading `using` or `pub`; `next` links sibling declarations.
+- A `Constant` or `Static` records its written type/name and `exported` flag.
+  `immutable` is true for a module constant and false for static storage;
+  `external` is false. `expression` is a scalar initializer's **expression-arena**
+  ID, or -1 for an array. `array` is a static array length's **expression-arena**
+  ID, or -1 for a scalar. `header`, `items` and `body` are absent.
+- Other node kinds have absent `expression`/`array` links. All previous fields
+  retain their meaning; these two appended links are internal AST data, not a
+  new serialized format.
 - `next` links sibling declarations or parameters; the root's `next` is absent. Metadata
   belongs to the leading modifier/type token, not the full declaration span.
 
@@ -364,7 +373,7 @@ The existing `namespace name { declarations }` grammar is supported, including
 nesting and reopening. A namespace name is one identifier, not a dotted or
 `::`-qualified path; namespaces have no trailing semicolon. `pub namespace` is
 rejected because namespaces do not change declaration visibility. `pub` on each
-contained function or alias is recorded independently; it is not inherited. Module/import
+contained exported declaration is recorded independently; it is not inherited. Module/import
 declarations are rejected at namespace scope, matching the normative module rules.
 
 Reopened namespaces remain **distinct syntax nodes in source order**. No logical
@@ -393,6 +402,32 @@ checking, visibility and target-type validity are **not checked**. Self-referent
 mutually recursive, unresolved, repeated, `void` and `auto` targets are recorded
 syntactically; semantic analysis must decide their validity. Nothing is evaluated
 or recursively expanded by this parser.
+
+### Module constants and static-storage syntax
+
+The existing `[pub] const Type name = expression;` and
+`[pub] static Type name = expression;` forms are supported at module/namespace
+scope. Static arrays use `[pub] static Type name[expression];` and cannot have an
+initializer. Scalars require an initializer. Module-constant arrays, empty array
+lengths, multidimensional declarations, comma-separated declarators and combined
+`static const` modifiers are not in this Stage 0 grammar. Local `const` declarations
+still use the separate statement arena; local `static` declarations are unsupported.
+
+Global nodes belong to the shared declaration arena; named types, scalar
+initializers and lengths use the same expression arena as bodies and aliases.
+They do not consume the function count. Namespace and expression parsing share
+the depth budget: a bare initializer/length uses one level, so 47 surrounding
+namespaces fit, not 48. On failure, all four arenas are hidden, including earlier
+globals and retained strings. Metadata refers to the leading `pub`/`const`/`static`
+token, not a whole-declaration span.
+
+No constant folding, initializer evaluation, type/name checking, array-length
+evaluation, storage allocation, initialization or readonly-write enforcement is
+performed on input. Nonconstant expressions, unknown names/calls, duplicate
+bindings, and invalid typed forms such as `const void value=1;` or
+`static int items[true];` can be syntax-valid here. These are **not claims of
+semantic acceptance**. The parser's own bounded arenas are its implementation
+storage, not storage allocated for the parsed program.
 
 These ASTs remain provisional and are not serialized. Parsing the driver itself
 or an I/O/infinite-loop example only checks syntax; it is not self-hosting or input
@@ -469,6 +504,14 @@ forward/cyclic syntax without expansion, malformed input and all-arena rollback.
 They exercise exact declaration/parameter/target-expression limits, budgets shared
 with bodies, and aliases at the maximum namespace depth. Generated alias corpora
 assert every target-type kind and both visibility forms.
+Storage models check both global kinds, all seven written types, visibility,
+scalar/array links, source spans, retained strings, local/global ownership,
+malformed modifiers/initializers/lengths and all-arena rollback. Generated corpora
+assert both storage kinds, each type, static arrays, both visibility forms and all
+four expression-leaf kinds. Exact bounds cover global/declaration exhaustion,
+shared body/global expression storage and combined namespace/initializer depth.
+Full-capacity global-arena fixtures run one parse per VM invocation to fit the
+unchanged instruction budget; smaller fixtures retain replay checks.
 
 Driver tests cover diagnostics, maximum-size input and overflow. All suites run
 under `make test`, `make sanitize`, `make coverage` and the Nix checks. The existing

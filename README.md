@@ -37,8 +37,8 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
 expression parser, statement/local-declaration parser, module/import header parser,
 function-file parser and stdin syntax-check drivers, compiled and executed by
 Stage 0. They use existing Stage 0 syntax. Function files support definitions,
-`extern` declarations, `using` type aliases and nested/reopened namespaces;
-global storage and struct/enum declarations remain unimplemented.
+`extern` declarations, `using` aliases, module constants, scalar/static-array
+storage and nested/reopened namespaces; struct/enum declarations remain unimplemented.
 There is **no semantic checker, code generator or self-hosted compiler** yet.
 These drivers do not check types, resolve names or evaluate the input.
 
@@ -50,6 +50,7 @@ printf '{ int sum=0; for(int i=0;i<3;i++) sum=sum+i; return sum; }' | ./build/l 
 printf 'module app.main; import std.io; import app.types::{Pair as P,};' | ./build/l run build/stage1-header.lbc
 ./build/l run build/stage1-function.lbc < examples/answer.l
 printf 'module app.main; pub using Count=int; namespace math{pub Count answer(){return 42;}}' | ./build/l run build/stage1-function.lbc
+printf 'module app.data; pub const int answer=42; namespace buffers{static byte data[8];}' | ./build/l run build/stage1-function.lbc
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
 node tests/stage1-statements.mjs ./build/l
@@ -73,9 +74,11 @@ imports in a separate 2048-node arena. Its streaming entry point stops at the fi
 body token; its standalone driver accepts header-only input, not full source files.
 The function-file parser composes headers, namespaces, signatures and bodies
 without resolving types or executing input. Its separate 1024-node arena records
-namespace/function/parameter/alias metadata; the shared expression and statement budgets
+namespace/function/parameter/alias/storage metadata; the shared expression and statement budgets
 cover the whole file. Namespaces share the same 48-level syntax-depth budget as
 their bodies; reopening and type aliases are recorded syntactically, not resolved.
+Global initializers and static-array lengths are expression nodes, never evaluated;
+the parser does not allocate or initialize the input's storage.
 **100% coverage gate still measures Stage 0 C code**, not L-source coverage. No
 syntax or IR/bytecode-format change is introduced; artifacts remain at **1.9**.
 
