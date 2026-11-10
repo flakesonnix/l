@@ -1,4 +1,4 @@
-// One control-flow statement or block; declarations and semantics are absent.
+// One statement/declaration or block; semantic checks are absent.
 module l.compiler.statement_main;
 
 import l.compiler.lexer as lexer;
