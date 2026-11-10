@@ -1,4 +1,4 @@
-// Function-only source-file syntax check; no resolution, typing or execution.
+// Functions/function-only namespaces; no resolution, typing or input execution.
 module l.compiler.function_main;
 
 import l.compiler.lexer as lexer;

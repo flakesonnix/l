@@ -1,4 +1,4 @@
-// Function-only source files; no semantic checks or other top-level declarations.
+// Functions and function-only namespaces; no semantic checks or other declarations.
 module l.compiler.functions;
 
 import l.compiler.lexer as lexer;
@@ -13,10 +13,13 @@ namespace kind {
     pub const int Module = 1;
     pub const int Function = 2;
     pub const int Parameter = 3;
+    pub const int Namespace = 4;
 }
 pub enum Error { None, Header, Statement, Expression, ExpectedType, ExpectedName,
                  ExpectedOpen, ExpectedClose, ExpectedBody, ExpectedSemicolon,
-                 ArrayParameter, MisplacedHeader, TooManyNodes, TooManyFunctions };
+                 ArrayParameter, MisplacedHeader, TooManyNodes, TooManyFunctions,
+                 NamespaceVisibility, ExpectedNamespaceOpen, ExpectedNamespaceClose, TooDeep,
+                 ExpectedNamespaceName };
 pub struct Diagnostic {
     Error kind;
     headers::Error header;
@@ -100,6 +103,7 @@ bool ok() {
         expressions::Diagnostic expression = expressions::diagnostic();
         if (expression.kind != expressions::Error::None) {
             failure = Error::Expression;
+            if (expression.kind == expressions::Error::TooDeep) failure = Error::TooDeep;
             expression_failure = expression.kind;
             lexical_failure = expression.lexical;
             failure_start = expression.start;
@@ -174,15 +178,10 @@ int parameter() {
     }
     return result;
 }
-int function() {
+int function(lexer::Token start, bool exported) {
     if (!ok()) return -1;
-    lexer::Token start = current();
     if (function_count == max_functions) { reject(Error::TooManyFunctions, start); return -1; }
     function_count++;
-    bool exported = take(lexer::Kind::Pub);
-    if (ok() && (current().kind == lexer::Kind::Module || current().kind == lexer::Kind::Import)) {
-        reject(Error::MisplacedHeader, current());
-    }
     bool external = take(lexer::Kind::Extern);
     Type result_type = type();
     lexer::Token name = current();
@@ -218,6 +217,42 @@ int function() {
     items[result] = first;
     bodies[result] = body;
     return result;
+}
+int namespace_declaration() {
+    lexer::Token start = current();
+    if (!expressions::enter()) { ok(); return -1; }
+    take(lexer::Kind::Namespace);
+    lexer::Token name = current();
+    expect(lexer::Kind::Name, Error::ExpectedNamespaceName);
+    expect(lexer::Kind::LeftBrace, Error::ExpectedNamespaceOpen);
+    int result = make_node(kind::Namespace, start);
+    int last = -1;
+    while (ok() && !take(lexer::Kind::RightBrace)) {
+        if (current().kind == lexer::Kind::End) { reject(Error::ExpectedNamespaceClose, current()); break; }
+        int item = declaration();
+        if (!ok()) break;
+        if (last == -1) items[result] = item;
+        else nexts[last] = item;
+        last = item;
+    }
+    expressions::leave();
+    if (!ok()) return -1;
+    name_starts[result] = name.start;
+    name_lengths[result] = name.length;
+    return result;
+}
+int declaration() {
+    if (!ok()) return -1;
+    lexer::Token start = current();
+    bool exported = take(lexer::Kind::Pub);
+    if (ok() && current().kind == lexer::Kind::Namespace) {
+        if (exported) { reject(Error::NamespaceVisibility, start); return -1; }
+        return namespace_declaration();
+    }
+    if (ok() && (current().kind == lexer::Kind::Module || current().kind == lexer::Kind::Import)) {
+        reject(Error::MisplacedHeader, current());
+    }
+    return function(start, exported);
 }
 void discard() {
     used = 0;
@@ -257,7 +292,7 @@ pub int parse() {
     int root = make_node(kind::Module, start);
     int last = -1;
     while (ok() && current().kind != lexer::Kind::End) {
-        int item = function();
+        int item = declaration();
         if (!ok()) break;
         if (last == -1) items[root] = item;
         else nexts[last] = item;
@@ -291,9 +326,14 @@ pub string error_message(Error error) {
         case Error::ExpectedBody: return "expected function body";
         case Error::ExpectedSemicolon: return "expected ';' after extern declaration";
         case Error::ArrayParameter: return "arrays are not supported as parameters";
-        case Error::MisplacedHeader: return "module and import declarations must precede functions";
+        case Error::MisplacedHeader: return "module and import declarations must precede other declarations";
         case Error::TooManyNodes: return "function file exceeds 1024 AST nodes";
         case Error::TooManyFunctions: return "function file exceeds 256 functions";
+        case Error::NamespaceVisibility: return "namespaces do not change declaration visibility";
+        case Error::ExpectedNamespaceOpen: return "expected '{' after namespace name";
+        case Error::ExpectedNamespaceClose: return "expected '}' after namespace";
+        case Error::TooDeep: return "syntax nesting exceeds 48";
+        case Error::ExpectedNamespaceName: return "expected namespace name";
         default: return "unknown function-file error";
     }
 }

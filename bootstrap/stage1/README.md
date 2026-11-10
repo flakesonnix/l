@@ -2,7 +2,8 @@
 
 These are the first L-written implementation slices. Stage 0 compiles them to
 existing **1.9 bytecode**, and the Stage 0 VM executes them. The file parser accepts
-headers and functions only; global/namespace/type declarations remain unimplemented.
+headers, functions and function-only namespaces; global/type declarations remain
+unimplemented.
 There is no semantic checker, code generator or complete compiler yet. The
 statement parser includes local declarations; the separate header driver handles
 module/import prefixes only. Running a
@@ -21,6 +22,7 @@ printf 'a = f(1, 2) + -3' | ./build/l run build/stage1-expression.lbc
 printf '{ int sum=0; for(int i=0;i<3;i++) sum=sum+i; return sum; }' | ./build/l run build/stage1-statement.lbc
 printf 'module app.main; import std.io; import app.types::{Pair as P,};' | ./build/l run build/stage1-header.lbc
 ./build/l run build/stage1-function.lbc < examples/answer.l
+printf 'module app.main; namespace math{pub int answer(){return 42;}}' | ./build/l run build/stage1-function.lbc
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
 node tests/stage1-statements.mjs ./build/l
@@ -70,12 +72,14 @@ selection lists and wildcard imports are rejected. Top-level bodies are rejected
 as trailing input: this driver does **not** check complete source files.
 
 The function-file driver (`bootstrap/stage1/function_main.l`, with the same
-manifest) accepts a module/import header followed by zero or more function
-definitions or `extern` declarations and EOF. `pub`, primitive/qualified result
+manifest) accepts a module/import header followed by function definitions,
+`extern` declarations or namespaces containing those declarations, then EOF.
+Empty files after the header and empty namespaces are accepted.
+`pub`, primitive/qualified result
 and parameter types, and optional `const` parameters use existing Stage 0 syntax.
 Arrays/default initializers/trailing commas are not supported in parameter lists;
-non-extern functions require block bodies. Top-level globals, namespaces, aliases,
-structs and enums are not supported by this slice. The driver uses the same
+non-extern functions require block bodies. Globals, aliases, structs and enums
+are not supported by this slice, including inside namespaces. The driver uses the same
 0/65/70 conventions and never invokes the input's `main`, follows its imports,
 executes its bodies, or requires a semantic entry point. The example above checks
 `answer.l`'s syntax and returns 0, not its program result.
@@ -298,27 +302,31 @@ the enclosing file parser; it retains the header diagnostic.
 ## Current function-file contract
 
 `functions::parse()` rewinds the loaded source, resets all four syntax arenas and
-their diagnostics, parses the header and all function declarations, and requires
+their diagnostics, parses the header and all function/namespace declarations, and requires
 EOF. It returns a `Module` root in the **function arena**, or -1 on failure. A
 header-only file is syntax-valid. The parser rejects misplaced module/import
-declarations after functions. It performs no entry-point, duplicate/overload,
+declarations after functions or inside namespaces. It performs no entry-point, duplicate/overload,
 binding, visibility, type, return-flow, lvalue, or extern-implementation checks.
 For example, unknown named types, `void`/`auto` parameters, duplicate signatures,
 and `break` outside a loop remain syntax-valid.
 
-The separate function arena permits **1024 nodes** (including the root and
-parameters), with **256 functions** per file. Header, statement and expression
+The separate function arena permits **1024 nodes** (including the root,
+namespaces and parameters), with **256 functions** per file. Namespaces do not
+count as functions. Header, statement and expression
 arenas retain their existing limits; their budgets cover the entire file, **not
 each function separately**. Parameter/result named types also use expression
 `Name` chains. Function headers are parsed iteratively, without an extra shared
-syntax-depth level; body recursion retains the existing 48-level budget.
+syntax-depth level. Each active namespace uses one level of the same **48-level**
+budget as nested statements/expressions. Thus 48 nested empty namespaces fit, or
+47 around an empty function block; the next level reports a normal diagnostic.
 
-Each function `Node` records its integer `kind` (`Module`, `Function`, `Parameter`),
+Each function `Node` records its integer `kind` (`Module`, `Function`, `Parameter`,
+`Namespace`),
 associated token's start/length/line/column, `declared_type`, `type_name`,
 `name_start`/`name_length`, `exported`, `external`, `immutable`, and four links:
 
 - A `Module`'s `header` is a **header-arena ID**, and `items` is its first
-  **function-arena** `Function`. Other type/name metadata is empty.
+  **function-arena** declaration (`Function` or `Namespace`). Other type/name metadata is empty.
 - A `Function` records its result type using `statements::type_kind` and an
   optional **expression-arena** `type_name` chain. The name span refers to its
   identifier; `exported`/`external` record `pub`/`extern`. `items` is the first
@@ -326,7 +334,11 @@ associated token's start/length/line/column, `declared_type`, `type_name`,
   an extern declaration. `immutable` and `header` are unused.
 - A `Parameter` uses the same type/name fields, with `immutable` recording `const`.
   Other flags/links are empty apart from its sibling `next`.
-- `next` links functions or parameters; the root's `next` is absent. Metadata
+- A `Namespace` records its single identifier in `name_start`/`name_length`;
+  `items` is its first nested function/namespace declaration. Other type/flag/link
+  fields are empty apart from its sibling `next`. Its associated token is the
+  leading `namespace` keyword.
+- `next` links sibling declarations or parameters; the root's `next` is absent. Metadata
   belongs to the leading modifier/type token, not the full declaration span.
 
 All absent links are -1; unused type/name fields are `Invalid`/zero and flags are
@@ -339,6 +351,22 @@ signatures, bodies and retained strings. `diagnostic()` records the first file,
 header, statement or expression failure with nested error kinds, lexer error and
 source location. Replay resets every failure and arena. Diagnostics still reflect
 streaming detection rather than Stage 0's full-file lexical prepass.
+
+### Namespace syntax and limits
+
+The existing `namespace name { declarations }` grammar is supported, including
+nesting and reopening. A namespace name is one identifier, not a dotted or
+`::`-qualified path; namespaces have no trailing semicolon. `pub namespace` is
+rejected because namespaces do not change declaration visibility. `pub` on each
+contained function is recorded independently; it is not inherited. Module/import
+declarations are rejected at namespace scope, matching the normative module rules.
+
+Reopened namespaces remain **distinct syntax nodes in source order**. No logical
+scope merge, qualified-name synthesis, duplicate detection, name lookup or
+visibility enforcement occurs. Later semantic analysis must implement the
+namespace scope and reopening rules. All syntax arenas and the 256-function count
+remain shared across nested/reopened namespaces; entering a namespace does not
+reset any budget. A failed nested parse hides all earlier file nodes and strings.
 
 These ASTs remain provisional and are not serialized. Parsing the driver itself
 or an I/O/infinite-loop example only checks syntax; it is not self-hosting or input
@@ -404,6 +432,11 @@ Tests cover extern/definition syntax, parameter restrictions, diagnostics, repla
 all-arena rollback, streaming body parsing, shared arena exhaustion across functions,
 exact function/parameter/header/depth bounds, and source/bytecode drivers. Actual
 examples and the driver's own syntax are accepted without executing input.
+Namespace models additionally check nesting, reopened/sibling order, visibility
+metadata, comments/source spans, namespace-local import rejection, combined
+namespace/body depth, shared function/node/expression/statement budgets and
+all-arena rollback. Generated namespace trees assert nested structure plus
+public/extern function coverage.
 
 Driver tests cover diagnostics, maximum-size input and overflow. All suites run
 under `make test`, `make sanitize`, `make coverage` and the Nix checks. The existing
