@@ -1,4 +1,4 @@
-// Functions and function-only namespaces; no semantic checks or other declarations.
+// Functions, type aliases and namespaces; no semantic checks or storage/type bodies.
 module l.compiler.functions;
 
 import l.compiler.lexer as lexer;
@@ -14,12 +14,13 @@ namespace kind {
     pub const int Function = 2;
     pub const int Parameter = 3;
     pub const int Namespace = 4;
+    pub const int Alias = 5;
 }
 pub enum Error { None, Header, Statement, Expression, ExpectedType, ExpectedName,
                  ExpectedOpen, ExpectedClose, ExpectedBody, ExpectedSemicolon,
                  ArrayParameter, MisplacedHeader, TooManyNodes, TooManyFunctions,
                  NamespaceVisibility, ExpectedNamespaceOpen, ExpectedNamespaceClose, TooDeep,
-                 ExpectedNamespaceName };
+                 ExpectedNamespaceName, ExpectedAliasName, ExpectedAliasAssign, ExpectedAliasSemicolon };
 pub struct Diagnostic {
     Error kind;
     headers::Error header;
@@ -241,6 +242,22 @@ int namespace_declaration() {
     name_lengths[result] = name.length;
     return result;
 }
+int alias_declaration(lexer::Token start, bool exported) {
+    lexer::Token name = current();
+    expect(lexer::Kind::Name, Error::ExpectedAliasName);
+    expect(lexer::Kind::Assign, Error::ExpectedAliasAssign);
+    Type target = type();
+    expect(lexer::Kind::Semicolon, Error::ExpectedAliasSemicolon);
+    int result = make_node(kind::Alias, start);
+    if (result != -1) {
+        declared_types[result] = target.kind;
+        type_names[result] = target.name;
+        name_starts[result] = name.start;
+        name_lengths[result] = name.length;
+        exports[result] = exported;
+    }
+    return result;
+}
 int declaration() {
     if (!ok()) return -1;
     lexer::Token start = current();
@@ -249,6 +266,7 @@ int declaration() {
         if (exported) { reject(Error::NamespaceVisibility, start); return -1; }
         return namespace_declaration();
     }
+    if (take(lexer::Kind::Using)) return alias_declaration(start, exported);
     if (ok() && (current().kind == lexer::Kind::Module || current().kind == lexer::Kind::Import)) {
         reject(Error::MisplacedHeader, current());
     }
@@ -319,7 +337,7 @@ pub string error_message(Error error) {
         case Error::Header: return "module/import header error";
         case Error::Statement: return "function body error";
         case Error::Expression: return "expression error";
-        case Error::ExpectedType: return "expected function or parameter type";
+        case Error::ExpectedType: return "expected primitive or qualified type";
         case Error::ExpectedName: return "expected function or parameter name";
         case Error::ExpectedOpen: return "expected '(' after function name";
         case Error::ExpectedClose: return "expected ')' after parameters";
@@ -334,6 +352,9 @@ pub string error_message(Error error) {
         case Error::ExpectedNamespaceClose: return "expected '}' after namespace";
         case Error::TooDeep: return "syntax nesting exceeds 48";
         case Error::ExpectedNamespaceName: return "expected namespace name";
+        case Error::ExpectedAliasName: return "expected type alias name";
+        case Error::ExpectedAliasAssign: return "expected '=' after type alias name";
+        case Error::ExpectedAliasSemicolon: return "expected ';' after type alias";
         default: return "unknown function-file error";
     }
 }

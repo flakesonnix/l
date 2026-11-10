@@ -1,4 +1,4 @@
-// Functions/function-only namespaces; no resolution, typing or input execution.
+// Functions, type aliases and namespaces; no resolution, typing or input execution.
 module l.compiler.function_main;
 
 import l.compiler.lexer as lexer;

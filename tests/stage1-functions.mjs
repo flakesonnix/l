@@ -41,6 +41,7 @@ const empty = () => ({ kind: 'Empty' });
 const block = children => ({ kind: 'Block', children });
 const fn = (options = {}) => ({ type: 'Int', name: 'f', parameters: [], body: block([]), ...options });
 const namespace = (name, children = []) => ({ kind: 'Namespace', name, children });
+const alias = (type, options = {}) => ({ kind: 'Alias', type, name: 'Count', ...options });
 const parameter = (type, options = {}) => ({ type, name: 'p', ...options });
 const local = (type, options = {}) => ({ kind: 'Declaration', type, name: 'local', value: integer(1), ...options });
 
@@ -136,6 +137,15 @@ function rendered(name, tree, options = {}) {
         const item = fnode('Namespace', put('namespace'), 9);
         put(gap); item.nameStart = put(functionTree.name); item.nameLength = functionTree.name.length;
         put('{'); item.items = declarations(functionTree.children); put('}');
+        if (last) last.next = item; else first = item;
+        last = item; continue;
+      }
+      if (functionTree.kind === 'Alias') {
+        const item = fnode('Alias', input.length, functionTree.exported ? 3 : 5,
+          { declaredType: functionTree.type, exported: !!functionTree.exported });
+        if (functionTree.exported) put(`pub${gap}`);
+        put(`using${gap}`); item.nameStart = put(functionTree.name); item.nameLength = functionTree.name.length;
+        put('='); item.typeName = type(functionTree); put(';');
         if (last) last.next = item; else first = item;
         last = item; continue;
       }
@@ -240,7 +250,7 @@ for (const [text, error, marker, nested] of [
   ['int f(){return @;}', 'Statement', '@', { statementError: 'Expression', expressionError: 'Lexical', lexical: 'UnsupportedCharacter' }],
   ['int @', 'Expression', '@', { expressionError: 'Lexical', lexical: 'UnsupportedCharacter' }],
   ['ns:: f(){}', 'ExpectedName', '('], ['int f(){} }', 'ExpectedType', '}'],
-  ['using T=int;', 'ExpectedType', 'using'], ['struct T{};', 'ExpectedType', 'struct'], ['enum E{};', 'ExpectedType', 'enum'],
+  ['struct T{};', 'ExpectedType', 'struct'], ['enum E{};', 'ExpectedType', 'enum'],
   ['const int x=1;', 'ExpectedType', 'const'], ['static int x=1;', 'ExpectedType', 'static'],
 ]) {
   // Empty text after a valid header is valid; test its missing module separately.
@@ -288,7 +298,7 @@ for (const [text, error, marker] of [
   ['pub namespace n{}', 'NamespaceVisibility', 'pub'], ['namespace n{pub namespace inner{}}', 'NamespaceVisibility', 'pub'],
   ['namespace n{import p;}', 'MisplacedHeader', 'import'], ['namespace n{pub import p;}', 'MisplacedHeader', 'import'],
   ['namespace n{module other;}', 'MisplacedHeader', 'module other'], ['namespace n{} import p;', 'MisplacedHeader', 'import'],
-  ['namespace n{};', 'ExpectedType', ';'], ['namespace n{using T=int;}', 'ExpectedType', 'using'],
+  ['namespace n{};', 'ExpectedType', ';'],
   ['extern namespace n{}', 'ExpectedType', 'namespace'],
 ]) {
   const input = 'module m; ' + text;
@@ -355,6 +365,85 @@ for (const kind of ['Namespace', 'Function', 'Parameter']) assert.ok(generatedNa
 assert.ok(generatedNamespaceNodes.some(n => n.kind === 'Namespace' && n.items?.kind === 'Namespace'), 'generated namespaces must nest');
 assert.ok(generatedNamespaceNodes.some(n => n.kind === 'Function' && n.exported), 'generated namespaces must contain pub functions');
 assert.ok(generatedNamespaceNodes.some(n => n.kind === 'Function' && n.external), 'generated namespaces must contain extern functions');
+
+for (const type of types) for (const exported of [false, true]) for (const scoped of [false, true]) {
+  const item = alias(type, { exported });
+  rendered(`alias ${type} ${exported} ${scoped}`, { functions: [scoped ? namespace('n', [item]) : item] });
+}
+for (const name of ['constructor', '__proto__', 'Using', 'usingX']) rendered(`alias identifier ${name}`, { functions: [alias('Int', { name })] });
+for (const gap of ['\n', '\t', '\r', '/*gap*/', '//gap\n']) rendered(`alias trivia ${JSON.stringify(gap)}`, {
+  functions: [alias('Named', { typeName: 'pkg::types::Value', exported: true }), namespace('n', [alias('Byte')])],
+}, { gap, leading: '\n/*before\xff*/\t', trailing: '\n//after\xff' });
+rendered('aliases remain syntax only', { functions: [
+  alias('Named', { name: 'Forward', typeName: 'n::Later', exported: true }),
+  alias('Named', { name: 'Self', typeName: 'Self' }),
+  namespace('n', [alias('Named', { name: 'Later', typeName: 'Other' }), alias('Named', { name: 'Other', typeName: 'Later' })]),
+  namespace('n', [alias('Void', { name: 'Later', exported: true }), alias('Auto', { name: 'Other' })]),
+  fn({ type: 'Named', typeName: 'Forward', parameters: [parameter('Named', { typeName: 'Self' })] }),
+] });
+rendered('aliases preserve earlier strings and declaration order', { functions: [
+  fn({ name: 'first', body: block([{ kind: 'Return', value: { kind: 'Text', text: 'old\0\xff' } }]) }),
+  alias('Named', { name: 'Alias', typeName: 'unknown::Type', exported: true }),
+  namespace('n', [alias('Named', { typeName: 'Alias' }), fn({ name: 'nested', type: 'Named', typeName: 'Count' })]),
+  fn({ name: 'last', body: block([{ kind: 'Return', value: { kind: 'Text', text: 'last\x80' } }]) }),
+] });
+for (const [text, error, marker, nested] of [
+  ['using;', 'ExpectedAliasName', ';'], ['using int=int;', 'ExpectedAliasName', 'int'],
+  ['using T;', 'ExpectedAliasAssign', ';'], ['using T::U=int;', 'ExpectedAliasAssign', '::'],
+  ['using T.U=int;', 'ExpectedAliasAssign', '.'], ['using T=', 'ExpectedType', ''],
+  ['using T=;', 'ExpectedType', ';'], ['using T=const int;', 'ExpectedType', 'const'],
+  ['using T=int', 'ExpectedAliasSemicolon', ''], ['using T=int[3];', 'ExpectedAliasSemicolon', '['],
+  ['using T=int(1);', 'ExpectedAliasSemicolon', '('], ['using T=ns.Type;', 'ExpectedAliasSemicolon', '.'],
+  ['using T=ns::;', 'Expression', ';', { expressionError: 'ExpectedName' }],
+  ['using T=@;', 'Expression', '@', { expressionError: 'Lexical', lexical: 'UnsupportedCharacter' }],
+  ['extern using T=int;', 'ExpectedType', 'using'], ['using T=int; import p;', 'MisplacedHeader', 'import'],
+  ['using T=int; module other;', 'MisplacedHeader', 'module other'],
+  ['int f(){using T=int;}', 'Statement', 'using', { statementError: 'Expression', expressionError: 'ExpectedExpression' }],
+  ['int f(){return "old";} namespace n{using T=;}', 'ExpectedType', ';}'],
+]) {
+  const input = 'module m; ' + text;
+  const start = marker === ';}' ? input.lastIndexOf(marker) : marker ? input.indexOf(marker, 10) : input.length;
+  const length = marker && /^[A-Za-z]/.test(marker) ? marker.split(' ')[0].length : marker === '::' ? 2 : undefined;
+  bad(input, error, start, length, nested);
+}
+rendered('full alias arena and no function count', { functions: Array.from({ length: 1023 }, () => alias('Int')) });
+const aliasArenaOverflow = rendered('overflow alias arena', { functions: Array.from({ length: 1024 }, () => alias('Int')) });
+fixtures.pop(); let finalAlias = aliasArenaOverflow.tree.items; while (finalAlias.next) finalAlias = finalAlias.next;
+bad(aliasArenaOverflow.input, 'TooManyNodes', finalAlias.start, finalAlias.length);
+rendered('alias and parameter shared arena', { functions: [alias('Int'), fn({ external: true,
+  parameters: Array.from({ length: 1021 }, () => parameter('Int')) })] });
+const aliasParameterOverflow = rendered('overflow alias and parameter arena', { functions: [alias('Int'), fn({ external: true,
+  parameters: Array.from({ length: 1022 }, () => parameter('Int')) })] });
+fixtures.pop(); let aliasLastParameter = aliasParameterOverflow.tree.items.next.items; while (aliasLastParameter.next) aliasLastParameter = aliasLastParameter.next;
+bad(aliasParameterOverflow.input, 'TooManyNodes', aliasLastParameter.start, aliasLastParameter.length);
+rendered('full alias target expression arena', { functions: [alias('Named', { typeName: Array(2048).fill('x').join('::') })] });
+const aliasTargetOverflow = rendered('overflow alias target arena', { functions: [alias('Named', { typeName: Array(2049).fill('x').join('::') })] });
+fixtures.pop(); let aliasLastSegment = aliasTargetOverflow.tree.items.typeName; while (aliasLastSegment.right) aliasLastSegment = aliasLastSegment.right;
+bad(aliasTargetOverflow.input, 'Expression', aliasLastSegment.start, 1, { expressionError: 'TooManyNodes' });
+rendered('alias expression budget after function body', { functions: [fn({ body: block([{ kind: 'Return', value: { kind: 'Chain', count: 2046 } }]) }),
+  namespace('n', [alias('Named', { typeName: 'T' })])] });
+const aliasExpressionOverflow = rendered('overflow alias expression budget after body', { functions: [fn({ body: block([{ kind: 'Return', value: { kind: 'Chain', count: 2046 } }]) }),
+  namespace('n', [alias('Named', { typeName: 'ns::T' })])] });
+fixtures.pop(); const aliasMissing = aliasExpressionOverflow.tree.items.next.items.typeName.right;
+bad(aliasExpressionOverflow.input, 'Expression', aliasMissing.start, 1, { expressionError: 'TooManyNodes' });
+rendered('aliases do not consume function budget', { functions: [alias('Int'), namespace('n', [alias('Named'),
+  ...Array.from({ length: 256 }, (_, i) => fn({ name: `f${i}`, external: true }))])] });
+let deepestAlias = alias('Named'); for (let index = 0; index < 48; index++) deepestAlias = namespace('n', [deepestAlias]);
+rendered('alias at maximum namespace depth', { functions: [deepestAlias] });
+
+const generatedAliasStart = fixtures.length;
+for (let index = 0; index < 32; index++) {
+  const aliases = Array.from({ length: random(5) + 2 }, (_, i) => alias(types[random(7)], {
+    name: `A${i}`, typeName: ['Forward', 'pkg::T', 'types::nested::Value'][random(3)], exported: !!random(2),
+  }));
+  rendered(`generated aliases ${index}`, { functions: [aliases[0], namespace('n', [
+    ...aliases.slice(1), fn({ type: 'Named', typeName: 'A1', parameters: [parameter('Named', { typeName: 'A0' })],
+      body: block([{ kind: 'Return', value: { kind: 'Text', text: `alias${String.fromCharCode(random(256))}` } }]) }),
+  ]), namespace('n', [alias('Named', { name: 'Forward', typeName: 'A0' })])] });
+}
+const generatedAliasNodes = fixtures.slice(generatedAliasStart).flatMap(f => flatten([f.tree], ['items', 'next']).nodes);
+for (const type of types) assert.ok(generatedAliasNodes.some(n => n.kind === 'Alias' && n.declaredType === type), `missing generated alias ${type}`);
+for (const exported of [false, true]) assert.ok(generatedAliasNodes.some(n => n.kind === 'Alias' && n.exported === exported), `missing alias visibility ${exported}`);
 
 function flatten(roots, links) {
   const nodes = [], ids = new Map(), pending = [...roots].reverse();
@@ -508,6 +597,8 @@ for (const [input, status, error] of [
   ['module app.main; import pkg.io::{print as p,}; pub int main(){int x=0;for(int i=0;i<3;i++)x=x+i;return x;} extern ns::T copy(const ns::T value);', 0, ''],
   ['module m;', 0, ''], ['module m; void f(void x){break;return unknown;} int f(){}', 0, ''],
   ['module m; namespace n{pub int f(){return 1;}namespace inner{extern ns::T copy(const ns::T p);}}namespace n{int g(){return missing;}}', 0, ''],
+  ['module m; pub using Count=int; namespace n{using Item=pkg::Record; pub Item copy(const Item p){return p;}}', 0, ''],
+  ['module m; using A=B; using B=A; using A=void;', 0, ''],
   ['module m; int main(){for(;;);}', 0, ''],
   [readFileSync(resolve(root, 'examples/answer.l')), 0, ''],
   [readFileSync(resolve(root, 'examples/io_demo.l')), 0, ''],
@@ -522,6 +613,10 @@ for (const [input, status, error] of [
   ['module m; pub namespace n{}', 65, 'function:1:11: error: namespaces do not change declaration visibility\n'],
   ['module m; namespace n{', 65, "function:1:23: error: expected '}' after namespace\n"],
   ['module m; namespace n{import p;}', 65, 'function:1:23: error: module and import declarations must precede other declarations\n'],
+  ['module m; using =int;', 65, 'function:1:17: error: expected type alias name\n'],
+  ['module m; using T;', 65, "function:1:18: error: expected '=' after type alias name\n"],
+  ['module m; using T=;', 65, 'function:1:19: error: expected primitive or qualified type\n'],
+  ['module m; using T=int', 65, "function:1:22: error: expected ';' after type alias\n"],
   [namespaceDepthOverflow.input, 65, `function:1:${deepestNamespace.start + 1}: error: syntax nesting exceeds 48\n`],
   [Buffer.concat([Buffer.from('module m;'), Buffer.alloc(65526, 32)]), 0, ''],
   [Buffer.alloc(65536, 32), 65, 'function: source exceeds 65535 bytes\n'],
