@@ -1,15 +1,22 @@
 # Reviewing the GitHub stack
 
-The repository is [flakesonnix/l](https://github.com/flakesonnix/l). The explicitly
-selected GitHub baseline is commit `e081fb3` (literal-backed strings, IR/bytecode
-1.7). Earlier compiler history, including the array reference `f9284b1`, remains
-unchanged and reachable from that baseline.
+The repository is [flakesonnix/l](https://github.com/flakesonnix/l). The original
+GitHub baseline was `e081fb3` (literal-backed strings, IR/bytecode 1.7), not the
+current `main`. Earlier compiler history, including the array reference `f9284b1`,
+remains unchanged and reachable. Current IR/bytecode is **1.9**.
 
-## Review order
+## Review status
 
-Each PR targets its predecessor so its diff contains one review slice rather than
-the entire compiler. Review-only merge commits carry the CI foundation forward;
-they do not rewrite the original feature commits.
+The initial stack and Stage 1 PRs through **#18 are merged**. The latest reviewed
+feature merge is `20881dc`, integrating global-storage parser head `4dd9e68`.
+GitHub COMMENT self-reviews are recorded as such; they are **not independent
+approvals**. Later documentation or syntax changes need their own review.
+
+### Initial stack (merged)
+
+The initial bases below explain the review order, not today's merge targets.
+Original feature commits were retained in repository history; review-only merge
+commits carried the CI foundation forward without rewriting those commits.
 
 | Order | Review | Head branch | Initial base | Original implementation |
 | --- | --- | --- | --- | --- |
@@ -19,7 +26,35 @@ they do not rewrite the original feature commits.
 | 4 | [Buffer models #4](https://github.com/flakesonnix/l/pull/4) | `review/buffer-models` | `review/static-buffers` | `3183c5a` |
 | 5 | [VM observer #5](https://github.com/flakesonnix/l/pull/5) | `review/vm-observer` | `review/buffer-models` | `a9fb490` |
 | 6 | [Nix flake #6](https://github.com/flakesonnix/l/pull/6) | `review/nix-flake` | `review/vm-observer` | `9287094`, `80b802b` |
-| 7 | This documentation | `review/docs` | `review/nix-flake` | Documentation-only follow-up |
+| 7 | [Documentation #8](https://github.com/flakesonnix/l/pull/8) | `review/docs` | `review/nix-flake` | `a1c639f` |
+
+### CI and L-written frontend (reviewed history)
+
+| Review | Preserved head branch | Integrated commit |
+| --- | --- | --- |
+| [CI concurrency #9](https://github.com/flakesonnix/l/pull/9) | `review/ci-concurrency` | `850f008` |
+| [Lexer #10](https://github.com/flakesonnix/l/pull/10) | `review/stage1-lexer` | `530f7af` |
+| [Expressions #11](https://github.com/flakesonnix/l/pull/11) | `review/stage1-expressions` | `bc8f343` |
+| [Statements #12](https://github.com/flakesonnix/l/pull/12) | `review/stage1-statements` | `c1d9508` |
+| [Local declarations #13](https://github.com/flakesonnix/l/pull/13) | `review/stage1-local-declarations` | `be0a777` |
+| [Module/import headers #14](https://github.com/flakesonnix/l/pull/14) | `review/stage1-module-headers` | `6ab20be` |
+| [Function files #15](https://github.com/flakesonnix/l/pull/15) | `review/stage1-functions` | `4ce64b8` |
+| [Namespaces #16](https://github.com/flakesonnix/l/pull/16) | `review/stage1-namespaces` | `562fcad` |
+| [Type aliases #17](https://github.com/flakesonnix/l/pull/17) | `review/stage1-type-aliases` | `45493c6` |
+| [Global storage #18](https://github.com/flakesonnix/l/pull/18) | `review/stage1-global-storage` | `20881dc` |
+
+PRs #13–#18 received GitHub COMMENT reviews before merging in dependency order.
+Each prospective merge tree and actual merge tree matched its already-tested PR
+head; the original commits and review branches were preserved. Fresh `make test`
+and `make coverage` reruns passed at #18's merge gate, retaining **100% Stage 0 C
+line/function/branch coverage**. Its eight hosted push/PR jobs also passed.
+The resulting `main` run is [CI at `20881dc`](https://github.com/flakesonnix/l/actions/runs/43041429246);
+check its conclusion separately from the PR-head checks.
+
+The Stage 1 slices parse **legacy bootstrap syntax only**. They do not resolve
+modules/names, check types, evaluate initializers, allocate input storage, generate
+code or self-host. Struct/enum declarations remain unsupported by the Stage 1
+file parser, although Stage 0 already implements them.
 
 The byte I/O and static-buffer slices change the artifact version and need
 recompilation of older bytecode. The observer is an approved optional C embedding
@@ -28,29 +63,35 @@ API, not a new L intrinsic or serialized trace format. See
 
 ## Merge procedure
 
-1. Review and merge the CI prerequisite first.
-2. For each subsequent PR, wait for its predecessor to reach `main`.
-3. Change that PR's base to `main`, then inspect the resulting diff and checks.
-4. Use **Create a merge commit** to preserve the original commit identities.
-5. Retarget dependent PRs before deleting their previous base branches.
+1. Record the exact PR head, inspect its diff and review conversations, and post
+   actual GitHub review comments. Fix blocking findings before proceeding.
+2. Wait for every dependency to reach `main`, then retarget the next PR to `main`.
+   Recheck the resulting diff and all checks on its exact current head.
+3. Compute `git merge-tree --write-tree origin/main <head>` and compare it with
+   `<head>^{tree}`. Equality means the proposed merge uses the tested source tree.
+   If it differs, validate the combined tree before merging; do not assume the
+   head's successful checks cover it.
+4. Use **Create a merge commit**, matching the reviewed head. Do not bypass branch
+   protection or treat a self-review as an independent approval.
+5. Fetch the result, verify its parents/tree and retained original history, then
+   check the new `main` CI run. Keep the review branches; do not delete them.
 
 Do not blindly merge a stacked PR into its feature-branch base. Squash/rebase
 merges require deliberate restacking and do not retain the original commit IDs on
-`main`. No force-push, reset, automatic merge or branch-protection change is part
-of publishing this stack.
+`main`. No force-push, reset, unattended auto-merge or branch-protection change is
+part of publishing this stack.
 
-For example, after the CI PR is merged:
+For a new stack, substitute the actual PR number and head branch:
 
 ```sh
-gh pr edit 2 --repo flakesonnix/l --base main
-gh workflow run ci.yml --repo flakesonnix/l --ref review/byte-io
-gh pr checks 2 --repo flakesonnix/l
+gh pr edit <number> --repo flakesonnix/l --base main
+gh workflow run ci.yml --repo flakesonnix/l --ref <head-branch>
+gh pr checks <number> --repo flakesonnix/l
 ```
 
 Repeat with each next head branch after its prerequisite is merged. The workflow
-also runs on pushes to `main` and `review/**`, and on pull requests. Dispatching
-requires the workflow to exist on the default branch; it is not available before
-the initial CI review is merged.
+also runs on pushes to `main` and `review/**`, and on pull requests. It is already
+present on the default branch, so manual dispatch is available.
 
 ## What to check
 
@@ -62,7 +103,21 @@ the initial CI review is merged.
   execution budgets in the observer slice.
 - Check pinned inputs, installed manifests, Linux platform scope, sanitizer and
   100% coverage gates in the Nix/CI slices.
+- Check Stage 1 arena ownership, first-error rollback, exact shared budgets,
+  source/bytecode model agreement and the boundary between syntax and semantics.
+- The coverage gate measures **Stage 0 C only**, not L-source coverage. Arbitrary
+  bytecode mutants and cyclic verifier graphs must never be executed.
 - Treat local command results and hosted GitHub status checks as separate evidence.
 
-No PR has been merged automatically. The initial publication intentionally keeps
-unreviewed implementation changes off the GitHub default branch.
+## Approved syntax replacement
+
+The user approved a **typed, Nix-inspired replacement**, not a permanent parallel
+grammar. Declarative bindings, `let/in`, records and expression-oriented functions
+are the direction; concrete spellings are not finalized or implemented. Current
+examples and parser contracts document legacy bootstrap syntax. Expanding that
+grammar with Stage 1 enum/struct declarations is deferred behind replacement.
+
+Review source migration separately from the completed parser slices. Preserve
+static types, eager left-to-right evaluation and the normative module semantics;
+do not silently add laziness, dynamic typing, implicit module discovery or change
+IR/bytecode **1.9**. See [source syntax status](../README.md#source-syntax-status).
