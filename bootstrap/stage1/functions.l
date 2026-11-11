@@ -1,4 +1,4 @@
-// Functions, type aliases and namespaces; no semantic checks or storage/type bodies.
+// File declaration syntax; no semantic checks, input storage or struct/enum bodies.
 module l.compiler.functions;
 
 import l.compiler.lexer as lexer;
@@ -15,12 +15,16 @@ namespace kind {
     pub const int Parameter = 3;
     pub const int Namespace = 4;
     pub const int Alias = 5;
+    pub const int Constant = 6;
+    pub const int Static = 7;
 }
 pub enum Error { None, Header, Statement, Expression, ExpectedType, ExpectedName,
                  ExpectedOpen, ExpectedClose, ExpectedBody, ExpectedSemicolon,
                  ArrayParameter, MisplacedHeader, TooManyNodes, TooManyFunctions,
                  NamespaceVisibility, ExpectedNamespaceOpen, ExpectedNamespaceClose, TooDeep,
-                 ExpectedNamespaceName, ExpectedAliasName, ExpectedAliasAssign, ExpectedAliasSemicolon };
+                 ExpectedNamespaceName, ExpectedAliasName, ExpectedAliasAssign, ExpectedAliasSemicolon,
+                 ExpectedGlobalName, ExpectedGlobalInitializer, ExpectedGlobalSemicolon,
+                 ExpectedArrayClose, ArrayInitializer };
 pub struct Diagnostic {
     Error kind;
     headers::Error header;
@@ -49,6 +53,8 @@ pub struct Node {
     int items;
     int body;
     int next;
+    int expression;
+    int array;
 };
 struct Type { int kind; int name; };
 
@@ -68,6 +74,8 @@ static int header_ids[max_nodes];
 static int items[max_nodes];
 static int bodies[max_nodes];
 static int nexts[max_nodes];
+static int initializers[max_nodes];
+static int arrays[max_nodes];
 static int used = 0;
 static int function_count = 0;
 static Error failure = Error::None;
@@ -145,6 +153,8 @@ int make_node(int kind, lexer::Token at) {
     items[id] = -1;
     bodies[id] = -1;
     nexts[id] = -1;
+    initializers[id] = -1;
+    arrays[id] = -1;
     return id;
 }
 Type type() {
@@ -258,6 +268,42 @@ int alias_declaration(lexer::Token start, bool exported) {
     }
     return result;
 }
+int value() {
+    if (!ok()) return -1;
+    int result = expressions::parse_next();
+    ok();
+    return result;
+}
+int global_declaration(lexer::Token start, bool exported, bool is_static) {
+    Type declared = type();
+    lexer::Token name = current();
+    expect(lexer::Kind::Name, Error::ExpectedGlobalName);
+    int length = -1;
+    int initial = -1;
+    if (is_static && take(lexer::Kind::LeftBracket)) {
+        length = value();
+        expect(lexer::Kind::RightBracket, Error::ExpectedArrayClose);
+        if (ok() && current().kind == lexer::Kind::Assign) reject(Error::ArrayInitializer, current());
+    } else {
+        expect(lexer::Kind::Assign, Error::ExpectedGlobalInitializer);
+        initial = value();
+    }
+    expect(lexer::Kind::Semicolon, Error::ExpectedGlobalSemicolon);
+    int tag = kind::Constant;
+    if (is_static) tag = kind::Static;
+    int result = make_node(tag, start);
+    if (result != -1) {
+        declared_types[result] = declared.kind;
+        type_names[result] = declared.name;
+        name_starts[result] = name.start;
+        name_lengths[result] = name.length;
+        exports[result] = exported;
+        immutables[result] = !is_static;
+        initializers[result] = initial;
+        arrays[result] = length;
+    }
+    return result;
+}
 int declaration() {
     if (!ok()) return -1;
     lexer::Token start = current();
@@ -267,6 +313,8 @@ int declaration() {
         return namespace_declaration();
     }
     if (take(lexer::Kind::Using)) return alias_declaration(start, exported);
+    bool is_static = take(lexer::Kind::Static);
+    if (is_static || take(lexer::Kind::Const)) return global_declaration(start, exported, is_static);
     if (ok() && (current().kind == lexer::Kind::Module || current().kind == lexer::Kind::Import)) {
         reject(Error::MisplacedHeader, current());
     }
@@ -323,9 +371,9 @@ pub int parse() {
 pub int node_count() { return used; }
 pub Node node(int id) {
     if (id < 0 || id >= used) return Node{kind::Invalid, 0, 0, 0, 0,
-        statements::type_kind::Invalid, -1, 0, 0, false, false, false, -1, -1, -1, -1};
+        statements::type_kind::Invalid, -1, 0, 0, false, false, false, -1, -1, -1, -1, -1, -1};
     return Node{kinds[id], starts[id], lengths[id], lines[id], columns[id], declared_types[id], type_names[id],
-        name_starts[id], name_lengths[id], exports[id], externals[id], immutables[id], header_ids[id], items[id], bodies[id], nexts[id]};
+        name_starts[id], name_lengths[id], exports[id], externals[id], immutables[id], header_ids[id], items[id], bodies[id], nexts[id], initializers[id], arrays[id]};
 }
 pub Diagnostic diagnostic() {
     return Diagnostic{failure, header_failure, statement_failure, expression_failure, lexical_failure,
@@ -355,6 +403,11 @@ pub string error_message(Error error) {
         case Error::ExpectedAliasName: return "expected type alias name";
         case Error::ExpectedAliasAssign: return "expected '=' after type alias name";
         case Error::ExpectedAliasSemicolon: return "expected ';' after type alias";
+        case Error::ExpectedGlobalName: return "expected global declaration name";
+        case Error::ExpectedGlobalInitializer: return "expected '=' before global scalar initializer";
+        case Error::ExpectedGlobalSemicolon: return "expected ';' after global declaration";
+        case Error::ExpectedArrayClose: return "expected ']' after static array length";
+        case Error::ArrayInitializer: return "static arrays initialize to zero and cannot have an initializer";
         default: return "unknown function-file error";
     }
 }

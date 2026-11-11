@@ -1,4 +1,4 @@
-// Functions, type aliases and namespaces; no resolution, typing or input execution.
+// File declaration syntax; no resolution, typing, input allocation or execution.
 module l.compiler.function_main;
 
 import l.compiler.lexer as lexer;

@@ -24,7 +24,8 @@ function command(status, args, options = {}) {
   assert.equal(result.stdout, ''); ++commands; return result;
 }
 const fnode = (kind, start, length, fields = {}) => ({ kind, start, length, declaredType: 'Invalid', typeName: null,
-  nameStart: 0, nameLength: 0, exported: false, external: false, immutable: false, header: null, items: null, body: null, next: null, ...fields });
+  nameStart: 0, nameLength: 0, exported: false, external: false, immutable: false, header: null, items: null, body: null,
+  next: null, expression: null, array: null, ...fields });
 const hnode = (kind, start, length, fields = {}) => ({ kind, start, length, path: null, alias: null, items: null, next: null, ...fields });
 const snode = (kind, start, length, fields = {}) => ({ kind, start, length, expression: null, init: null, condition: null,
   step: null, body: null, other: null, next: null, declaredType: 'Invalid', typeName: null,
@@ -42,6 +43,7 @@ const block = children => ({ kind: 'Block', children });
 const fn = (options = {}) => ({ type: 'Int', name: 'f', parameters: [], body: block([]), ...options });
 const namespace = (name, children = []) => ({ kind: 'Namespace', name, children });
 const alias = (type, options = {}) => ({ kind: 'Alias', type, name: 'Count', ...options });
+const storage = (kind, type, options = {}) => ({ kind, type, name: 'value', value: integer(1), ...options });
 const parameter = (type, options = {}) => ({ type, name: 'p', ...options });
 const local = (type, options = {}) => ({ kind: 'Declaration', type, name: 'local', value: integer(1), ...options });
 
@@ -66,6 +68,7 @@ function rendered(name, tree, options = {}) {
   }
   function expr(tree) {
     if (tree.kind === 'Integer') { const text = String(tree.value); return enode('Integer', put(text), text.length, { value: -tree.value }); }
+    if (tree.kind === 'Bool') { const text = String(tree.value); return enode('Bool', put(text), text.length, { value: Number(tree.value) }); }
     if (tree.kind === 'Name') return chain(tree.name, '::', enode);
     if (tree.kind === 'Text') { const text = quote(tree.text); return enode('Text', put(text), text.length, { text: tree.text }); }
     if (tree.kind === 'Chain') {
@@ -146,6 +149,19 @@ function rendered(name, tree, options = {}) {
         if (functionTree.exported) put(`pub${gap}`);
         put(`using${gap}`); item.nameStart = put(functionTree.name); item.nameLength = functionTree.name.length;
         put('='); item.typeName = type(functionTree); put(';');
+        if (last) last.next = item; else first = item;
+        last = item; continue;
+      }
+      if (functionTree.kind === 'Constant' || functionTree.kind === 'Static') {
+        const keyword = functionTree.kind === 'Static' ? 'static' : 'const';
+        const item = fnode(functionTree.kind, input.length, functionTree.exported ? 3 : keyword.length,
+          { declaredType: functionTree.type, exported: !!functionTree.exported, immutable: functionTree.kind === 'Constant' });
+        if (functionTree.exported) put(`pub${gap}`);
+        put(`${keyword}${gap}`); item.typeName = type(functionTree); put(gap);
+        item.nameStart = put(functionTree.name); item.nameLength = functionTree.name.length;
+        if (functionTree.array) { put('['); item.array = expr(functionTree.array); put(']'); }
+        else { put('='); item.expression = expr(functionTree.value); }
+        put(';');
         if (last) last.next = item; else first = item;
         last = item; continue;
       }
@@ -251,7 +267,6 @@ for (const [text, error, marker, nested] of [
   ['int @', 'Expression', '@', { expressionError: 'Lexical', lexical: 'UnsupportedCharacter' }],
   ['ns:: f(){}', 'ExpectedName', '('], ['int f(){} }', 'ExpectedType', '}'],
   ['struct T{};', 'ExpectedType', 'struct'], ['enum E{};', 'ExpectedType', 'enum'],
-  ['const int x=1;', 'ExpectedType', 'const'], ['static int x=1;', 'ExpectedType', 'static'],
 ]) {
   // Empty text after a valid header is valid; test its missing module separately.
   if (!text) continue;
@@ -445,6 +460,97 @@ const generatedAliasNodes = fixtures.slice(generatedAliasStart).flatMap(f => fla
 for (const type of types) assert.ok(generatedAliasNodes.some(n => n.kind === 'Alias' && n.declaredType === type), `missing generated alias ${type}`);
 for (const exported of [false, true]) assert.ok(generatedAliasNodes.some(n => n.kind === 'Alias' && n.exported === exported), `missing alias visibility ${exported}`);
 
+for (const type of types) for (const kind of ['Constant', 'Static']) for (const exported of [false, true]) for (const scoped of [false, true]) {
+  const item = storage(kind, type, { exported });
+  rendered(`global ${kind} ${type} ${exported} ${scoped}`, { functions: [scoped ? namespace('n', [item]) : item] });
+}
+for (const type of types) for (const exported of [false, true]) for (const scoped of [false, true]) {
+  const item = storage('Static', type, { array: integer(3), exported });
+  rendered(`static array ${type} ${exported} ${scoped}`, { functions: [scoped ? namespace('n', [item]) : item] });
+}
+for (const gap of ['\n', '\t', '\r', '/*gap*/', '//gap\n']) rendered(`global trivia ${JSON.stringify(gap)}`, { functions: [
+  storage('Constant', 'String', { exported: true, value: { kind: 'Text', text: 'a\0\xff' } }),
+  namespace('n', [storage('Static', 'Named', { typeName: 'pkg::Record', array: named('size') })]),
+] }, { gap, leading: '\n/*lead\xff*/\t', trailing: '\n//end\xff' });
+for (const name of ['constructor', '__proto__', 'Static', 'constX']) rendered(`global identifier ${name}`, { functions: [storage('Static', 'Int', { name })] });
+rendered('storage is syntax only and strings survive scopes', { imports: [{ path: 'missing.types', alias: 'types' }], functions: [
+  storage('Constant', 'String', { name: 'first', value: { kind: 'Text', text: 'first\0\xff' } }),
+  fn({ body: block([local('Int', { name: 'value', immutable: true }), { kind: 'Return', value: { kind: 'Text', text: 'body\x80' } }]) }),
+  alias('Named', { name: 'T', typeName: 'types::Record' }),
+  namespace('n', [storage('Static', 'Named', { typeName: 'T', array: { kind: 'Bool', value: true }, exported: true })]),
+  namespace('n', [storage('Constant', 'Void'), storage('Static', 'Auto', { value: named('unknown') })]),
+  storage('Static', 'String', { name: 'first', value: { kind: 'Text', text: 'last' } }),
+] });
+for (const [text, error, marker, nested] of [
+  ['const int =1;', 'ExpectedGlobalName', '='], ['static int =1;', 'ExpectedGlobalName', '='],
+  ['const int x;', 'ExpectedGlobalInitializer', ';'], ['static int x;', 'ExpectedGlobalInitializer', ';'],
+  ['const int a[2];', 'ExpectedGlobalInitializer', '['], ['static int a[2]=0;', 'ArrayInitializer', '='],
+  ['static int a[];', 'Expression', ']', { expressionError: 'ExpectedExpression' }],
+  ['static int a[2;', 'ExpectedArrayClose', ';'], ['static int a[2][3];', 'ExpectedGlobalSemicolon', '[3]'],
+  ['const int x=;', 'Expression', ';', { expressionError: 'ExpectedExpression' }],
+  ['static int x=;', 'Expression', ';', { expressionError: 'ExpectedExpression' }],
+  ['static int x=0', 'ExpectedGlobalSemicolon', ''], ['const int x=0,y=1;', 'ExpectedGlobalSemicolon', ','],
+  ['static const int x=1;', 'ExpectedType', 'const'], ['const static int x=1;', 'ExpectedType', 'static'],
+  ['extern static int x=1;', 'ExpectedType', 'static'], ['extern const int x=1;', 'ExpectedType', 'const'],
+  ['const int x=@;', 'Expression', '@', { expressionError: 'Lexical', lexical: 'UnsupportedCharacter' }],
+  ['static int a[@];', 'Expression', '@', { expressionError: 'Lexical', lexical: 'UnsupportedCharacter' }],
+  ['int f(){return "old";}namespace n{static int a[2]=0;}', 'ArrayInitializer', '='],
+  ['const int x=0;import p;', 'MisplacedHeader', 'import'], ['static int x=0;module other;', 'MisplacedHeader', 'module other'],
+  ['int f(){static int x=1;}', 'Statement', 'static', { statementError: 'Expression', expressionError: 'ExpectedExpression' }],
+]) {
+  const input = 'module m; ' + text, start = marker ? input.indexOf(marker, 10) : input.length;
+  const length = marker && /^[A-Za-z]/.test(marker) ? marker.split(' ')[0].length : undefined;
+  bad(input, error, start, length, nested);
+}
+// Replay is covered by smaller fixtures; full-capacity globals need one parse
+// per VM invocation to keep the unchanged 10-million-instruction budget.
+rendered('full global arena without function count', { functions: Array.from({ length: 1023 }, () => storage('Constant', 'Int', { name: 'x', value: integer(0) })) }).passes = 1;
+const globalArenaOverflow = rendered('overflow global arena', { functions: Array.from({ length: 1024 }, () => storage('Constant', 'Int', { name: 'x', value: integer(0) })) });
+fixtures.pop(); let lastGlobal = globalArenaOverflow.tree.items; while (lastGlobal.next) lastGlobal = lastGlobal.next;
+bad(globalArenaOverflow.input, 'TooManyNodes', lastGlobal.start, lastGlobal.length);
+fixtures.at(-1).passes = 1;
+rendered('full static array expression arena', { functions: [storage('Static', 'Int', { array: { kind: 'Chain', count: 2047 } })] });
+const arrayArenaOverflow = rendered('overflow static array expression arena', { functions: [storage('Static', 'Int', { array: { kind: 'Chain', count: 2048 } })] });
+fixtures.pop(); bad(arrayArenaOverflow.input, 'Expression', arrayArenaOverflow.tree.items.array.start, 2, { expressionError: 'TooManyNodes' });
+rendered('global expression budget after body', { functions: [fn({ body: block([{ kind: 'Return', value: { kind: 'Chain', count: 2046 } }]) }),
+  namespace('n', [storage('Constant', 'Int', { value: named('x') })])] });
+const globalExpressionOverflow = rendered('overflow global expression budget after body', { functions: [fn({ body: block([{ kind: 'Return', value: { kind: 'Chain', count: 2046 } }]) }),
+  namespace('n', [storage('Constant', 'Int', { value: named('ns::x') })])] });
+fixtures.pop(); bad(globalExpressionOverflow.input, 'Expression', globalExpressionOverflow.tree.items.next.items.expression.right.start, 1, { expressionError: 'TooManyNodes' });
+rendered('body types share global expression budget', { functions: [storage('Static', 'Int', { value: { kind: 'Chain', count: 2046 } }), fn({ type: 'Named', typeName: 'T' })] });
+const afterGlobalOverflow = rendered('overflow body type after global', { functions: [storage('Static', 'Int', { value: { kind: 'Chain', count: 2046 } }), fn({ type: 'Named', typeName: 'ns::T' })] });
+fixtures.pop(); bad(afterGlobalOverflow.input, 'Expression', afterGlobalOverflow.tree.items.next.typeName.right.start, 1, { expressionError: 'TooManyNodes' });
+rendered('globals do not consume function budget', { functions: [storage('Constant', 'Int'), namespace('n', [storage('Static', 'Int', { array: integer(2) }),
+  ...Array.from({ length: 256 }, (_, i) => fn({ name: `f${i}`, external: true }))])] });
+for (const array of [false, true]) {
+  let deepest = storage(array ? 'Static' : 'Constant', 'Int', array ? { array: integer(1) } : {});
+  for (let index = 0; index < 47; index++) deepest = namespace('n', [deepest]);
+  rendered(`global maximum syntax depth ${array}`, { functions: [deepest] });
+  const overflow = rendered(`overflow global syntax depth ${array}`, { functions: [namespace('n', [deepest])] });
+  fixtures.pop(); let global = overflow.tree.items; while (global.kind === 'Namespace') global = global.items;
+  const missing = global.array ?? global.expression;
+  bad(overflow.input, 'TooDeep', missing.start, missing.length, { expressionError: 'TooDeep' });
+}
+
+const generatedGlobalStart = fixtures.length;
+for (let index = 0; index < 32; index++) {
+  const globals = Array.from({ length: random(5) + 2 }, (_, i) => {
+    const kind = random(2) ? 'Constant' : 'Static';
+    const leaves = [integer(random(100)), { kind: 'Bool', value: !!random(2) }, named('ns::size'), { kind: 'Text', text: `g${String.fromCharCode(random(256))}` }];
+    return storage(kind, types[random(7)], { name: `v${i}`, exported: !!random(2),
+      array: kind === 'Static' && random(2) ? leaves[random(3)] : null, value: leaves[random(4)] });
+  });
+  rendered(`generated globals ${index}`, { functions: [globals[0], namespace('n', [
+    ...globals.slice(1), alias('Int'), fn({ body: block([{ kind: 'Return', value: value() }]) }),
+  ]), namespace('n', [storage('Static', 'String', { value: { kind: 'Text', text: 'retained' } })])] });
+}
+const generatedGlobalArenas = fixtures.slice(generatedGlobalStart).map(f => arenas(f.tree));
+const generatedGlobalNodes = generatedGlobalArenas.flatMap(a => a.f.nodes);
+for (const kind of ['Constant', 'Static']) for (const type of types) assert.ok(generatedGlobalNodes.some(n => n.kind === kind && n.declaredType === type), `missing generated ${kind} ${type}`);
+for (const exported of [false, true]) assert.ok(generatedGlobalNodes.some(n => ['Constant', 'Static'].includes(n.kind) && n.exported === exported), `missing global visibility ${exported}`);
+assert.ok(generatedGlobalNodes.some(n => n.kind === 'Static' && n.array), 'generated storage must cover static arrays');
+for (const kind of ['Integer', 'Bool', 'Name', 'Text']) assert.ok(generatedGlobalArenas.some(a => a.e.nodes.some(n => n.kind === kind)), `missing generated global ${kind} leaf`);
+
 function flatten(roots, links) {
   const nodes = [], ids = new Map(), pending = [...roots].reverse();
   while (pending.length) {
@@ -458,7 +564,7 @@ function arenas(tree) {
   const f = flatten([tree], ['items', 'next']);
   const h = flatten(f.nodes.map(n => n.header).filter(Boolean), ['path', 'alias', 'items', 'next']);
   const s = flatten(f.nodes.map(n => n.body).filter(Boolean), ['declaration', 'body', 'other', 'next']);
-  const e = flatten([...f.nodes.map(n => n.typeName), ...s.nodes.flatMap(n => [n.expression, n.init, n.condition, n.step, n.typeName, n.array])].filter(Boolean), ['left', 'right', 'next']);
+  const e = flatten([...f.nodes.flatMap(n => [n.typeName, n.expression, n.array]), ...s.nodes.flatMap(n => [n.expression, n.init, n.condition, n.step, n.typeName, n.array])].filter(Boolean), ['left', 'right', 'next']);
   return { f, h, s, e };
 }
 const helpers = `
@@ -471,10 +577,10 @@ bool invalid(int id) {
     functions::Node n=functions::node(id);
     return n.kind==functions::kind::Invalid && n.start==0 && n.length==0 && n.line==0 && n.column==0 &&
         n.declared_type==statements::type_kind::Invalid && n.type_name==-1 && n.name_start==0 && n.name_length==0 &&
-        !n.exported && !n.external && !n.immutable && n.header==-1 && n.items==-1 && n.body==-1 && n.next==-1;
+        !n.exported && !n.external && !n.immutable && n.header==-1 && n.items==-1 && n.body==-1 && n.next==-1 && n.expression==-1 && n.array==-1;
 }
 bool check_f(int index,int kind,int start,int length,int line,int column,int type,int type_name,int name_start,int name_length,
-             bool exported,bool external,bool immutable,int header,int items,int body,int next) {
+             bool exported,bool external,bool immutable,int header,int items,int body,int next,int expression,int array) {
     int id=fids[index];if(id<0||id>=functions::node_count()||fseen[id])return false;fseen[id]=true;
     functions::Node n=functions::node(id);
     if(n.kind!=kind||n.start!=start||n.length!=length||n.line!=line||n.column!=column||n.declared_type!=type||
@@ -483,7 +589,9 @@ bool check_f(int index,int kind,int start,int length,int line,int column,int typ
     if(header==-1){if(n.header!=-1)return false;}else hids[header]=n.header;
     if(items==-1){if(n.items!=-1)return false;}else fids[items]=n.items;
     if(body==-1){if(n.body!=-1)return false;}else sids[body]=n.body;
-    if(next==-1){if(n.next!=-1)return false;}else fids[next]=n.next;return true;
+    if(next==-1){if(n.next!=-1)return false;}else fids[next]=n.next;
+    if(expression==-1){if(n.expression!=-1)return false;}else eids[expression]=n.expression;
+    if(array==-1){if(n.array!=-1)return false;}else eids[array]=n.array;return true;
 }
 bool check_h(int index,int kind,int start,int length,int line,int column,int path,int alias,int items,int next) {
     int id=hids[index];if(id<0||id>=headers::node_count()||hseen[id])return false;hseen[id]=true;
@@ -553,13 +661,13 @@ function runBatch(batch) {
           const at = position(fixture.input, node.start), base = `${id},${{ f: 'functions', h: 'headers', s: 'statements', e: 'expressions' }[arena]}::kind::${node.kind}`;
           const metadata = `${node.start},${node.length},${at.line},${at.column}`;
           let args;
-          if (arena === 'f') args = `${base},${metadata},statements::type_kind::${node.declaredType},${ref('e', node.typeName)},${node.nameStart},${node.nameLength},${node.exported},${node.external},${node.immutable},${ref('h', node.header)},${ref('f', node.items)},${ref('s', node.body)},${ref('f', node.next)}`;
+          if (arena === 'f') args = `${base},${metadata},statements::type_kind::${node.declaredType},${ref('e', node.typeName)},${node.nameStart},${node.nameLength},${node.exported},${node.external},${node.immutable},${ref('h', node.header)},${ref('f', node.items)},${ref('s', node.body)},${ref('f', node.next)},${ref('e', node.expression)},${ref('e', node.array)}`;
           if (arena === 'h') args = `${base},${metadata},${[node.path, node.alias, node.items, node.next].map(n => ref('h', n)).join(',')}`;
           if (arena === 's') args = `${base},${metadata},${[node.expression, node.init, node.condition, node.step].map(n => ref('e', n)).join(',')},${[node.body, node.other, node.next].map(n => ref('s', n)).join(',')},statements::type_kind::${node.declaredType},${ref('e', node.typeName)},${node.nameStart},${node.nameLength},${node.immutable},${ref('e', node.array)},${ref('s', node.declaration)}`;
           if (arena === 'e') args = `${base},expressions::op::${node.op},${metadata},${node.value},${quote(node.text)},${[node.left, node.right, node.next].map(n => ref('e', n)).join(',')}`;
           assertions.push(`if(!check_${arena}(${args}))return false;`);
         }
-        counts[arena] += nodes.length * 4;
+        counts[arena] += nodes.length * 2 * (fixture.passes ?? 2);
       }
       for (let at = 0; at < assertions.length; at += 24) {
         const name = `check_${index}_${at}`; functions.push(`bool ${name}(){${assertions.slice(at, at + 24).join('\n')}return true;}`); chunks.push(`if(!${name}())return false;`);
@@ -571,7 +679,7 @@ function runBatch(batch) {
         if(error.kind!=functions::Error::None||error.header!=headers::Error::None||error.statement!=statements::Error::None||
            error.expression!=expressions::Error::None||error.lexical!=lexer::Error::None||error.start!=0||error.length!=0||error.line!=1||error.column!=1)return false;`;
     }
-    functions.push(`bool case_${index}(){if(!load(${quote(fixture.input)}))return false;for(int pass=0;pass<2;pass++){${checks}}return !lexer::append(byte(32));}`);
+    functions.push(`bool case_${index}(){if(!load(${quote(fixture.input)}))return false;for(int pass=0;pass<${fixture.passes ?? 2};pass++){${checks}}return !lexer::append(byte(32));}`);
     cases.push(`if(!case_${index}())return ${index + 1};`);
   }
   const source = resolve(work, 'main.l'), output = resolve(work, 'model.lbc');
@@ -599,6 +707,8 @@ for (const [input, status, error] of [
   ['module m; namespace n{pub int f(){return 1;}namespace inner{extern ns::T copy(const ns::T p);}}namespace n{int g(){return missing;}}', 0, ''],
   ['module m; pub using Count=int; namespace n{using Item=pkg::Record; pub Item copy(const Item p){return p;}}', 0, ''],
   ['module m; using A=B; using B=A; using A=void;', 0, ''],
+  ['module m; pub const int answer=unknown(42); namespace n{pub static byte bytes[size]; static string text="a\\0\\xff";} int main(){return answer;}', 0, ''],
+  ['module m; const void value=1; static ns::T items[true]; static int huge[2147483648];', 0, ''],
   ['module m; int main(){for(;;);}', 0, ''],
   [readFileSync(resolve(root, 'examples/answer.l')), 0, ''],
   [readFileSync(resolve(root, 'examples/io_demo.l')), 0, ''],
@@ -617,6 +727,9 @@ for (const [input, status, error] of [
   ['module m; using T;', 65, "function:1:18: error: expected '=' after type alias name\n"],
   ['module m; using T=;', 65, 'function:1:19: error: expected primitive or qualified type\n'],
   ['module m; using T=int', 65, "function:1:22: error: expected ';' after type alias\n"],
+  ['module m; const int =1;', 65, 'function:1:21: error: expected global declaration name\n'],
+  ['module m; static int x;', 65, "function:1:23: error: expected '=' before global scalar initializer\n"],
+  ['module m; static int a[2]=0;', 65, 'function:1:26: error: static arrays initialize to zero and cannot have an initializer\n'],
   [namespaceDepthOverflow.input, 65, `function:1:${deepestNamespace.start + 1}: error: syntax nesting exceeds 48\n`],
   [Buffer.concat([Buffer.from('module m;'), Buffer.alloc(65526, 32)]), 0, ''],
   [Buffer.alloc(65536, 32), 65, 'function: source exceeds 65535 bytes\n'],
