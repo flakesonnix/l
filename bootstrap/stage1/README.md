@@ -146,8 +146,8 @@ magnitude is legal; the lexer does not accept it as an ordinary positive int val
 
 ASCII identifiers, decimal literals, comments and literal-backed string escapes
 match Stage 0's lexical subset. The scanner additionally recognizes replacement
-keywords `let`, `in`, `var` and the adjacent `=>` token. `= >` is two tokens, not
-an arrow. Legacy parser cursors temporarily expose those three keywords as names
+keywords `let`, `in`, `var`, `then` and the adjacent `=>` token. `= >` is two tokens, not
+an arrow. Legacy parser cursors temporarily expose those four keywords as names
 to keep existing bootstrap inputs usable; the replacement parser reserves them
 in both headers and bodies. This compatibility is migration scaffolding, not a
 permanent second source grammar. Comments are non-nesting and may contain high bytes, but not NUL.
@@ -500,9 +500,40 @@ resolution, inference, type/readonly checks or evaluation. Unknown names/calls,
 duplicate/forward local bindings, invalid written `void`/`auto` types, mutation of
 plain bindings and nonconstant top-level initializers may be syntax-valid here.
 These are not semantic acceptance claims. No input initializer, function or
-import is executed, and no input program storage is allocated. Records, conditional
-expressions, statement blocks/loops, nested function values, namespaces, aliases,
+import is executed, and no input program storage is allocated. Records,
+statement blocks/loops, nested function values, namespaces, aliases,
 externs, statics, arrays and enums are not declarations in this first slice.
+
+### Conditional expressions
+
+The replacement parser additionally accepts **`if condition then positive else
+negative`** as an expression. `else` is mandatory; C-style statement `if` syntax
+is not accepted by this driver. Nested conditionals can occur in any of the three
+positions, including bare nested branches. Each `else` belongs to the conditional
+whose positive expression is being completed. For example:
+
+```text
+module app.choose;
+choose = (ready: bool): int =>
+  let
+    value = if ready then 42 else 0;
+  in if ready then value else 1;
+```
+
+Conditions and both branches are full expressions, so `let` bindings, calls,
+conversions and operators compose without a separate statement arena. The full
+negative expression extends to its enclosing delimiter: `if p then a else b + c`
+places `b + c` in the negative branch. Use `(if p then a else b) + c` to apply the
+operator outside the conditional. Call commas, binding semicolons and closing
+delimiters bound bare conditional expressions as usual.
+
+Intended typed semantics require a bool condition and matching branch result
+types, with one condition evaluation and only the selected branch evaluated.
+**None of that semantic checking or execution occurs here**. Even
+`if 1 then "wrong" else false` can be syntax-valid. Both branch trees and their
+strings are retained; malformed syntax or lexical errors in either branch still
+fail parsing, even for a literal condition. `ExpectedThen`/`ExpectedElse` preserve
+the first detected token span and underlying lexical failures.
 
 ### Arenas and node ownership
 
@@ -528,7 +559,7 @@ Declaration nodes expose token start/length/line/column, identifier
 - `next` links declaration/parameter siblings. Other links are absent (-1).
   Declaration metadata refers to the leading `pub` or name, not the whole span.
 
-The existing expression `Node` shape is unchanged. Three new internal kinds use
+The existing expression `Node` shape is unchanged. Replacement-only internal kinds use
 the same expression arena:
 
 - `Type.value` is `expressions::type_kind` (`Int`, `Bool`, `Byte`, `String`, `Void`,
@@ -539,6 +570,12 @@ the same expression arena:
 - `Let` metadata refers to `let`; `left` is the first `Binding` or -1, and `right`
   is the body. As with other expressions, a root used as a call argument can have
   a sibling `next` link.
+- `Conditional` metadata refers to `if`; `left` is the condition and `right` is
+  an internal `Branches` node. Its `next` can link call-argument siblings.
+- `Branches` metadata refers to `else`; `left` is the positive expression and
+  `right` the negative expression. Its `next` is absent. Both new conditional kinds
+  have zero `value`/`text_length` and no operation tag. The container is syntax
+  structure, not input allocation, a new runtime record, or a serialized format.
 
 Retained string bytes, first-error spans and invalid-node conventions are unchanged.
 `expressions::replacement()` and `parse_type()` are provisional internal migration
@@ -553,6 +590,13 @@ forms. Exact boundaries cover declarations, parameters, functions, shared type/b
 expression storage, `let` bindings and nested expression depth. The largest
 declaration/parameter/let-arena fixtures use one parse per VM invocation; smaller fixtures retain replay. A
 separate probe checks that replacement parsing does not leak into legacy parsing.
+Conditional models additionally cover every nesting position, bare-expression
+extent, operator/call/conversion/let composition, retained strings in both
+branches, malformed/missing delimiters and keyword isolation. Generated mixed
+trees assert nested conditionals and branch-container ownership. Exact limits
+cover branch-pair allocation, arena budgets shared with earlier declarations, and
+conditional-only or mixed let/conditional depth; the same 2048-node/48-level
+expression limits are unchanged.
 
 ## Limits and verification
 
@@ -640,9 +684,9 @@ under `make test`, `make sanitize`, `make coverage` and the Nix checks. The exis
 a coverage gate for L source. No arbitrary mutant bytecode or cyclic verifier
 graphs are executed by these tests.
 
-The replacement slice adds **178 fixtures / 34712 modeled node checks** across
-its declaration, header and expression arenas, in **45 batches / 205 commands**.
-Its extended scanner suite has **1181 fixtures / 108456 token checks**. All legacy
+The replacement suite has **285 fixtures / 61716 modeled node checks** across
+its declaration, header and expression arenas, in **71 batches / 317 commands**.
+The scanner suite has **1182 fixtures / 109432 token checks**. All legacy
 expression, statement, header and function-file suites still pass. Stage 0 C
 coverage remains **2596 lines / 163 functions / 2660 branches (100%)**; these
 numbers do not measure L-source coverage.

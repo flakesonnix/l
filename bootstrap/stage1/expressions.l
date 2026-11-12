@@ -25,6 +25,8 @@ namespace kind {
     pub const int Type = 14;
     pub const int Binding = 15;
     pub const int Let = 16;
+    pub const int Conditional = 17;
+    pub const int Branches = 18;
 }
 
 // Written types in the replacement parser, not resolved semantic types.
@@ -63,7 +65,7 @@ namespace op {
 
 pub enum Error { None, Lexical, ExpectedExpression, ExpectedName, ExpectedOpen,
                  ExpectedClose, TrailingInput, TooDeep, TooManyNodes,
-                 ExpectedType, ExpectedAssign, ExpectedSemicolon };
+                 ExpectedType, ExpectedAssign, ExpectedSemicolon, ExpectedThen, ExpectedElse };
 pub struct Diagnostic {
     Error kind;
     lexer::Error lexical;
@@ -144,7 +146,7 @@ void advance() {
     current_kind = at.kind;
     // Temporary bootstrap compatibility: these are names in the legacy grammar.
     switch (at.kind) {
-        case lexer::Kind::Let: case lexer::Kind::In: case lexer::Kind::Var:
+        case lexer::Kind::Let: case lexer::Kind::In: case lexer::Kind::Var: case lexer::Kind::Then:
             if (!replacement_mode) current_kind = lexer::Kind::Name;
             break;
     }
@@ -325,6 +327,22 @@ int let_expression(lexer::Token at) {
     return result;
 }
 
+int conditional(lexer::Token at) {
+    advance();
+    int result = make_node(kind::Conditional, op::None, at, -1, -1);
+    int condition = expression(1);
+    expect(lexer::Kind::Then, Error::ExpectedThen);
+    int positive = expression(1);
+    lexer::Token otherwise = look();
+    expect(lexer::Kind::Else, Error::ExpectedElse);
+    int negative = expression(1);
+    int branches = make_node(kind::Branches, op::None, otherwise, positive, negative);
+    if (failure != Error::None) return -1;
+    lefts[result] = condition;
+    rights[result] = branches;
+    return result;
+}
+
 int primary() {
     if (failure != Error::None) return -1;
     lexer::Token at = look();
@@ -352,8 +370,9 @@ int primary() {
     } else if (at.kind == lexer::Kind::Int || at.kind == lexer::Kind::Byte) {
         advance();
         result = conversion(at);
-    } else if (replacement_mode && at.kind == lexer::Kind::Let) {
-        result = let_expression(at);
+    } else if (replacement_mode && (at.kind == lexer::Kind::Let || at.kind == lexer::Kind::If)) {
+        if (at.kind == lexer::Kind::Let) result = let_expression(at);
+        else result = conditional(at);
     } else if (take(lexer::Kind::LeftParen)) {
         result = expression(1);
         expect(lexer::Kind::RightParen, Error::ExpectedClose);
@@ -505,6 +524,8 @@ pub string error_message(Error error) {
         case Error::ExpectedType: return "expected primitive or qualified type";
         case Error::ExpectedAssign: return "expected '=' after local binding name/type";
         case Error::ExpectedSemicolon: return "expected ';' after local binding";
+        case Error::ExpectedThen: return "expected 'then' after condition";
+        case Error::ExpectedElse: return "expected 'else' after conditional branch";
         default: return "unknown expression error";
     }
 }

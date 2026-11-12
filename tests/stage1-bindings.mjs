@@ -28,6 +28,7 @@ const integer = value => ({ kind: 'Integer', number: String(value) });
 const named = name => ({ kind: 'Name', name });
 const local = (name, value = integer(1), fields = {}) => ({ name, value, ...fields });
 const letIn = (bindings, body, fields = {}) => ({ kind: 'Let', bindings, body, ...fields });
+const conditional = (condition, positive, negative, fields = {}) => ({ kind: 'Conditional', condition, positive, negative, ...fields });
 const fn = (body = integer(42), fields = {}) => ({ kind: 'Function', name: 'main', type: 'Int', parameters: [], body, ...fields });
 const constant = (fields = {}) => ({ kind: 'Constant', name: 'answer', type: 'Int', body: integer(42), ...fields });
 const types = ['Int', 'Bool', 'Byte', 'String', 'Void', 'Auto', 'Named'];
@@ -65,6 +66,16 @@ function rendered(name, declarations, options = {}) {
       let value = e('Name', put('x'), 1);
       for (let n = 0; n < tree.count; n++) value = e('Postfix', put('++'), 2, { op: 'Increment', left: value });
       return value;
+    }
+    if (tree.kind === 'Conditional') {
+      if (!tree.bare) put('(');
+      const result = e('Conditional', put('if'), 2); put(gap);
+      result.left = expression(tree.condition); put(`${gap}then${gap}`);
+      const positive = expression(tree.positive); put(gap);
+      const branches = e('Branches', put('else'), 4, { left: positive }); put(gap);
+      branches.right = expression(tree.negative); result.right = branches;
+      if (!tree.bare) put(')');
+      return result;
     }
     if (tree.kind === 'Let') {
       if (!tree.bare) put('(');
@@ -249,6 +260,75 @@ rendered('shared syntax depth', [fn(nested)]);
 const depthOverflow = rendered('depth overflow', [fn(letIn([], nested, { bare: true }))]); fixtures.pop();
 bad(depthOverflow.input, 'Expression', '0', { expression: 'TooDeep' });
 
+const truth = { kind: 'Bool', bool: true }, lie = { kind: 'Bool', bool: false };
+rendered('approved conditional', [fn(conditional(named('ready'), integer(42), integer(0), { bare: true }),
+  { name: 'choose', parameters: [{ name: 'ready', type: 'Bool' }] })]);
+for (const type of types) for (const exported of [false, true]) rendered(`conditional result ${type} ${exported}`, [
+  constant({ type, exported, body: conditional(truth, named('first'), named('second')) }),
+  fn(conditional(lie, named('first'), named('second')), { type, exported }),
+]);
+for (const branch of ['condition', 'positive', 'negative']) {
+  const tree = conditional(named('outer'), named('yes'), named('no'), { bare: true });
+  tree[branch] = conditional(named('inner'), integer(1), integer(2), { bare: true });
+  rendered(`bare nested conditional ${branch}`, [fn(tree)]);
+}
+rendered('conditional condition can contain let', [fn(conditional(letIn([local('ready', truth)], named('ready'), { bare: true }),
+  letIn([local('x', integer(1), { mutable: true })], named('x'), { bare: true }),
+  letIn([local('x', integer(2))], named('x'), { bare: true }), { bare: true }))]);
+rendered('conditional in let initializer and body', [fn(letIn([local('x', conditional(truth, integer(1), integer(2), { bare: true }), { type: 'Int' })],
+  conditional(lie, named('x'), letIn([], integer(0), { bare: true }), { bare: true }), { bare: true }))]);
+rendered('else body owns following binary operators', [fn(conditional(truth, integer(1), { kind: 'Binary', operator: '+', bare: true,
+  left: integer(2), right: { kind: 'Binary', operator: '*', bare: true, left: integer(3), right: integer(4) } }, { bare: true }))]);
+rendered('conditional on binary right owns its else body', [fn({ kind: 'Binary', operator: '+', bare: true, left: integer(1),
+  right: conditional(truth, integer(2), { kind: 'Binary', operator: '+', bare: true, left: integer(3), right: integer(4) }, { bare: true }) })]);
+rendered('bare conditionals stop at call commas', [fn({ kind: 'Call', left: named('f'), arguments: [
+  conditional(truth, integer(1), integer(2), { bare: true }), conditional(lie, integer(3), integer(4), { bare: true }), integer(5),
+] })]);
+for (const operator of Object.keys(operators).filter(op => !['!', '++', '--', 'int', 'byte'].includes(op))) rendered(`conditional operand ${operator}`, [
+  fn({ kind: operator === '=' ? 'Assign' : 'Binary', operator, left: conditional(truth, integer(1), integer(2)), right: conditional(lie, integer(3), integer(4)) }),
+]);
+for (const operator of ['+', '-', '!']) rendered(`conditional prefix ${operator}`, [fn({ kind: 'Unary', operator, left: conditional(truth, integer(1), integer(2)) })]);
+for (const operator of ['++', '--']) rendered(`conditional postfix ${operator}`, [fn({ kind: 'Postfix', operator, left: conditional(truth, named('x'), named('y')) })]);
+for (const operator of ['int', 'byte']) rendered(`conditional conversion ${operator}`, [fn({ kind: 'Convert', operator, left: conditional(truth, integer(1), integer(2)) })]);
+rendered('conditional callee, field and index', [fn({ kind: 'Index', left: { kind: 'Field', name: 'items', left: { kind: 'Call',
+  left: conditional(truth, named('f'), named('g')), arguments: [] } }, right: conditional(lie, integer(0), integer(1), { bare: true }) })]);
+rendered('conditional syntax does not check types or lvalues', [fn(conditional(integer(1), { kind: 'Text', text: 'not an int' },
+  { kind: 'Assign', operator: '=', left: integer(2), right: lie }))]);
+for (const gap of ['\n', '\t', '\r', '/*gap*/', '//gap\n']) rendered(`conditional trivia ${JSON.stringify(gap)}`, [
+  constant({ type: 'String', body: { kind: 'Text', text: 'earlier\0\xff' } }),
+  fn(conditional(truth, { kind: 'Text', text: 'yes\0\xff' }, { kind: 'Text', text: 'no\x80' }, { bare: true }), { type: 'String', exported: true }),
+], { gap, leading: '\n/*lead*/', trailing: '\n//end' });
+for (const [tail, error, marker] of [
+  ['if true 1 else 0', 'ExpectedThen', '1'], ['if true then 1', 'ExpectedElse', ';'],
+  ['if then 1 else 0', 'ExpectedExpression', 'then'], ['if true then else 0', 'ExpectedExpression', 'else'],
+  ['if true then 1 else', 'ExpectedExpression', ';'], ['if true then 1; else 0', 'ExpectedElse', '; else'],
+  ['if true then if false then 1 else 2', 'ExpectedElse', ';'],
+  ['if true then 1 else 0 else 2', null, 'else 2'], ['if true then 1 else @', 'Lexical', '@'],
+  ['if true then @ else 0', 'Lexical', '@'], ['if false then unknown() else (1', 'ExpectedClose', ';'],
+]) bad(`module m; f=():int=>${tail};`, error ? 'Expression' : 'ExpectedSemicolon', marker,
+  error ? { expression: error, lexical: error === 'Lexical' ? 'UnsupportedCharacter' : 'None' } : {});
+bad('module m; x:string="old"; f=():int=>if true then "new" else;', 'Expression', ';', { expression: 'ExpectedExpression' });
+bad('module then;', 'Header', 'then', { header: 'ExpectedName' });
+bad('module m; import p as then;', 'Header', 'then', { header: 'ExpectedName' });
+bad('module m; then:int=1;', 'ExpectedName', 'then');
+bad('module m; f=():int=>let then=1; in then;', 'Expression', 'then=1', { expression: 'ExpectedName' });
+rendered('full conditional expression arena', [fn(conditional(truth, { kind: 'Chain', count: 2042 }, integer(0), { bare: true }))]);
+const conditionalOverflow = rendered('conditional branch-pair overflow', [fn(conditional(truth, { kind: 'Chain', count: 2043 }, integer(0), { bare: true }))]); fixtures.pop();
+bad(conditionalOverflow.input, 'Expression', 'else', { expression: 'TooManyNodes' });
+let deepConditional = integer(0);
+for (let n = 0; n < 47; n++) deepConditional = conditional(truth, integer(1), deepConditional, { bare: true });
+rendered('maximum conditional depth', [fn(deepConditional)]);
+const conditionalDepthOverflow = rendered('conditional depth overflow', [fn(conditional(truth, integer(1), deepConditional, { bare: true }))]); fixtures.pop();
+bad(conditionalDepthOverflow.input, 'Expression', 'true', { expression: 'TooDeep' });
+let mixedConditional = conditional(truth, integer(1), integer(0), { bare: true });
+for (let n = 0; n < 46; n++) mixedConditional = letIn([], mixedConditional, { bare: true });
+rendered('shared let/conditional depth', [fn(mixedConditional)]);
+const mixedConditionalOverflow = rendered('shared let/conditional depth overflow', [fn(letIn([], mixedConditional, { bare: true }))]); fixtures.pop();
+bad(mixedConditionalOverflow.input, 'Expression', 'true', { expression: 'TooDeep' });
+rendered('conditional budget after earlier declarations', [constant(), fn(conditional(truth, { kind: 'Chain', count: 2040 }, integer(0), { bare: true }))]);
+const sharedConditionalOverflow = rendered('conditional budget after earlier declarations overflow', [constant(), fn(conditional(truth, { kind: 'Chain', count: 2041 }, integer(0), { bare: true }))]); fixtures.pop();
+bad(sharedConditionalOverflow.input, 'Expression', 'else', { expression: 'TooManyNodes' });
+
 let state = 0x4e495842;
 function random(n) { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return Math.floor(state / 0x100000000 * n); }
 function generated(depth) {
@@ -262,6 +342,15 @@ function generated(depth) {
 const generatedStart = fixtures.length;
 for (let n = 0; n < 40; n++) rendered(`generated ${n}`, [constant({ type: types[random(types.length)], exported: !!random(2) }),
   fn(generated(3), { name: `f${n}`, type: types[random(types.length)], exported: !!random(2), parameters: [{ name: 'p', type: types[random(types.length)] }] })]);
+function generatedConditional(depth) {
+  if (!depth) return generated(0);
+  const choice = random(4);
+  if (choice < 2) return conditional(generatedConditional(depth - 1), generatedConditional(depth - 1), generatedConditional(depth - 1));
+  if (choice === 2) return letIn([local('x', generatedConditional(depth - 1), { mutable: !!random(2) })], generatedConditional(depth - 1));
+  return { kind: 'Call', left: named('f'), arguments: [generatedConditional(depth - 1), generatedConditional(depth - 1)] };
+}
+const conditionalGeneratedStart = fixtures.length;
+for (let n = 0; n < 32; n++) rendered(`generated conditional ${n}`, [fn(conditional(generatedConditional(2), generatedConditional(2), generatedConditional(2)))]);
 function flatten(roots, links) {
   const nodes = [], ids = new Map(), pending = [...roots].reverse();
   while (pending.length) { const node = pending.pop(); if (!node || ids.has(node)) continue;
@@ -275,9 +364,13 @@ function arenas(tree) {
   return { d, h, e };
 }
 const generatedNodes = fixtures.slice(generatedStart).flatMap(f => arenas(f.tree).e.nodes);
-for (const kind of ['Let', 'Binding', 'Type', 'Integer', 'Bool', 'Text', 'Name', 'Call', 'Unary', 'Binary']) assert.ok(generatedNodes.some(n => n.kind === kind), kind);
+for (const kind of ['Let', 'Binding', 'Type', 'Integer', 'Bool', 'Text', 'Name', 'Call', 'Unary', 'Binary', 'Conditional', 'Branches']) assert.ok(generatedNodes.some(n => n.kind === kind), kind);
 for (const mutable of [0, 1]) assert.ok(generatedNodes.some(n => n.kind === 'Binding' && n.value === mutable), `generated mutability ${mutable}`);
 for (let tag = 1; tag <= 7; tag++) assert.ok(generatedNodes.some(n => n.kind === 'Type' && n.value === tag), `generated type ${tag}`);
+const conditionalGeneratedNodes = fixtures.slice(conditionalGeneratedStart).flatMap(f => arenas(f.tree).e.nodes);
+for (const position of ['left', 'right']) assert.ok(conditionalGeneratedNodes.some(n => n.kind === 'Conditional' &&
+  (position === 'left' ? n.left.kind === 'Conditional' : [n.right.left.kind, n.right.right.kind].includes('Conditional'))), `nested conditional ${position}`);
+for (const node of conditionalGeneratedNodes.filter(n => n.kind === 'Branches')) assert.equal(node.next, null);
 
 const helpers = `
 static int dids[parser::max_nodes]; static bool dseen[parser::max_nodes];
@@ -367,7 +460,9 @@ bool load(string s){lexer::reset();for(int i=0;i<s.length;i++)if(!lexer::append(
 int main(){for(int pass=0;pass<2;pass++){
  if(!load("module m; f=():int=>let x=1; in x; ")||parser::parse()==-1)return 1;
  if(!load("let in 1")||expressions::parse()!=-1||expressions::diagnostic().kind!=expressions::Error::TrailingInput)return 2;
- if(!load("let+in+var")||expressions::parse()==-1)return 6;
+ if(!load("let+in+var+then")||expressions::parse()==-1)return 6;
+ if(!load("module m; f=():int=>if true then 1 else 0;")||parser::parse()==-1)return 7;
+ if(!load("if true then 1 else 0")||expressions::parse()!=-1||expressions::diagnostic().kind!=expressions::Error::ExpectedExpression)return 8;
  if(!load("1+2")||expressions::parse()==-1)return 3;
  if(parser::parse()!=-1||parser::node_count()!=0||expressions::node_count()!=0)return 4;
  if(!load("module m; f=():int=>let in @;")||parser::parse()!=-1)return 5;
@@ -381,11 +476,15 @@ for (const [input, status, error] of [
   ['module m; pub add=(a:int,b:int):int=>a+b; main=():int=>let value:int=add(20,22); in value;', 0, ''],
   ['module m; main=():int=>let var x=0; in x=unknown();', 0, ''],
   ['module m; main=():void=>unknown(2147483648);', 0, ''],
+  ['module m; main=():int=>if true then 42 else unknown(1/0);', 0, ''],
+  ['module m; main=():int=>if 1 then "wrong" else false;', 0, ''],
   ['', 65, 'binding:1:1: error: source must begin with a module declaration\n'],
   ['module m; int main(){}', 65, 'binding:1:11: error: expected binding or parameter name\n'],
   ['module m; f=():int= >0;', 65, "binding:1:19: error: expected '=>' before function expression\n"],
   ['module m; f=():int=>let x=1 in x;', 65, "binding:1:29: error: expected ';' after local binding\n"],
   ['module m; f=():int=>let in @;', 65, 'binding:1:28: error: unsupported character in Stage 0 source\n'],
+  ['module m; f=():int=>if true 1 else 0;', 65, "binding:1:29: error: expected 'then' after condition\n"],
+  ['module m; f=():int=>if true then 1;', 65, "binding:1:35: error: expected 'else' after conditional branch\n"],
   [Buffer.concat([Buffer.from('module m;'), Buffer.alloc(65526, 32)]), 0, ''],
   [Buffer.alloc(65536, 32), 65, 'binding: source exceeds 65535 bytes\n'],
 ]) for (const args of [['run', driver, '--manifest', driverManifest], ['run', output]]) command(status, args, { input, error });

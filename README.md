@@ -27,7 +27,7 @@ evaluation, dynamic typing and implicit module discovery are not part of the
 change. IR/bytecode remains **1.9**. Syntax replacement takes precedence over expanding the legacy
 Stage 1 grammar with enum/struct declarations.
 
-### First replacement-parser slice
+### Replacement-parser slices
 
 ```text
 module app.main;
@@ -47,6 +47,20 @@ driver checks syntax without running input. Name-first top-level constants
 bindings are immutable and `var x: int = 0;` records explicit mutability.
 The intended local semantics are eager and sequential, not Nix laziness or
 recursive binding groups. The parser does not yet enforce those semantic rules.
+
+Conditional expressions use the approved `if condition then value else value`
+spelling, with a mandatory `else`, anywhere an expression is accepted:
+
+```text
+module app.choose;
+choose = (ready: bool): int => if ready then 42 else 0;
+```
+
+They can nest in conditions, either branch, calls and `let` initializers. The
+intended runtime semantics evaluate the condition once and only the selected
+branch; both branches must still parse. This driver does not check condition or
+branch types, select a branch, or execute either branch. Parentheses delimit a
+conditional when an operator should apply outside its full `else` expression.
 
 The new driver rejects C-style function/declaration syntax. Stage 0 and the legacy
 Stage 1 drivers remain temporary bootstrap scaffolding while the replacement is
@@ -102,6 +116,7 @@ printf 'module app.main; import std.io; import app.types::{Pair as P,};' | ./bui
 printf 'module app.main; pub using Count=int; namespace math{pub Count answer(){return 42;}}' | ./build/l run build/stage1-function.lbc
 printf 'module app.data; pub const int answer=42; namespace buffers{static byte data[8];}' | ./build/l run build/stage1-function.lbc
 printf 'module app.main; main=():int=>let var x=40; in x+2;' | ./build/l run build/stage1-binding.lbc
+printf 'module app.main; main=():int=>if true then 42 else 0;' | ./build/l run build/stage1-binding.lbc
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
 node tests/stage1-statements.mjs ./build/l

@@ -25,7 +25,7 @@ const quote = value => `"${[...bytes(value)].map(byte => `\\x${byte.toString(16)
 const keywords = new Map([
   'int', 'bool', 'void', 'auto', 'const', 'true', 'false', 'if', 'else', 'while', 'for',
   'return', 'module', 'break', 'continue', 'switch', 'case', 'default', 'import', 'as',
-  'pub', 'namespace', 'static', 'using', 'struct', 'enum', 'byte', 'string', 'extern', 'let', 'in', 'var',
+  'pub', 'namespace', 'static', 'using', 'struct', 'enum', 'byte', 'string', 'extern', 'let', 'in', 'var', 'then',
 ].map(word => [word, word[0].toUpperCase() + word.slice(1)]));
 const singles = Object.fromEntries([...('{}()[];:,.+-*/%!<>=')].map((value, index) => [value, [
   'LeftBrace', 'RightBrace', 'LeftParen', 'RightParen', 'LeftBracket', 'RightBracket',
@@ -84,7 +84,7 @@ good('empty', '');
 good('whitespace', ' \t\r\n\r\n  ');
 good('punctuation', Object.keys(singles).join(' ') + ' ' + Object.keys(pairs).join(' '));
 good('maximal munch', '=== !== <== >== && || +++ --- ::: a/**/b//tail\nZ');
-good('replacement tokens and adjacency', 'let in var => ==> =>= = > letx inner var1 Let In Var');
+good('replacement tokens and adjacency', 'let in var => ==> =>= = > if then else letx inner var1 thenx Let In Var Then');
 for (const word of keywords.keys()) {
   good(`keyword ${word}`, [word, `${word}x`, `x${word}`, word.toUpperCase(), word.slice(0, -1)].join(' '));
 }

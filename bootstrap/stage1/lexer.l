@@ -11,7 +11,7 @@ pub enum Kind {
     LeftBrace, RightBrace, LeftParen, RightParen, LeftBracket, RightBracket,
     Semicolon, Colon, Comma, Dot, Plus, Minus, Star, Slash, Percent,
     Bang, Less, Greater, Assign, Equal, NotEqual, LessEqual, GreaterEqual,
-    And, Or, Increment, Decrement, Scope, Let, In, Var, Arrow
+    And, Or, Increment, Decrement, Scope, Let, In, Var, Arrow, Then
 };
 
 pub enum Error {
@@ -162,7 +162,10 @@ Kind keyword() {
             if (word("struct")) return Kind::Struct;
             if (word("string")) return Kind::String;
             break;
-        case 116: if (word("true")) return Kind::True; break;
+        case 116:
+            if (word("true")) return Kind::True;
+            if (word("then")) return Kind::Then;
+            break;
         case 117: if (word("using")) return Kind::Using; break;
         case 118:
             if (word("void")) return Kind::Void;
