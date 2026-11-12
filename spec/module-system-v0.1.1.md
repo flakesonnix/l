@@ -6,6 +6,14 @@
 
 This document replaces sections 2.2 and 2.3 of Language L Specification 0.1.0.
 
+> **Repository status (non-normative):** Source examples here use the currently
+> implemented legacy bootstrap syntax. A typed, Nix-inspired source replacement
+> is approved, but its exact grammar is not finalized or implemented. This note
+> does not amend any rule below: module identity, explicit imports, resolution,
+> visibility and dependency-cycle semantics remain normative. See the
+> [source syntax status](../README.md#source-syntax-status) for the distinction
+> between the implemented grammar and the replacement direction.
+
 ## 1. Module model
 
 L uses an explicit, file-based module system.

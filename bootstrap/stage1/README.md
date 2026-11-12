@@ -9,6 +9,23 @@ statement parser includes local declarations; the separate header driver handles
 module/import prefixes only. Running a
 lexer over its own source is **not self-hosting**.
 
+## Source syntax status
+
+All contracts and examples below describe **legacy bootstrap syntax**, the
+currently implemented C-like grammar. The approved replacement is typed and
+Nix-inspired: declarative bindings, `let/in`, records and expression-oriented
+functions, with explicit modules. It is a breaking source migration, not a
+permanent dual grammar. The exact replacement grammar is not finalized or
+implemented; no new syntax is accepted by this documentation update.
+
+Static typing, eager left-to-right evaluation and the normative
+[module-system semantics](../../spec/module-system-v0.1.1.md) are preserved.
+Nix laziness and dynamic typing are not implied. These provisional AST contracts
+are not a source-compatibility promise or serialized format; IR/bytecode remains
+**1.9**. Extending the legacy file parser with enum/struct declarations is deferred
+behind syntax replacement. This does not remove Stage 0's existing enum/struct
+support or add Stage 1 semantic analysis.
+
 ## Build and run
 
 From the repository root:
@@ -518,3 +535,21 @@ under `make test`, `make sanitize`, `make coverage` and the Nix checks. The exis
 **100% line/function/branch gate applies to Stage 0 C code only**; there is not yet
 a coverage gate for L source. No arbitrary mutant bytecode or cyclic verifier
 graphs are executed by these tests.
+
+### Validation snapshot
+
+At parser implementation `4dd9e68`, the independent suites pass through both
+source and serialized execution:
+
+| Suite | Fixtures | Modeled checks |
+| --- | --- | --- |
+| Lexer | 1175 | 95048 token checks |
+| Expressions | 351 | 25352 expression-node checks |
+| Statements/locals | 409 | 14704 statement + 22752 expression-node checks |
+| Module/import headers | 168 | 44012 header-node checks |
+| Function files/globals | 478 | 135036 checks across all four arenas |
+
+The file suite uses 185 batches and 805 commands. These are model assertion
+counts, **not L-source coverage**. Stage 0 C coverage remains 2596/2596 lines,
+163/163 functions and 2660/2660 branches (100%). Hosted results for this exact
+implementation are available in [PR #18's CI](https://github.com/flakesonnix/l/actions/runs/42817722271).

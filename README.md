@@ -7,6 +7,27 @@ No LLVM or external library dependencies.
 Build, Nix and CI instructions: [development guide](docs/DEVELOPMENT.md).
 GitHub review order and merge instructions: [review guide](docs/REVIEWING.md).
 
+## Source syntax status
+
+The compiler, L-written frontend, examples and tests currently use **legacy
+bootstrap syntax**, the C-like grammar documented below. These examples remain
+runnable; the replacement grammar is not implemented yet.
+
+The approved direction is a **typed, Nix-inspired replacement**: declarative
+bindings, `let/in`, records and expression-oriented functions, with explicit
+modules. This is a breaking source migration, not a permanent second grammar.
+Concrete spellings and grammar are not finalized; this records the direction,
+not new accepted syntax or support for additional record types.
+
+Static typing, eager left-to-right evaluation and the
+[module-system semantics](spec/module-system-v0.1.1.md) stay intact. Nix-style lazy
+evaluation, dynamic typing and implicit module discovery are not part of the
+change. IR/bytecode remains **1.9**; this documentation changes no compiler or
+artifact format. Syntax replacement takes precedence over expanding the legacy
+Stage 1 grammar with enum/struct declarations.
+
+## Build and run the current bootstrap
+
 ```sh
 make
 ./build/l check examples/answer.l --manifest examples/package.json
@@ -36,7 +57,7 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
 [`bootstrap/stage1/`](bootstrap/stage1/README.md) contains an L-written lexer,
 expression parser, statement/local-declaration parser, module/import header parser,
 function-file parser and stdin syntax-check drivers, compiled and executed by
-Stage 0. They use existing Stage 0 syntax. Function files support definitions,
+Stage 0. They use legacy bootstrap syntax. Function files support definitions,
 `extern` declarations, `using` aliases, module constants, scalar/static-array
 storage and nested/reopened namespaces; struct/enum declarations remain unimplemented.
 There is **no semantic checker, code generator or self-hosted compiler** yet.
@@ -79,10 +100,15 @@ cover the whole file. Namespaces share the same 48-level syntax-depth budget as
 their bodies; reopening and type aliases are recorded syntactically, not resolved.
 Global initializers and static-array lengths are expression nodes, never evaluated;
 the parser does not allocate or initialize the input's storage.
-**100% coverage gate still measures Stage 0 C code**, not L-source coverage. No
-syntax or IR/bytecode-format change is introduced; artifacts remain at **1.9**.
+**100% coverage gate still measures Stage 0 C code**, not L-source coverage. These
+frontend slices do not change the implemented source grammar or IR/bytecode
+format; artifacts remain at **1.9**.
 
 ## Supported subset
+
+This section describes the implemented Stage 0 subset in legacy bootstrap syntax,
+not the unimplemented replacement grammar. Stage 1's syntax-only subset is listed
+separately above.
 
 - ASCII identifiers, decimal literals, `//` and `/* … */` comments.
 - Mandatory `module a.b;`, one file per module, explicitly configured source roots.
@@ -925,7 +951,7 @@ types before read, buffered-write or unbuffered-write failures. Its 40 compiled
 and deserialized executions alternate failures and successful retries through
 nested helpers, checking consumed input, retained stdout prefixes, caller-owned error flags,
 execution cleanup, fresh statics and unchanged metadata/serialized bytecode.
-These tests keep the language syntax and IR/bytecode format at 1.9.
+These tests preserve the existing source syntax and IR/bytecode format **1.9**.
 Observer tests compare exact instruction and branch-event order against independent
 loop/call/dispatch models, directly and after serialization. The 132 cases include
 disabled callbacks, NULL data, repeated runs, shared branch destinations,

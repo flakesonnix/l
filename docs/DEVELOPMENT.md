@@ -5,12 +5,19 @@ Stage 0 is the C11 compiler and verified bytecode VM described in the
 implementation of L 0.1. The module rules follow
 [module-system specification 0.1.1](../spec/module-system-v0.1.1.md).
 
+The current compiler, Stage 1 sources, examples and test fixtures use **legacy
+bootstrap syntax**. A breaking, typed Nix-inspired replacement is approved but its
+exact grammar is not finalized or implemented. See
+[source syntax status](../README.md#source-syntax-status). Static typing, eager
+left-to-right evaluation, explicit module semantics and IR/bytecode **1.9** remain
+unchanged. The commands below exercise the implemented grammar, not the replacement.
+
 ## Checkout and prerequisites
 
 Run commands from the repository root. The review stack is documented in
-[REVIEWING.md](REVIEWING.md); the initial GitHub `main` is intentionally the
-historical 1.7 baseline until those PRs are merged. The Nix commands below require
-a checkout containing `flake.nix`, such as the Nix review branch.
+[REVIEWING.md](REVIEWING.md). `main` includes the byte-I/O/static-array baseline,
+observers, Nix/CI support and the syntax-only Stage 1 frontend through global
+storage. The original 1.7 baseline is historical, not the current checkout.
 
 Native builds need a C11 compiler and GNU Make. Tests also need Node.js 22 or
 newer and a POSIX shell. Coverage needs GCC and its matching gcov. The fault tests
@@ -52,8 +59,8 @@ explicit resource-limit expectations.
 ## Nix workflow
 
 `flake.lock` pins nixpkgs. Linux outputs are available for `x86_64-linux` and
-`aarch64-linux`. The initial validation built and tested x86_64 Linux; aarch64
-outputs were evaluated but not built on that machine.
+`aarch64-linux`. Validation has built and tested x86_64 Linux; aarch64 outputs
+have been evaluated only, not built or tested on that machine.
 
 ```sh
 nix develop
@@ -75,8 +82,8 @@ fortification because coverage compiles instrumented C sources at `-O0`. The
 installed compiler package retains the standard Nix hardening settings.
 
 `nix build` creates `result/bin/l` and installs the examples, standard library,
-specification and README under `result/share/l/`. Documentation is included when
-present in the checkout. Installed manifests retain their relative source roots:
+specification, README, development/review guides and Stage 1 sources under
+`result/share/l/`. Installed manifests retain their relative source roots:
 
 ```sh
 ./result/bin/l check ./result/share/l/examples/io_demo.l \
@@ -117,6 +124,8 @@ bytes, including NUL and values above 127; they do not perform text conversion.
 | Byte-oriented standard I/O | 1.8 | Recompile older artifacts; `extern` is reserved. |
 | Static arrays | 1.9 | Recompile older artifacts; globals gain length metadata. |
 | Models, observers, Nix and CI | 1.9 | No additional syntax or artifact-format change. |
+| Syntax-only Stage 1 frontend | 1.9 | Provisional in-memory ASTs; no serialized AST format. |
+| Approved source-syntax replacement | 1.9 unchanged | Not implemented; no replacement grammar accepted yet. |
 
 The loader accepts only the current exact version, including for programs that do
 not use the new feature. The C observer API and its callback contract are described
@@ -126,16 +135,16 @@ in the [README](../README.md#vm-execution-observation); it adds no trace file fo
 
 The workflow in [`.github/workflows/ci.yml`](https://github.com/flakesonnix/l/blob/main/.github/workflows/ci.yml) checks
 regular tests, sanitizers and coverage in separate Ubuntu jobs with GCC and
-Node.js 22. A separate job runs the pinned Nix checks when the branch contains a
-flake. Earlier review slices explicitly report that Nix support has not arrived
-yet; their native gates still run in full.
+Node.js 22. A separate job runs the pinned Nix checks. The workflow is active on
+`main`, `review/**` pushes, pull requests and manual dispatches. Push, PR and manual
+runs use separate concurrency groups; only superseded runs of the same trigger
+and branch/PR cancel one another.
 
 Actions are pinned to full commit IDs, repository permissions are read-only, and
 checkout credentials are not persisted. Coverage reports and failure diagnostics
 are retained briefly as artifacts. No publishing credentials or repository
 secrets are needed.
 
-For this initially empty repository, GitHub cannot dispatch the workflow until
-the CI PR reaches the default branch. Local validation is not a hosted CI result.
-After merging that prerequisite, use the Actions UI or the dispatch commands in
-[REVIEWING.md](REVIEWING.md) to start checks for already-open review branches.
+Local validation is not a hosted CI result. Check the run's exact commit and
+conclusion before merging; a successful earlier head is not evidence for a later
+change. See [REVIEWING.md](REVIEWING.md) for the review and merge gates.
