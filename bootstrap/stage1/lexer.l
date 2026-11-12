@@ -11,7 +11,7 @@ pub enum Kind {
     LeftBrace, RightBrace, LeftParen, RightParen, LeftBracket, RightBracket,
     Semicolon, Colon, Comma, Dot, Plus, Minus, Star, Slash, Percent,
     Bang, Less, Greater, Assign, Equal, NotEqual, LessEqual, GreaterEqual,
-    And, Or, Increment, Decrement, Scope
+    And, Or, Increment, Decrement, Scope, Let, In, Var, Arrow
 };
 
 pub enum Error {
@@ -147,9 +147,11 @@ Kind keyword() {
             break;
         case 105:
             if (word("int")) return Kind::Int;
+            if (word("in")) return Kind::In;
             if (word("if")) return Kind::If;
             if (word("import")) return Kind::Import;
             break;
+        case 108: if (word("let")) return Kind::Let; break;
         case 109: if (word("module")) return Kind::Module; break;
         case 110: if (word("namespace")) return Kind::Namespace; break;
         case 112: if (word("pub")) return Kind::Pub; break;
@@ -162,7 +164,10 @@ Kind keyword() {
             break;
         case 116: if (word("true")) return Kind::True; break;
         case 117: if (word("using")) return Kind::Using; break;
-        case 118: if (word("void")) return Kind::Void; break;
+        case 118:
+            if (word("void")) return Kind::Void;
+            if (word("var")) return Kind::Var;
+            break;
         case 119: if (word("while")) return Kind::While; break;
     }
     return Kind::Name;
@@ -212,7 +217,11 @@ Token text() {
 }
 
 Kind pair(int first, int second) {
-    if (first == 61 && second == 61) return Kind::Equal;
+    if (first == 61) {
+        if (second == 61) return Kind::Equal;
+        if (second == 62) return Kind::Arrow;
+        return Kind::Invalid;
+    }
     if (first == 33 && second == 61) return Kind::NotEqual;
     if (first == 60 && second == 61) return Kind::LessEqual;
     if (first == 62 && second == 61) return Kind::GreaterEqual;

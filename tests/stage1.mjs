@@ -25,7 +25,7 @@ const quote = value => `"${[...bytes(value)].map(byte => `\\x${byte.toString(16)
 const keywords = new Map([
   'int', 'bool', 'void', 'auto', 'const', 'true', 'false', 'if', 'else', 'while', 'for',
   'return', 'module', 'break', 'continue', 'switch', 'case', 'default', 'import', 'as',
-  'pub', 'namespace', 'static', 'using', 'struct', 'enum', 'byte', 'string', 'extern',
+  'pub', 'namespace', 'static', 'using', 'struct', 'enum', 'byte', 'string', 'extern', 'let', 'in', 'var',
 ].map(word => [word, word[0].toUpperCase() + word.slice(1)]));
 const singles = Object.fromEntries([...('{}()[];:,.+-*/%!<>=')].map((value, index) => [value, [
   'LeftBrace', 'RightBrace', 'LeftParen', 'RightParen', 'LeftBracket', 'RightBracket',
@@ -33,7 +33,7 @@ const singles = Object.fromEntries([...('{}()[];:,.+-*/%!<>=')].map((value, inde
   'Bang', 'Less', 'Greater', 'Assign',
 ][index]]));
 const pairs = { '==': 'Equal', '!=': 'NotEqual', '<=': 'LessEqual', '>=': 'GreaterEqual',
-  '&&': 'And', '||': 'Or', '++': 'Increment', '--': 'Decrement', '::': 'Scope' };
+  '&&': 'And', '||': 'Or', '++': 'Increment', '--': 'Decrement', '::': 'Scope', '=>': 'Arrow' };
 function position(source, start) {
   const prefix = source.subarray(0, start).toString('latin1');
   return { line: prefix.split('\n').length, column: start - prefix.lastIndexOf('\n') };
@@ -84,6 +84,7 @@ good('empty', '');
 good('whitespace', ' \t\r\n\r\n  ');
 good('punctuation', Object.keys(singles).join(' ') + ' ' + Object.keys(pairs).join(' '));
 good('maximal munch', '=== !== <== >== && || +++ --- ::: a/**/b//tail\nZ');
+good('replacement tokens and adjacency', 'let in var => ==> =>= = > letx inner var1 Let In Var');
 for (const word of keywords.keys()) {
   good(`keyword ${word}`, [word, `${word}x`, `x${word}`, word.toUpperCase(), word.slice(0, -1)].join(' '));
 }
@@ -144,6 +145,7 @@ for (const path of ['bootstrap/stage1/lexer.l', 'bootstrap/stage1/main.l',
   'bootstrap/stage1/statements.l', 'bootstrap/stage1/statement_main.l',
   'bootstrap/stage1/headers.l', 'bootstrap/stage1/header_main.l',
   'bootstrap/stage1/functions.l', 'bootstrap/stage1/function_main.l',
+  'bootstrap/stage1/bindings.l', 'bootstrap/stage1/binding_main.l',
   'examples/struct_demo.l', 'examples/enum_demo.l', 'examples/static_buffers.l']) {
   good(path, readFileSync(resolve(root, path)));
 }

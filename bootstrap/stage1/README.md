@@ -2,8 +2,9 @@
 
 These are the first L-written implementation slices. Stage 0 compiles them to
 existing **1.9 bytecode**, and the Stage 0 VM executes them. The file parser accepts
-headers, functions, aliases, module constants, static storage and namespaces;
-struct/enum declarations remain unimplemented.
+headers, functions, aliases, module constants, static storage and namespaces in
+legacy syntax; the replacement binding parser adds a separate migration slice.
+Struct/enum declarations remain unimplemented.
 There is no semantic checker, code generator or complete compiler yet. The
 statement parser includes local declarations; the separate header driver handles
 module/import prefixes only. Running a
@@ -11,12 +12,14 @@ lexer over its own source is **not self-hosting**.
 
 ## Source syntax status
 
-All contracts and examples below describe **legacy bootstrap syntax**, the
-currently implemented C-like grammar. The approved replacement is typed and
+Unless marked as replacement syntax, contracts and examples below describe
+**legacy bootstrap syntax**, the currently compiled C-like grammar. The approved replacement is typed and
 Nix-inspired: declarative bindings, `let/in`, records and expression-oriented
 functions, with explicit modules. It is a breaking source migration, not a
-permanent dual grammar. The exact replacement grammar is not finalized or
-implemented; no new syntax is accepted by this documentation update.
+permanent dual grammar. Name-first types, expression-bodied function bindings and
+immutable locals with explicit `var` are approved and parsed by the first new
+slice below. The remaining grammar and complete executable-source migration are
+not implemented.
 
 Static typing, eager left-to-right evaluation and the normative
 [module-system semantics](../../spec/module-system-v0.1.1.md) are preserved.
@@ -41,11 +44,13 @@ printf 'module app.main; import std.io; import app.types::{Pair as P,};' | ./bui
 ./build/l run build/stage1-function.lbc < examples/answer.l
 printf 'module app.main; pub using Count=int; namespace math{pub Count answer(){return 42;}}' | ./build/l run build/stage1-function.lbc
 printf 'module app.data; pub const int answer=42; namespace buffers{static byte data[8];}' | ./build/l run build/stage1-function.lbc
+printf 'module app.main; main=():int=>let value:int=42; in value;' | ./build/l run build/stage1-binding.lbc
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
 node tests/stage1-statements.mjs ./build/l
 node tests/stage1-headers.mjs ./build/l
 node tests/stage1-functions.mjs ./build/l
+node tests/stage1-bindings.mjs ./build/l
 ```
 
 Alternatively run the driver directly from source:
@@ -139,9 +144,13 @@ Integer magnitudes are stored as **minus the written decimal value**, allowing
 Signs are separate tokens. The later semantic checker must decide where that boundary
 magnitude is legal; the lexer does not accept it as an ordinary positive int value.
 
-The recognized keywords, ASCII identifiers, decimal literals, punctuation,
-two-byte operators, comments and literal-backed string escapes match Stage 0's
-lexical subset. Comments are non-nesting and may contain high bytes, but not NUL.
+ASCII identifiers, decimal literals, comments and literal-backed string escapes
+match Stage 0's lexical subset. The scanner additionally recognizes replacement
+keywords `let`, `in`, `var` and the adjacent `=>` token. `= >` is two tokens, not
+an arrow. Legacy parser cursors temporarily expose those three keywords as names
+to keep existing bootstrap inputs usable; the replacement parser reserves them
+in both headers and bodies. This compatibility is migration scaffolding, not a
+permanent second source grammar. Comments are non-nesting and may contain high bytes, but not NUL.
 Raw string contents must be printable ASCII; escapes preserve all 256 byte values.
 Error kinds are internal diagnostics, not a serialized token or compiler-artifact
 format.
@@ -178,7 +187,8 @@ field identifier. These spans are **not whole-expression spans**. Grouping is
 discarded, while unary minus is retained rather than evaluated or folded.
 
 - `Integer.value` retains the lexer's nonpositive decimal magnitude; `Bool.value`
-  is 0/1. Other nodes use zero.
+  is 0/1. Legacy expression kinds otherwise use zero. Replacement-only `Type` and
+  `Binding` nodes use the tags described below.
 - Qualified names use a `right` chain of individual `Name` segments.
 - Calls/struct literals use `left` for the callee/type expression and `right` for
   the first argument. Argument roots use `next` to link siblings. Other `next`
@@ -317,6 +327,9 @@ not claim a complete implementation of the module system.
 
 `headers::discard()` exposes the existing header/expression rollback operation to
 the enclosing file parser; it retains the header diagnostic.
+`parse_replacement_prefix()` is the migration parser's internal variant: it enables
+replacement keyword handling before scanning the header, retaining the same
+module/import grammar and source-order rules.
 
 ## Current function-file contract
 
@@ -450,6 +463,97 @@ These ASTs remain provisional and are not serialized. Parsing the driver itself
 or an I/O/infinite-loop example only checks syntax; it is not self-hosting or input
 execution. Stage 0 still compiles and runs the parser implementation.
 
+## Replacement binding-file contract
+
+`bindings.l` and `binding_main.l` are the first **replacement-syntax** file slice.
+The implementation is still compiled from legacy source by Stage 0. This is not
+self-hosting, a Stage 0 grammar replacement or a claim that the new source can be
+compiled/executed yet. The replacement driver accepts only its new declaration
+grammar, not a mixture of C-style declarations and new bindings:
+
+```text
+module app.main;
+import app.types as types;
+
+pub answer: int = 42;
+pub add = (a: int, b: int): int => a + b;
+main = (): int =>
+  let
+    value: int = add(20, 22);
+    var saved = value;
+  in saved;
+```
+
+Top-level constants require a written type. Function parameters/results are
+explicitly typed, with no parameter defaults or trailing parameter/call commas.
+Local bindings inside `let` may omit `: Type`, but require `= expression;`.
+`var` marks a mutable local; plain locals are immutable. Empty binding lists and
+nested `let/in` expressions are syntax-valid. The body after `in` is a full
+expression; grouping bounds its extent when it is used before another operator.
+Calls use `f(...)`, not whitespace application. Existing scalar expressions,
+qualification, conversions, field/index access and update/assignment syntax can
+be recorded, but positional legacy struct literals are rejected in this mode.
+
+The intended binding semantics are **eager and sequential**. This parser records
+source order, names, written types and mutability; it does not implement scope
+resolution, inference, type/readonly checks or evaluation. Unknown names/calls,
+duplicate/forward local bindings, invalid written `void`/`auto` types, mutation of
+plain bindings and nonconstant top-level initializers may be syntax-valid here.
+These are not semantic acceptance claims. No input initializer, function or
+import is executed, and no input program storage is allocated. Records, conditional
+expressions, statement blocks/loops, nested function values, namespaces, aliases,
+externs, statics, arrays and enums are not declarations in this first slice.
+
+### Arenas and node ownership
+
+`bindings::parse()` replays input and requires EOF. It returns a `Module` root in
+its own **1024-node declaration arena**; at most **256 functions** fit. Parameters
+and constants use declaration nodes but do not count as functions. The shared
+header and expression arenas each retain their **2048-node** limit. All budgets
+cover the whole file; the shared expression depth remains **48**, including `let`
+initializers and bodies. Iterative declaration/parameter lists add no depth level.
+Any failure hides all three owned arenas and retains the first diagnostic.
+Diagnostics distinguish header, expression/lexical and declaration failures.
+Repeated parses reset both data and errors. Invalid IDs return zero metadata and
+absent links; IDs expire at source replacement or any shared-parser restart.
+
+Declaration nodes expose token start/length/line/column, identifier
+`name_start`/`name_length`, `exported` and five links:
+
+- `Module.header` is a header-arena ID; `items` is its first declaration.
+- `Constant.type` is an expression-arena `Type`; `body` is its initializer.
+- `Function.type` is its written result `Type`; `items` is the first declaration-
+  arena `Parameter`, and `body` is the expression body.
+- `Parameter.type` is its written `Type`. Parameters have no initializer.
+- `next` links declaration/parameter siblings. Other links are absent (-1).
+  Declaration metadata refers to the leading `pub` or name, not the whole span.
+
+The existing expression `Node` shape is unchanged. Three new internal kinds use
+the same expression arena:
+
+- `Type.value` is `expressions::type_kind` (`Int`, `Bool`, `Byte`, `String`, `Void`,
+  `Auto` or `Named`). A named type has its retained `Name` chain in `left`.
+- `Binding` metadata refers to its identifier. `value` is 0 for plain bindings or
+  1 for `var`; `left` is its written `Type` or -1 for inferred syntax; `right` is
+  the initializer. `next` links successive bindings in that `let`.
+- `Let` metadata refers to `let`; `left` is the first `Binding` or -1, and `right`
+  is the body. As with other expressions, a root used as a call argument can have
+  a sibling `next` link.
+
+Retained string bytes, first-error spans and invalid-node conventions are unchanged.
+`expressions::replacement()` and `parse_type()` are provisional internal migration
+operations. Legacy `begin()`/`parse()` reset to legacy mode. No AST is serialized,
+no standard-library API is added, and IR/bytecode stays **1.9**.
+
+`tests/stage1-bindings.mjs` emits independent declaration/header/expression trees
+and checks every field/link, unique reachable IDs, source spans, retained bytes,
+replay, recovery and all-three-arena rollback through source and serialized
+execution. Generated corpora assert every new node/type kind and both mutability
+forms. Exact boundaries cover declarations, parameters, functions, shared type/body
+expression storage, `let` bindings and nested expression depth. The largest
+declaration/parameter/let-arena fixtures use one parse per VM invocation; smaller fixtures retain replay. A
+separate probe checks that replacement parsing does not leak into legacy parsing.
+
 ## Limits and verification
 
 The **65535-byte total input limit is this Stage 1 seed's buffer profile**, not a
@@ -535,6 +639,13 @@ under `make test`, `make sanitize`, `make coverage` and the Nix checks. The exis
 **100% line/function/branch gate applies to Stage 0 C code only**; there is not yet
 a coverage gate for L source. No arbitrary mutant bytecode or cyclic verifier
 graphs are executed by these tests.
+
+The replacement slice adds **178 fixtures / 34712 modeled node checks** across
+its declaration, header and expression arenas, in **45 batches / 205 commands**.
+Its extended scanner suite has **1181 fixtures / 108456 token checks**. All legacy
+expression, statement, header and function-file suites still pass. Stage 0 C
+coverage remains **2596 lines / 163 functions / 2660 branches (100%)**; these
+numbers do not measure L-source coverage.
 
 ### Validation snapshot
 
