@@ -7,8 +7,8 @@ remains unchanged and reachable. Current IR/bytecode is **1.9**.
 
 ## Review status
 
-The initial stack and Stage 1 PRs through **#18 are merged**. The latest reviewed
-feature merge is `20881dc`, integrating global-storage parser head `4dd9e68`.
+The initial stack and Stage 1 PRs through **#20 are merged**. The latest reviewed
+feature merge is `c98fb6f`, integrating replacement binding-parser head `9da4083`.
 GitHub COMMENT self-reviews are recorded as such; they are **not independent
 approvals**. Later documentation or syntax changes need their own review.
 The syntax-status documentation in [#19](https://github.com/flakesonnix/l/pull/19)
@@ -45,6 +45,7 @@ commits carried the CI foundation forward without rewriting those commits.
 | [Type aliases #17](https://github.com/flakesonnix/l/pull/17) | `review/stage1-type-aliases` | `45493c6` |
 | [Global storage #18](https://github.com/flakesonnix/l/pull/18) | `review/stage1-global-storage` | `20881dc` |
 | [Syntax-status docs #19](https://github.com/flakesonnix/l/pull/19) | `review/docs-syntax-status` | `a0d33e3` |
+| [Replacement bindings #20](https://github.com/flakesonnix/l/pull/20) | `review/stage1-nix-bindings` | `c98fb6f` |
 
 PRs #13–#18 received GitHub COMMENT reviews before merging in dependency order.
 Each prospective merge tree and actual merge tree matched its already-tested PR
@@ -53,6 +54,13 @@ and `make coverage` reruns passed at #18's merge gate, retaining **100% Stage 0 
 line/function/branch coverage**. Its eight hosted push/PR jobs also passed.
 The resulting `main` run is [CI at `20881dc`](https://github.com/flakesonnix/l/actions/runs/43041429246);
 check its conclusion separately from the PR-head checks.
+
+PR #20 also received a fresh COMMENT merge-gate review and 178-fixture model
+rerun. Its prospective and actual merge trees exactly matched tested head
+`9da4083`; original history and the review branch were retained. All eight PR-head
+checks and the resulting [main CI at `c98fb6f`](https://github.com/flakesonnix/l/actions/runs/43280312128)
+passed. Main CI was checked directly after its local watcher timed out; a watcher
+timeout is not a failed hosted run.
 
 The completed initial Stage 1 slices parse **legacy bootstrap syntax**. They do not resolve
 modules/names, check types, evaluate initializers, allocate input storage, generate
@@ -120,6 +128,8 @@ The user approved a **typed, Nix-inspired replacement**, not a permanent paralle
 grammar. Declarative bindings, `let/in`, records and expression-oriented functions
 are the direction. Name-first types, `name = (arg: Type): Result => expression;`,
 eager/sequential `let/in`, and immutable locals with explicit `var` are approved.
+Mandatory-else `if condition then value else value` expressions are approved too,
+with intended bool conditions, matching result types and selected-branch evaluation.
 The first replacement parser records these forms without implementing their
 semantics or completing the source migration; the remaining grammar is unfinished.
 Existing executable examples and legacy parser contracts still use bootstrap syntax. Expanding that

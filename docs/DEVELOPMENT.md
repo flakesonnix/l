@@ -7,7 +7,7 @@ implementation of L 0.1. The module rules follow
 
 The current compiler, Stage 1 implementation sources and executable examples use
 **legacy bootstrap syntax**. A breaking, typed Nix-inspired replacement is approved; its
-first syntax-only function/binding parser is implemented, but the full grammar and
+syntax-only function/binding and conditional parser slices are implemented, but the full grammar and
 executable source migration are not. See
 [source syntax status](../README.md#source-syntax-status). Static typing, eager
 left-to-right evaluation, explicit module semantics and IR/bytecode **1.9** remain
