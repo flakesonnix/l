@@ -22,6 +22,20 @@ namespace kind {
     pub const int Index = 11;
     pub const int Postfix = 12;
     pub const int Convert = 13;
+    pub const int Type = 14;
+    pub const int Binding = 15;
+    pub const int Let = 16;
+}
+
+// Written types in the replacement parser, not resolved semantic types.
+namespace type_kind {
+    pub const int Int = 1;
+    pub const int Bool = 2;
+    pub const int Byte = 3;
+    pub const int String = 4;
+    pub const int Void = 5;
+    pub const int Auto = 6;
+    pub const int Named = 7;
 }
 
 namespace op {
@@ -48,7 +62,8 @@ namespace op {
 }
 
 pub enum Error { None, Lexical, ExpectedExpression, ExpectedName, ExpectedOpen,
-                 ExpectedClose, TrailingInput, TooDeep, TooManyNodes };
+                 ExpectedClose, TrailingInput, TooDeep, TooManyNodes,
+                 ExpectedType, ExpectedAssign, ExpectedSemicolon };
 pub struct Diagnostic {
     Error kind;
     lexer::Error lexical;
@@ -64,7 +79,7 @@ pub struct Node {
     int length;
     int line;
     int column;
-    // Negative magnitude for Integer; 0/1 for Bool; otherwise zero.
+    // Integer magnitude, Bool 0/1, Type tag, or Binding mutability (0/1).
     int value;
     int text_length;
     int left;
@@ -88,8 +103,10 @@ static byte text[lexer::capacity];
 static int used = 0;
 static int text_used = 0;
 static int depth = 0;
+static bool replacement_mode = false;
 
 static lexer::Kind current_kind = lexer::Kind::End;
+static lexer::Kind scanned_kind = lexer::Kind::End;
 static lexer::Error current_error = lexer::Error::None;
 static int current_start = 0;
 static int current_length = 0;
@@ -123,7 +140,14 @@ void reject(Error error, lexer::Token at) {
 void advance() {
     if (failure != Error::None) return;
     lexer::Token at = lexer::next();
+    scanned_kind = at.kind;
     current_kind = at.kind;
+    // Temporary bootstrap compatibility: these are names in the legacy grammar.
+    switch (at.kind) {
+        case lexer::Kind::Let: case lexer::Kind::In: case lexer::Kind::Var:
+            if (!replacement_mode) current_kind = lexer::Kind::Name;
+            break;
+    }
     current_error = at.error;
     current_start = at.start;
     current_length = at.length;
@@ -249,6 +273,58 @@ int conversion(lexer::Token at) {
     return make_node(kind::Convert, operation(at.kind), at, value, -1);
 }
 
+pub int parse_type() {
+    lexer::Token at = look();
+    int tag = 0;
+    int name = -1;
+    switch (at.kind) {
+        case lexer::Kind::Int: tag = type_kind::Int; break;
+        case lexer::Kind::Bool: tag = type_kind::Bool; break;
+        case lexer::Kind::Byte: tag = type_kind::Byte; break;
+        case lexer::Kind::String: tag = type_kind::String; break;
+        case lexer::Kind::Void: tag = type_kind::Void; break;
+        case lexer::Kind::Auto: tag = type_kind::Auto; break;
+        case lexer::Kind::Name: tag = type_kind::Named; break;
+        default: reject(Error::ExpectedType, at);
+    }
+    if (failure != Error::None) return -1;
+    if (tag == type_kind::Named) name = parse_name();
+    else advance();
+    int result = make_node(kind::Type, op::None, at, name, -1);
+    if (result != -1) values[result] = tag;
+    return result;
+}
+
+int let_expression(lexer::Token at) {
+    advance();
+    int result = make_node(kind::Let, op::None, at, -1, -1);
+    int first = -1;
+    int last = -1;
+    while (failure == Error::None && !take(lexer::Kind::In)) {
+        bool mutable = take(lexer::Kind::Var);
+        lexer::Token name = look();
+        expect(lexer::Kind::Name, Error::ExpectedName);
+        int item = make_node(kind::Binding, op::None, name, -1, -1);
+        int declared = -1;
+        if (take(lexer::Kind::Colon)) declared = parse_type();
+        expect(lexer::Kind::Assign, Error::ExpectedAssign);
+        int value = expression(1);
+        expect(lexer::Kind::Semicolon, Error::ExpectedSemicolon);
+        if (failure != Error::None) break;
+        lefts[item] = declared;
+        rights[item] = value;
+        if (mutable) values[item] = 1;
+        if (last == -1) first = item;
+        else nexts[last] = item;
+        last = item;
+    }
+    int body = expression(1);
+    if (failure != Error::None) return -1;
+    lefts[result] = first;
+    rights[result] = body;
+    return result;
+}
+
 int primary() {
     if (failure != Error::None) return -1;
     lexer::Token at = look();
@@ -276,6 +352,8 @@ int primary() {
     } else if (at.kind == lexer::Kind::Int || at.kind == lexer::Kind::Byte) {
         advance();
         result = conversion(at);
+    } else if (replacement_mode && at.kind == lexer::Kind::Let) {
+        result = let_expression(at);
     } else if (take(lexer::Kind::LeftParen)) {
         result = expression(1);
         expect(lexer::Kind::RightParen, Error::ExpectedClose);
@@ -294,7 +372,9 @@ int postfix(int result) {
         if (take(lexer::Kind::LeftParen)) {
             int first = arguments(lexer::Kind::RightParen, false);
             result = make_node(kind::Call, op::None, at, result, first);
-        } else if (take(lexer::Kind::LeftBrace)) {
+        } else if (current_kind == lexer::Kind::LeftBrace) {
+            if (replacement_mode) break;
+            advance();
             int first = arguments(lexer::Kind::RightBrace, true);
             result = make_node(kind::Struct, op::None, at, result, first);
         } else if (take(lexer::Kind::Dot)) {
@@ -372,6 +452,7 @@ pub void begin() {
     used = 0;
     text_used = 0;
     depth = 0;
+    replacement_mode = false;
     failure = Error::None;
     lexical_failure = lexer::Error::None;
     failure_start = 0;
@@ -384,6 +465,8 @@ pub void begin() {
 pub lexer::Token current() { return look(); }
 pub bool consume(lexer::Kind kind) { return take(kind); }
 pub int parse_next() { return expression(1); }
+// Migration-only entry point: the legacy bootstrap parsers stay in legacy mode.
+pub void replacement() { replacement_mode = true; current_kind = scanned_kind; }
 pub void discard() { used = 0; text_used = 0; }
 
 // Parse exactly one expression from the lexer's current source, replaying it.
@@ -419,6 +502,9 @@ pub string error_message(Error error) {
         case Error::TrailingInput: return "unexpected token after expression";
         case Error::TooDeep: return "expression nesting exceeds 48";
         case Error::TooManyNodes: return "expression exceeds 2048 AST nodes";
+        case Error::ExpectedType: return "expected primitive or qualified type";
+        case Error::ExpectedAssign: return "expected '=' after local binding name/type";
+        case Error::ExpectedSemicolon: return "expected ';' after local binding";
         default: return "unknown expression error";
     }
 }

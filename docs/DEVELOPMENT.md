@@ -5,12 +5,14 @@ Stage 0 is the C11 compiler and verified bytecode VM described in the
 implementation of L 0.1. The module rules follow
 [module-system specification 0.1.1](../spec/module-system-v0.1.1.md).
 
-The current compiler, Stage 1 sources, examples and test fixtures use **legacy
-bootstrap syntax**. A breaking, typed Nix-inspired replacement is approved but its
-exact grammar is not finalized or implemented. See
+The current compiler, Stage 1 implementation sources and executable examples use
+**legacy bootstrap syntax**. A breaking, typed Nix-inspired replacement is approved; its
+first syntax-only function/binding parser is implemented, but the full grammar and
+executable source migration are not. See
 [source syntax status](../README.md#source-syntax-status). Static typing, eager
 left-to-right evaluation, explicit module semantics and IR/bytecode **1.9** remain
-unchanged. The commands below exercise the implemented grammar, not the replacement.
+unchanged. Source compilation still uses the legacy grammar; the new
+`build/stage1-binding.lbc` stdin driver checks replacement syntax without executing it.
 
 ## Checkout and prerequisites
 
@@ -125,7 +127,7 @@ bytes, including NUL and values above 127; they do not perform text conversion.
 | Static arrays | 1.9 | Recompile older artifacts; globals gain length metadata. |
 | Models, observers, Nix and CI | 1.9 | No additional syntax or artifact-format change. |
 | Syntax-only Stage 1 frontend | 1.9 | Provisional in-memory ASTs; no serialized AST format. |
-| Approved source-syntax replacement | 1.9 unchanged | Not implemented; no replacement grammar accepted yet. |
+| Replacement function/binding parser | 1.9 | Syntax-only migration slice; Stage 0 source compilation remains legacy. |
 
 The loader accepts only the current exact version, including for programs that do
 not use the new feature. The C observer API and its callback contract are described

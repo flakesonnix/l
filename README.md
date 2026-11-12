@@ -9,22 +9,50 @@ GitHub review order and merge instructions: [review guide](docs/REVIEWING.md).
 
 ## Source syntax status
 
-The compiler, L-written frontend, examples and tests currently use **legacy
-bootstrap syntax**, the C-like grammar documented below. These examples remain
-runnable; the replacement grammar is not implemented yet.
+Stage 0 compilation, the L-written compiler sources and executable examples use
+**legacy bootstrap syntax**, the C-like grammar documented below. These examples remain
+runnable. A separate syntax-only Stage 1 driver now accepts the first approved
+replacement slice; the source compiler does not yet compile that syntax.
 
 The approved direction is a **typed, Nix-inspired replacement**: declarative
 bindings, `let/in`, records and expression-oriented functions, with explicit
 modules. This is a breaking source migration, not a permanent second grammar.
-Concrete spellings and grammar are not finalized; this records the direction,
-not new accepted syntax or support for additional record types.
+The approved function/binding spelling is shown below. The rest of the replacement
+grammar and the full source migration remain incomplete; records are not added by
+this slice.
 
 Static typing, eager left-to-right evaluation and the
 [module-system semantics](spec/module-system-v0.1.1.md) stay intact. Nix-style lazy
 evaluation, dynamic typing and implicit module discovery are not part of the
-change. IR/bytecode remains **1.9**; this documentation changes no compiler or
-artifact format. Syntax replacement takes precedence over expanding the legacy
+change. IR/bytecode remains **1.9**. Syntax replacement takes precedence over expanding the legacy
 Stage 1 grammar with enum/struct declarations.
+
+### First replacement-parser slice
+
+```text
+module app.main;
+
+pub add = (a: int, b: int): int => a + b;
+main = (): int =>
+  let
+    value: int = add(20, 22);
+  in value;
+```
+
+Run `make stage1`, then pipe this source into
+`./build/l run build/stage1-binding.lbc`. Success returns **0**, not 42: this
+driver checks syntax without running input. Name-first top-level constants
+(`answer: int = 42;`), typed parameters/results, ordinary calls and nested
+`let/in` are supported. Local bindings may omit their type annotation; plain
+bindings are immutable and `var x: int = 0;` records explicit mutability.
+The intended local semantics are eager and sequential, not Nix laziness or
+recursive binding groups. The parser does not yet enforce those semantic rules.
+
+The new driver rejects C-style function/declaration syntax. Stage 0 and the legacy
+Stage 1 drivers remain temporary bootstrap scaffolding while the replacement is
+incomplete, not a permanent second user grammar. Records, statement blocks,
+namespaces, static storage and enum declarations are not part of this first new
+file-parser slice. See its [parser contract](bootstrap/stage1/README.md#replacement-binding-file-contract).
 
 ## Build and run the current bootstrap
 
@@ -56,8 +84,9 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
 
 [`bootstrap/stage1/`](bootstrap/stage1/README.md) contains an L-written lexer,
 expression parser, statement/local-declaration parser, module/import header parser,
-function-file parser and stdin syntax-check drivers, compiled and executed by
-Stage 0. They use legacy bootstrap syntax. Function files support definitions,
+legacy function-file parser, replacement binding-file parser and stdin syntax-check
+drivers, compiled and executed by Stage 0. The implementation sources still use
+legacy bootstrap syntax. Legacy function files support definitions,
 `extern` declarations, `using` aliases, module constants, scalar/static-array
 storage and nested/reopened namespaces; struct/enum declarations remain unimplemented.
 There is **no semantic checker, code generator or self-hosted compiler** yet.
@@ -72,11 +101,13 @@ printf 'module app.main; import std.io; import app.types::{Pair as P,};' | ./bui
 ./build/l run build/stage1-function.lbc < examples/answer.l
 printf 'module app.main; pub using Count=int; namespace math{pub Count answer(){return 42;}}' | ./build/l run build/stage1-function.lbc
 printf 'module app.data; pub const int answer=42; namespace buffers{static byte data[8];}' | ./build/l run build/stage1-function.lbc
+printf 'module app.main; main=():int=>let var x=40; in x+2;' | ./build/l run build/stage1-binding.lbc
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
 node tests/stage1-statements.mjs ./build/l
 node tests/stage1-headers.mjs ./build/l
 node tests/stage1-functions.mjs ./build/l
+node tests/stage1-bindings.mjs ./build/l
 ```
 
 The initial scanner has a 65535-byte input buffer and inherits the VM's execution
@@ -101,8 +132,8 @@ their bodies; reopening and type aliases are recorded syntactically, not resolve
 Global initializers and static-array lengths are expression nodes, never evaluated;
 the parser does not allocate or initialize the input's storage.
 **100% coverage gate still measures Stage 0 C code**, not L-source coverage. These
-frontend slices do not change the implemented source grammar or IR/bytecode
-format; artifacts remain at **1.9**.
+legacy slices do not change the Stage 0 source grammar. The replacement driver is
+syntax-only too; artifacts remain at **1.9**.
 
 ## Supported subset
 

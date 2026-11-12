@@ -150,7 +150,7 @@ int import_item(lexer::Token at) {
 pub void discard() { used = 0; expressions::discard(); }
 
 // Replay the loaded source, leaving the first body token on the shared cursor.
-pub int parse_prefix() {
+int prefix(bool replacement) {
     used = 0;
     failure = Error::None;
     lexical_failure = lexer::Error::None;
@@ -159,6 +159,7 @@ pub int parse_prefix() {
     failure_line = 1;
     failure_column = 1;
     expressions::begin();
+    if (replacement) expressions::replacement();
     lexer::Token start = current();
     expect(lexer::Kind::Module, Error::ExpectedModule);
     int root = make_node(kind::Module, start);
@@ -179,6 +180,9 @@ pub int parse_prefix() {
     paths[root] = module_path;
     return root;
 }
+pub int parse_prefix() { return prefix(false); }
+// The replacement grammar reserves its keywords in headers as well as bodies.
+pub int parse_replacement_prefix() { return prefix(true); }
 // Standalone header-only syntax check, not a full source-file parser.
 pub int parse() {
     int root = parse_prefix();

@@ -11,6 +11,8 @@ The initial stack and Stage 1 PRs through **#18 are merged**. The latest reviewe
 feature merge is `20881dc`, integrating global-storage parser head `4dd9e68`.
 GitHub COMMENT self-reviews are recorded as such; they are **not independent
 approvals**. Later documentation or syntax changes need their own review.
+The syntax-status documentation in [#19](https://github.com/flakesonnix/l/pull/19)
+is also reviewed and merged at `a0d33e3`; its resulting main CI passed.
 
 ### Initial stack (merged)
 
@@ -42,6 +44,7 @@ commits carried the CI foundation forward without rewriting those commits.
 | [Namespaces #16](https://github.com/flakesonnix/l/pull/16) | `review/stage1-namespaces` | `562fcad` |
 | [Type aliases #17](https://github.com/flakesonnix/l/pull/17) | `review/stage1-type-aliases` | `45493c6` |
 | [Global storage #18](https://github.com/flakesonnix/l/pull/18) | `review/stage1-global-storage` | `20881dc` |
+| [Syntax-status docs #19](https://github.com/flakesonnix/l/pull/19) | `review/docs-syntax-status` | `a0d33e3` |
 
 PRs #13–#18 received GitHub COMMENT reviews before merging in dependency order.
 Each prospective merge tree and actual merge tree matched its already-tested PR
@@ -51,10 +54,12 @@ line/function/branch coverage**. Its eight hosted push/PR jobs also passed.
 The resulting `main` run is [CI at `20881dc`](https://github.com/flakesonnix/l/actions/runs/43041429246);
 check its conclusion separately from the PR-head checks.
 
-The Stage 1 slices parse **legacy bootstrap syntax only**. They do not resolve
+The completed initial Stage 1 slices parse **legacy bootstrap syntax**. They do not resolve
 modules/names, check types, evaluate initializers, allocate input storage, generate
 code or self-host. Struct/enum declarations remain unsupported by the Stage 1
 file parser, although Stage 0 already implements them.
+The replacement binding parser is a separate, syntax-only migration slice; the
+source compiler and bootstrap implementation sources still use legacy syntax.
 
 The byte I/O and static-buffer slices change the artifact version and need
 recompilation of older bytecode. The observer is an approved optional C embedding
@@ -113,8 +118,11 @@ present on the default branch, so manual dispatch is available.
 
 The user approved a **typed, Nix-inspired replacement**, not a permanent parallel
 grammar. Declarative bindings, `let/in`, records and expression-oriented functions
-are the direction; concrete spellings are not finalized or implemented. Current
-examples and parser contracts document legacy bootstrap syntax. Expanding that
+are the direction. Name-first types, `name = (arg: Type): Result => expression;`,
+eager/sequential `let/in`, and immutable locals with explicit `var` are approved.
+The first replacement parser records these forms without implementing their
+semantics or completing the source migration; the remaining grammar is unfinished.
+Existing executable examples and legacy parser contracts still use bootstrap syntax. Expanding that
 grammar with Stage 1 enum/struct declarations is deferred behind replacement.
 
 Review source migration separately from the completed parser slices. Preserve
