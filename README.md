@@ -18,7 +18,7 @@ The approved direction is a **typed hybrid: C-style functions and control flow,
 with selected Nix-inspired features** such as `let/in` and name-first bindings.
 The user explicitly chose C-style definitions over the earlier arrow-function
 proposal. This is a breaking source migration, not a permanent second grammar.
-The approved binding, conditional, record, enum, struct, alias and namespace spellings are shown below. The rest
+The approved binding, conditional, aggregate, alias, namespace and storage spellings are shown below. The rest
 of the replacement grammar and the full executable-source migration remain incomplete.
 
 Static typing, eager left-to-right evaluation and the
@@ -135,12 +135,29 @@ sets. Nested/reopened namespaces retain separate syntax nodes in written order;
 scope merging, lookup and duplicate checking are deferred. Export members with
 their own `pub`; `pub` on a namespace is rejected and visibility is not inherited.
 
+Static storage and external functions keep their existing C-style spellings:
+
+```text
+module app.storage;
+pub static int value = 42;
+static byte buffer[32];
+pub extern int read(const byte value);
+int main() { return value; }
+```
+
+Scalar statics require `= expr`; arrays require one `[length]` and reject explicit
+initializers. External declarations are functions only, require `extern` and a
+trailing `;`, and have no body. Their parameters support leading `const` like
+ordinary definitions. The parser only records written types, initializers,
+lengths and signatures: it does not allocate or initialize storage, evaluate
+lengths/values, resolve extern implementations, or check their types or visibility.
+
 The new driver rejects the superseded arrow-function form. It is a C-like subset,
-not full C: pointer/variadic signatures, prototypes/externs and
+not full C: pointer/variadic signatures, prototypes without `extern` and
 implicit uninitialized scalar locals are not added. Stage 0 and the legacy
 Stage 1 drivers remain temporary bootstrap scaffolding while the replacement is
-incomplete, not a permanent second user grammar. Static storage declarations are
-not part of these new file-parser slices. See the [parser contract](bootstrap/stage1/README.md#replacement-binding-file-contract).
+incomplete, not a permanent second user grammar. See the
+[parser contract](bootstrap/stage1/README.md#replacement-binding-file-contract).
 
 ## Build and run the current bootstrap
 

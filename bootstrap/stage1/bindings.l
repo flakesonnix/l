@@ -24,6 +24,7 @@ namespace kind {
     pub const int Enum = 9;
     pub const int Member = 10;
     pub const int Struct = 11;
+    pub const int Static = 12;
 }
 pub enum Error { None, Header, Statement, Expression, ExpectedName, ExpectedAssign,
                  ExpectedOpen, ExpectedClose, ExpectedColon, ExpectedBody, ExpectedBinding,
@@ -31,7 +32,9 @@ pub enum Error { None, Header, Statement, Expression, ExpectedName, ExpectedAssi
                  ExpectedRecordOpen, ExpectedRecordClose, ExpectedFieldName, TooManyRecords, TooManyFields,
                  ExpectedNamespaceOpen, ExpectedNamespaceClose, NamespaceVisibility,
                  ExpectedEnumOpen, ExpectedEnumName, ExpectedEnumClose, TooManyEnums,
-                 ExpectedStructName, ExpectedStructOpen, ExpectedStructFieldName, ExpectedStructFieldSemicolon, ExpectedStructClose };
+                 ExpectedStructName, ExpectedStructOpen, ExpectedStructFieldName, ExpectedStructFieldSemicolon, ExpectedStructClose,
+                 ExpectedStaticName, ExpectedStaticInitializer, ExpectedStaticSemicolon,
+                 ExpectedArrayClose, ArrayInitializer, ExpectedExternSemicolon };
 pub struct Diagnostic {
     Error kind;
     headers::Error header;
@@ -58,6 +61,8 @@ pub struct Node {
     int body;
     int next;
     bool immutable; // Written const on a parameter; false for other declarations.
+    bool external; // Written extern on a function; false for other declarations.
+    int array; // Expression-arena length for a static array; absent otherwise.
 };
 
 static int kinds[max_nodes];
@@ -74,6 +79,8 @@ static int items[max_nodes];
 static int bodies[max_nodes];
 static int nexts[max_nodes];
 static bool immutables[max_nodes];
+static bool externals[max_nodes];
+static int arrays[max_nodes];
 static int used = 0;
 static int function_count = 0;
 static int record_count = 0;
@@ -150,6 +157,8 @@ int make_node(int kind, lexer::Token at) {
     bodies[id] = -1;
     nexts[id] = -1;
     immutables[id] = false;
+    externals[id] = false;
+    arrays[id] = -1;
     return id;
 }
 int type() {
@@ -179,7 +188,7 @@ int parameter() {
     }
     return result;
 }
-int function(lexer::Token start, bool exported, int declared) {
+int function(lexer::Token start, bool exported, int declared, bool external) {
     lexer::Token name = current();
     expect(lexer::Kind::Name, Error::ExpectedName);
     expect(lexer::Kind::LeftParen, Error::ExpectedOpen);
@@ -200,9 +209,12 @@ int function(lexer::Token start, bool exported, int declared) {
         }
         expect(lexer::Kind::RightParen, Error::ExpectedClose);
     }
-    if (ok() && current().kind != lexer::Kind::LeftBrace) reject(Error::ExpectedBody, current());
     int body = -1;
-    if (ok()) { body = statements::parse_next(); ok(); }
+    if (external) expect(lexer::Kind::Semicolon, Error::ExpectedExternSemicolon);
+    else {
+        if (ok() && current().kind != lexer::Kind::LeftBrace) reject(Error::ExpectedBody, current());
+        if (ok()) { body = statements::parse_next(); ok(); }
+    }
     if (!ok()) return -1;
     types[result] = declared;
     items[result] = first;
@@ -210,6 +222,33 @@ int function(lexer::Token start, bool exported, int declared) {
     name_starts[result] = name.start;
     name_lengths[result] = name.length;
     exports[result] = exported;
+    externals[result] = external;
+    return result;
+}
+int static_declaration(lexer::Token start, bool exported) {
+    int declared = type();
+    lexer::Token name = current();
+    expect(lexer::Kind::Name, Error::ExpectedStaticName);
+    int length = -1;
+    int initial = -1;
+    if (take(lexer::Kind::LeftBracket)) {
+        length = value();
+        expect(lexer::Kind::RightBracket, Error::ExpectedArrayClose);
+        if (ok() && current().kind == lexer::Kind::Assign) reject(Error::ArrayInitializer, current());
+    } else {
+        expect(lexer::Kind::Assign, Error::ExpectedStaticInitializer);
+        initial = value();
+    }
+    expect(lexer::Kind::Semicolon, Error::ExpectedStaticSemicolon);
+    int result = make_node(kind::Static, start);
+    if (result != -1) {
+        types[result] = declared;
+        name_starts[result] = name.start;
+        name_lengths[result] = name.length;
+        exports[result] = exported;
+        bodies[result] = initial;
+        arrays[result] = length;
+    }
     return result;
 }
 int record_declaration(lexer::Token start) {
@@ -339,9 +378,14 @@ int declaration() {
         return -1;
     }
     bool exported = take(lexer::Kind::Pub);
+    if (take(lexer::Kind::Static)) return static_declaration(start, exported);
+    if (take(lexer::Kind::Extern)) {
+        int declared = type();
+        return function(start, exported, declared, true);
+    }
     if (ok() && statements::primitive(current().kind) != statements::type_kind::Invalid) {
         int declared = type();
-        return function(start, exported, declared);
+        return function(start, exported, declared, false);
     }
     if (ok() && current().kind == lexer::Kind::Struct) return struct_declaration(start, exported);
     lexer::Token name = current();
@@ -350,7 +394,7 @@ int declaration() {
     if (current().kind != lexer::Kind::Colon && current().kind != lexer::Kind::Assign) {
         int declared = expressions::parse_type_from_name(name);
         ok();
-        return function(start, exported, declared);
+        return function(start, exported, declared, false);
     }
     int result = -1;
     if (take(lexer::Kind::Colon)) {
@@ -430,9 +474,9 @@ pub int parse() {
 }
 pub int node_count() { return used; }
 pub Node node(int id) {
-    if (id < 0 || id >= used) return Node{kind::Invalid, 0, 0, 0, 0, 0, 0, false, -1, -1, -1, -1, -1, false};
+    if (id < 0 || id >= used) return Node{kind::Invalid, 0, 0, 0, 0, 0, 0, false, -1, -1, -1, -1, -1, false, false, -1};
     return Node{kinds[id], starts[id], lengths[id], lines[id], columns[id], name_starts[id], name_lengths[id],
-        exports[id], header_ids[id], types[id], items[id], bodies[id], nexts[id], immutables[id]};
+        exports[id], header_ids[id], types[id], items[id], bodies[id], nexts[id], immutables[id], externals[id], arrays[id]};
 }
 pub Diagnostic diagnostic() {
     return Diagnostic{failure, header_failure, statement_failure, expression_failure, lexical_failure,
@@ -472,6 +516,12 @@ pub string error_message(Error error) {
         case Error::ExpectedStructFieldName: return "expected struct field name";
         case Error::ExpectedStructFieldSemicolon: return "expected ';' after scalar struct field";
         case Error::ExpectedStructClose: return "expected '}' after struct fields";
+        case Error::ExpectedStaticName: return "expected static storage name";
+        case Error::ExpectedStaticInitializer: return "static storage requires a scalar initializer";
+        case Error::ExpectedStaticSemicolon: return "expected ';' after static declaration";
+        case Error::ExpectedArrayClose: return "expected ']' after static array length";
+        case Error::ArrayInitializer: return "static arrays initialize to zero and cannot have an initializer";
+        case Error::ExpectedExternSemicolon: return "expected ';' after extern declaration";
         default: return "unknown binding-file error";
     }
 }
