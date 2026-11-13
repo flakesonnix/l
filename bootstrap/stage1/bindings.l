@@ -4,6 +4,7 @@ module l.compiler.bindings;
 import l.compiler.lexer as lexer;
 import l.compiler.expressions as expressions;
 import l.compiler.headers as headers;
+import l.compiler.statements as statements;
 
 pub const int max_nodes = 1024;
 pub const int max_functions = 256;
@@ -20,14 +21,15 @@ namespace kind {
     pub const int Alias = 7;
     pub const int Namespace = 8;
 }
-pub enum Error { None, Header, Expression, ExpectedName, ExpectedAssign,
-                 ExpectedOpen, ExpectedClose, ExpectedColon, ExpectedArrow,
+pub enum Error { None, Header, Statement, Expression, ExpectedName, ExpectedAssign,
+                 ExpectedOpen, ExpectedClose, ExpectedColon, ExpectedBody, ExpectedBinding,
                  ExpectedSemicolon, MisplacedHeader, TooManyNodes, TooManyFunctions,
                  ExpectedRecordOpen, ExpectedRecordClose, ExpectedFieldName, TooManyRecords, TooManyFields,
                  ExpectedNamespaceOpen, ExpectedNamespaceClose, NamespaceVisibility };
 pub struct Diagnostic {
     Error kind;
     headers::Error header;
+    statements::Error statement;
     expressions::Error expression;
     lexer::Error lexical;
     int start;
@@ -69,6 +71,7 @@ static int function_count = 0;
 static int record_count = 0;
 static Error failure = Error::None;
 static headers::Error header_failure = headers::Error::None;
+static statements::Error statement_failure = statements::Error::None;
 static expressions::Error expression_failure = expressions::Error::None;
 static lexer::Error lexical_failure = lexer::Error::None;
 static int failure_start = 0;
@@ -87,6 +90,18 @@ void reject(Error error, lexer::Token at) {
 }
 bool ok() {
     if (failure != Error::None) return false;
+    statements::Diagnostic statement = statements::diagnostic();
+    if (statement.kind != statements::Error::None) {
+        failure = Error::Statement;
+        statement_failure = statement.kind;
+        expression_failure = statement.expression;
+        lexical_failure = statement.lexical;
+        failure_start = statement.start;
+        failure_length = statement.length;
+        failure_line = statement.line;
+        failure_column = statement.column;
+        return false;
+    }
     expressions::Diagnostic error = expressions::diagnostic();
     if (error.kind != expressions::Error::None) {
         failure = Error::Expression;
@@ -140,16 +155,49 @@ int value() {
     return result;
 }
 int parameter() {
+    lexer::Token start = current();
+    int declared = type();
     lexer::Token name = current();
     expect(lexer::Kind::Name, Error::ExpectedName);
-    expect(lexer::Kind::Colon, Error::ExpectedColon);
-    int declared = type();
-    int result = make_node(kind::Parameter, name);
+    int result = make_node(kind::Parameter, start);
     if (result != -1) {
         name_starts[result] = name.start;
         name_lengths[result] = name.length;
         types[result] = declared;
     }
+    return result;
+}
+int function(lexer::Token start, bool exported, int declared) {
+    lexer::Token name = current();
+    expect(lexer::Kind::Name, Error::ExpectedName);
+    expect(lexer::Kind::LeftParen, Error::ExpectedOpen);
+    if (ok() && function_count == max_functions) reject(Error::TooManyFunctions, start);
+    if (!ok()) return -1;
+    function_count++;
+    int result = make_node(kind::Function, start);
+    int first = -1;
+    int last = -1;
+    if (!take(lexer::Kind::RightParen)) {
+        while (ok()) {
+            int item = parameter();
+            if (!ok()) break;
+            if (last == -1) first = item;
+            else nexts[last] = item;
+            last = item;
+            if (!take(lexer::Kind::Comma)) break;
+        }
+        expect(lexer::Kind::RightParen, Error::ExpectedClose);
+    }
+    if (ok() && current().kind != lexer::Kind::LeftBrace) reject(Error::ExpectedBody, current());
+    int body = -1;
+    if (ok()) { body = statements::parse_next(); ok(); }
+    if (!ok()) return -1;
+    types[result] = declared;
+    items[result] = first;
+    bodies[result] = body;
+    name_starts[result] = name.start;
+    name_lengths[result] = name.length;
+    exports[result] = exported;
     return result;
 }
 int record_declaration(lexer::Token start) {
@@ -208,8 +256,18 @@ int declaration() {
         return -1;
     }
     bool exported = take(lexer::Kind::Pub);
+    if (ok() && statements::primitive(current().kind) != statements::type_kind::Invalid) {
+        int declared = type();
+        return function(start, exported, declared);
+    }
     lexer::Token name = current();
     expect(lexer::Kind::Name, Error::ExpectedName);
+    if (!ok()) return -1;
+    if (current().kind != lexer::Kind::Colon && current().kind != lexer::Kind::Assign) {
+        int declared = expressions::parse_type_from_name(name);
+        ok();
+        return function(start, exported, declared);
+    }
     int result = -1;
     if (take(lexer::Kind::Colon)) {
         int declared = type();
@@ -230,33 +288,7 @@ int declaration() {
             if (exported) reject(Error::NamespaceVisibility, start);
             else result = namespace_declaration(start);
         } else {
-            expect(lexer::Kind::LeftParen, Error::ExpectedOpen);
-            if (ok() && function_count == max_functions) reject(Error::TooManyFunctions, start);
-            if (!ok()) return -1;
-            function_count++;
-            result = make_node(kind::Function, start);
-            int first = -1;
-            int last = -1;
-            if (!take(lexer::Kind::RightParen)) {
-                while (ok()) {
-                    int item = parameter();
-                    if (!ok()) break;
-                    if (last == -1) first = item;
-                    else nexts[last] = item;
-                    last = item;
-                    if (!take(lexer::Kind::Comma)) break;
-                }
-                expect(lexer::Kind::RightParen, Error::ExpectedClose);
-            }
-            expect(lexer::Kind::Colon, Error::ExpectedColon);
-            int declared = type();
-            expect(lexer::Kind::Arrow, Error::ExpectedArrow);
-            int body = value();
-            expect(lexer::Kind::Semicolon, Error::ExpectedSemicolon);
-            if (!ok()) return -1;
-            types[result] = declared;
-            items[result] = first;
-            bodies[result] = body;
+            if (ok()) reject(Error::ExpectedBinding, current());
         }
     }
     if (result != -1) {
@@ -272,12 +304,14 @@ pub int parse() {
     record_count = 0;
     failure = Error::None;
     header_failure = headers::Error::None;
+    statement_failure = statements::Error::None;
     expression_failure = expressions::Error::None;
     lexical_failure = lexer::Error::None;
     failure_start = 0;
     failure_length = 0;
     failure_line = 1;
     failure_column = 1;
+    statements::begin();
     int header = headers::parse_replacement_prefix();
     if (header == -1) {
         headers::Diagnostic error = headers::diagnostic();
@@ -289,6 +323,7 @@ pub int parse() {
         failure_line = error.line;
         failure_column = error.column;
         headers::discard();
+        statements::discard();
         return -1;
     }
     headers::Node heading = headers::node(header);
@@ -303,7 +338,7 @@ pub int parse() {
         else nexts[last] = item;
         last = item;
     }
-    if (!ok()) { used = 0; function_count = 0; record_count = 0; headers::discard(); return -1; }
+    if (!ok()) { used = 0; function_count = 0; record_count = 0; headers::discard(); statements::discard(); return -1; }
     header_ids[root] = header;
     return root;
 }
@@ -314,7 +349,7 @@ pub Node node(int id) {
         exports[id], header_ids[id], types[id], items[id], bodies[id], nexts[id]};
 }
 pub Diagnostic diagnostic() {
-    return Diagnostic{failure, header_failure, expression_failure, lexical_failure,
+    return Diagnostic{failure, header_failure, statement_failure, expression_failure, lexical_failure,
         failure_start, failure_length, failure_line, failure_column};
 }
 pub string error_message(Error error) {
@@ -322,12 +357,14 @@ pub string error_message(Error error) {
         case Error::None: return "no binding-file error";
         case Error::Header: return "module/import header error";
         case Error::Expression: return "expression error";
+        case Error::Statement: return "statement error";
         case Error::ExpectedName: return "expected binding or parameter name";
         case Error::ExpectedAssign: return "expected '=' after binding name/type";
-        case Error::ExpectedOpen: return "expected '(' after function binding '='";
+        case Error::ExpectedOpen: return "expected '(' after function name";
         case Error::ExpectedClose: return "expected ')' after parameters";
         case Error::ExpectedColon: return "expected ':' before written type";
-        case Error::ExpectedArrow: return "expected '=>' before function expression";
+        case Error::ExpectedBody: return "expected function block body";
+        case Error::ExpectedBinding: return "expected record, alias or namespace after binding '='";
         case Error::ExpectedSemicolon: return "expected ';' after binding";
         case Error::MisplacedHeader: return "module and import declarations must precede bindings";
         case Error::TooManyNodes: return "binding file exceeds 1024 declaration nodes";

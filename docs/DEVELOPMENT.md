@@ -6,8 +6,10 @@ implementation of L 0.1. The module rules follow
 [module-system specification 0.1.1](../spec/module-system-v0.1.1.md).
 
 The current compiler, Stage 1 implementation sources and executable examples use
-**legacy bootstrap syntax**. A breaking, typed Nix-inspired replacement is approved; its
-syntax-only binding, conditional, record, alias and namespace parser slices are implemented, but the full grammar and
+**legacy bootstrap syntax**. The approved replacement combines C-style functions
+and control flow with selected Nix-inspired features, superseding the earlier
+arrow-function proposal. Syntax-only bindings, C bodies, conditional expressions,
+records, aliases and namespaces are implemented, but the full grammar and
 executable source migration are not. See
 [source syntax status](../README.md#source-syntax-status). Static typing, eager
 left-to-right evaluation, explicit module semantics and IR/bytecode **1.9** remain
