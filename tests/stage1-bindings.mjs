@@ -32,6 +32,7 @@ const conditional = (condition, positive, negative, fields = {}) => ({ kind: 'Co
 const fn = (body = integer(42), fields = {}) => ({ kind: 'Function', name: 'main', type: 'Int', parameters: [], body, ...fields });
 const constant = (fields = {}) => ({ kind: 'Constant', name: 'answer', type: 'Int', body: integer(42), ...fields });
 const record = (fields = [], options = {}) => ({ kind: 'Record', name: 'Pair', fields, ...options });
+const alias = (type = 'Int', options = {}) => ({ kind: 'Alias', name: 'Count', type, ...options });
 const recordValue = (fields = [], options = {}) => ({ kind: 'Record', left: named('Pair'), fields, ...options });
 const types = ['Int', 'Bool', 'Byte', 'String', 'Void', 'Auto', 'Named'];
 const operators = { '+': 'Plus', '-': 'Minus', '!': 'Bang', '*': 'Star', '/': 'Slash', '%': 'Percent', '<': 'Less', '>': 'Greater',
@@ -158,6 +159,7 @@ function rendered(name, declarations, options = {}) {
     const item = d(declaration.kind, start, declaration.exported ? 3 : declaration.name.length,
       { nameStart, nameLength: declaration.name.length, exported: !!declaration.exported });
     if (declaration.kind === 'Constant') { put(':'); item.type = type(declaration.type, declaration.typeName); put('='); }
+    else if (declaration.kind === 'Alias') { put(`=alias${gap}`); item.type = type(declaration.type, declaration.typeName); }
     else if (declaration.kind === 'Record') {
       put(`=record${gap}{`); let lastField = null;
       for (const field of declaration.fields) {
@@ -178,7 +180,7 @@ function rendered(name, declarations, options = {}) {
       }
       put('):'); item.type = type(declaration.type, declaration.typeName); put('=>');
     }
-    if (declaration.kind !== 'Record') item.body = expression(declaration.body);
+    if (!['Record', 'Alias'].includes(declaration.kind)) item.body = expression(declaration.body);
     put(`;${gap}`);
     if (last) last.next = item; else tree.items = item; last = item;
   }
@@ -426,6 +428,45 @@ rendered('body shares earlier record field type arena', [record([{ name: 'x', ty
 const afterFieldTypeOverflow = rendered('body after record field type arena overflow', [record([{ name: 'x', type: 'Named', typeName: 'ns::T' }]), fn({ kind: 'Chain', count: 2044 })]); fixtures.pop();
 bad(afterFieldTypeOverflow.input, 'Expression', '++', { expression: 'TooManyNodes' });
 
+for (const type of types) for (const exported of [false, true]) rendered(`alias ${type} ${exported}`, [alias(type, { exported }),
+  fn(named('value'), { type: 'Named', typeName: 'Count', parameters: [{ name: 'value', type: 'Named', typeName: 'Count' }] })]);
+for (const name of ['constructor', '__proto__', 'aliasx']) rendered(`alias identifier ${name}`, [alias('Int', { name })]);
+for (const gap of ['\n', '\t', '\r', '/*gap*/', '//gap\n']) rendered(`alias trivia ${JSON.stringify(gap)}`, [
+  constant({ type: 'String', body: { kind: 'Text', text: 'before\0\xff' } }),
+  alias('Named', { typeName: 'pkg::types::Value', exported: true }), fn({ kind: 'Text', text: 'after\x80' }, { type: 'String' }),
+], { gap, leading: '\n/*lead*/', trailing: '\n//end' });
+rendered('aliases are retained syntax, not recursively expanded', [alias('Named', { name: 'A', typeName: 'B' }),
+  alias('Named', { name: 'B', typeName: 'A' }), alias('Named', { name: 'Self', typeName: 'Self' }),
+  record([], { name: 'R' }), alias('Named', { name: 'NotScalar', typeName: 'R' }), alias('Void'), alias('Auto')]);
+rendered('aliases in field/result/local types', [alias('Int'), record([{ name: 'value', type: 'Named', typeName: 'Count' }]),
+  fn(letIn([local('p', recordValue([{ name: 'value', value: integer(42) }]), { type: 'Named', typeName: 'Pair' })],
+    { kind: 'Field', name: 'value', left: named('p') }), { type: 'Named', typeName: 'Count' })]);
+for (const [tail, error, marker, nested] of [
+  ['alias Count=int;', 'ExpectedName', 'alias'], ['using Count=int;', 'ExpectedName', 'using'],
+  ['Count=alias;', 'Expression', ';', { expression: 'ExpectedType' }], ['Count=alias', 'Expression', '', { expression: 'ExpectedType' }],
+  ['Count=alias int', 'ExpectedSemicolon', ''], ['Count=alias int[2];', 'ExpectedSemicolon', '['],
+  ['Count=alias T();', 'ExpectedSemicolon', '('], ['Count=alias const int;', 'Expression', 'const', { expression: 'ExpectedType' }],
+  ['Count=alias ns::;', 'Expression', ';', { expression: 'ExpectedName' }],
+  ['f=():int=>let T=alias int; in 0;', 'Expression', 'alias', { expression: 'ExpectedExpression' }],
+  ['x:string="old";Count=alias @;', 'Expression', '@', { expression: 'Lexical', lexical: 'UnsupportedCharacter' }],
+]) bad(`module m; ${tail}`, error, marker, nested);
+bad('module alias;', 'Header', 'alias', { header: 'ExpectedName' });
+bad('module m; import p as alias;', 'Header', 'alias', { header: 'ExpectedName' });
+rendered('alias declaration arena', Array.from({ length: 1023 }, () => alias()), { passes: 1 });
+const aliasOverflow = rendered('alias declaration overflow', Array.from({ length: 1024 }, () => alias())); fixtures.pop();
+bad(aliasOverflow.input, 'TooManyNodes', 'Count'); fixtures.at(-1).passes = 1;
+rendered('alias target expression arena', [alias('Named', { typeName: Array(2047).fill('T').join('::') })]);
+const aliasTypeOverflow = rendered('alias target expression overflow', [alias('Named', { typeName: Array(2048).fill('T').join('::') })]); fixtures.pop();
+bad(aliasTypeOverflow.input, 'Expression', aliasTypeOverflow.tree.items.type.start, { expression: 'TooManyNodes' });
+rendered('alias target after body shares arena', [fn({ kind: 'Chain', count: 2044 }), alias('Named', { typeName: 'T' })]);
+const aliasAfterBodyOverflow = rendered('alias target after body overflow', [fn({ kind: 'Chain', count: 2044 }), alias('Named', { typeName: 'ns::T' })]); fixtures.pop();
+bad(aliasAfterBodyOverflow.input, 'Expression', 'ns::T', { expression: 'TooManyNodes' });
+rendered('body after alias shares arena', [alias('Named', { typeName: 'T' }), fn({ kind: 'Chain', count: 2044 })]);
+const bodyAfterAliasOverflow = rendered('body after alias overflow', [alias('Named', { typeName: 'ns::T' }), fn({ kind: 'Chain', count: 2044 })]); fixtures.pop();
+bad(bodyAfterAliasOverflow.input, 'Expression', '++', { expression: 'TooManyNodes' });
+rendered('aliases do not consume function/record counts', [alias(), ...Array.from({ length: 256 }, (_, i) => record([{ name: 'x', type: 'Int' }], { name: `R${i}` })),
+  ...Array.from({ length: 256 }, (_, i) => fn(integer(0), { name: `f${i}` })), alias('Bool', { name: 'Flag' })], { passes: 1 });
+
 let state = 0x4e495842;
 function random(n) { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return Math.floor(state / 0x100000000 * n); }
 function generated(depth) {
@@ -451,6 +492,10 @@ for (let n = 0; n < 32; n++) rendered(`generated conditional ${n}`, [fn(conditio
 const recordGeneratedStart = fixtures.length;
 for (let n = 0; n < 32; n++) rendered(`generated record ${n}`, [record(Array.from({ length: random(6) + 1 }, (_, i) => ({ name: `field${i}`, type: types[random(types.length)] })), { exported: !!random(2) }),
   fn(recordValue(Array.from({ length: random(5) + 1 }, (_, i) => ({ name: `value${i}`, value: generatedConditional(2) }))))]);
+const aliasGeneratedStart = fixtures.length;
+for (let n = 0; n < 32; n++) rendered(`generated alias ${n}`, [alias(types[random(types.length)], { exported: !!random(2) }),
+  record([{ name: 'x', type: 'Named', typeName: 'Count' }]), fn(generatedConditional(2), { type: 'Named', typeName: 'Count' }),
+  alias('Named', { name: 'Later', typeName: 'pkg::Count' })]);
 function flatten(roots, links) {
   const nodes = [], ids = new Map(), pending = [...roots].reverse();
   while (pending.length) { const node = pending.pop(); if (!node || ids.has(node)) continue;
@@ -475,6 +520,9 @@ const generatedRecordArenas = fixtures.slice(recordGeneratedStart).map(f => aren
 for (const kind of ['Record', 'Field']) assert.ok(generatedRecordArenas.some(a => a.d.nodes.some(n => n.kind === kind)), kind);
 for (let tag = 1; tag <= 7; tag++) assert.ok(generatedRecordArenas.some(a => a.d.nodes.some(n => n.kind === 'Field' && n.type.value === tag)), `record field type ${tag}`);
 for (const exported of [false, true]) assert.ok(generatedRecordArenas.some(a => a.d.nodes.some(n => n.kind === 'Record' && n.exported === exported)), `record visibility ${exported}`);
+const generatedAliasNodes = fixtures.slice(aliasGeneratedStart).flatMap(f => arenas(f.tree).d.nodes).filter(n => n.kind === 'Alias');
+for (let tag = 1; tag <= 7; tag++) assert.ok(generatedAliasNodes.some(n => n.type.value === tag), `alias target type ${tag}`);
+for (const exported of [false, true]) assert.ok(generatedAliasNodes.some(n => n.exported === exported), `alias visibility ${exported}`);
 
 const helpers = `
 static int dids[parser::max_nodes]; static bool dseen[parser::max_nodes];
@@ -564,7 +612,7 @@ bool load(string s){lexer::reset();for(int i=0;i<s.length;i++)if(!lexer::append(
 int main(){for(int pass=0;pass<2;pass++){
  if(!load("module m; f=():int=>let x=1; in x; ")||parser::parse()==-1)return 1;
  if(!load("let in 1")||expressions::parse()!=-1||expressions::diagnostic().kind!=expressions::Error::TrailingInput)return 2;
- if(!load("let+in+var+then+record")||expressions::parse()==-1)return 6;
+ if(!load("let+in+var+then+record+alias")||expressions::parse()==-1)return 6;
  if(!load("module m; f=():int=>if true then 1 else 0;")||parser::parse()==-1)return 7;
  if(!load("if true then 1 else 0")||expressions::parse()!=-1||expressions::diagnostic().kind!=expressions::Error::ExpectedExpression)return 8;
  if(!load("1+2")||expressions::parse()==-1)return 3;
@@ -584,6 +632,8 @@ for (const [input, status, error] of [
   ['module m; main=():int=>if 1 then "wrong" else false;', 0, ''],
   ['module m;pub Pair=record{x:int;ready:bool;};main=():int=>let p:Pair=Pair{x=42;ready=true;};in p.x;', 0, ''],
   ['module m;Pair=record{};main=():void=>Unknown{extra=missing();};', 0, ''],
+  ['module m;pub Count=alias int;increment=(value:Count):Count=>value+1;', 0, ''],
+  ['module m;A=alias B;B=alias A;Self=alias Self;', 0, ''],
   ['', 65, 'binding:1:1: error: source must begin with a module declaration\n'],
   ['module m; int main(){}', 65, 'binding:1:11: error: expected binding or parameter name\n'],
   ['module m; f=():int= >0;', 65, "binding:1:19: error: expected '=>' before function expression\n"],
