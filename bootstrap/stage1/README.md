@@ -484,12 +484,12 @@ int main() {
 }
 ```
 
-Top-level constants require a written type. Functions use `[pub] Type name(Type
-parameter, ...) { statements }`, without a trailing semicolon. Parameters/results
+Top-level constants require a written type. Functions use `[pub] Type name([const]
+Type parameter, ...) { statements }`, without a trailing semicolon. Parameters/results
 use the same primitive/qualified written types as bindings and fields. Named result
 types are distinguished from name-first bindings without backtracking or retaining
-extra name nodes for ordinary binding identifiers. No parameter defaults, const
-parameters, array/pointer/variadic signatures, `(void)` shorthand, prototypes or
+extra name nodes for ordinary binding identifiers. No parameter defaults,
+array/pointer/variadic signatures, `(void)` shorthand, prototypes or
 extern declarations are added. Empty parameter lists use `()`.
 
 C-style bodies compose the existing statement parser in replacement-expression
@@ -525,6 +525,27 @@ These are not semantic acceptance claims. No input initializer, function or
 import is executed, and no input program storage is allocated.
 Nested function values/definitions, externs, statics, module arrays and enums are
 not declarations in these replacement slices.
+
+### Const parameters
+
+Parameters accept one optional leading `const`, matching the existing Stage 0
+C-style spelling: `int read(const int value) { return value; }`. The same qualifier
+can precede primitive or `::`-qualified written types. Parameters without it remain
+mutable by intended semantics; `const` records readonly intent for that parameter,
+not a new type, reference/ownership mode or an overload discriminator. This parser
+does not enforce writes, resolve types or compare signatures: assigning to a const
+parameter or repeating const/nonconst signatures can still be syntax-valid.
+
+Trailing/repeated qualifiers, parameter defaults and array/pointer/variadic forms
+are not added. Parameter metadata refers to `const` when present and otherwise to
+the written type's first token; the separate type subtree and identifier span keep
+their ordinary meanings. The provisional declaration `Node` appends `immutable`,
+true only for a `Parameter` with written `const`. All other node kinds and invalid
+sentinels expose false. This is internal AST data, not an artifact/API format.
+
+The modifier adds no node, type tag, function/record count or depth level. Parameter
+lists still share the same declaration/type arenas across functions/namespaces.
+Replay resets metadata, and failures still hide all four owned arenas.
 
 ### Conditional expressions
 
@@ -680,15 +701,16 @@ Repeated parses reset both data and errors. Invalid IDs return zero metadata and
 absent links; IDs expire at source replacement or any shared-parser restart.
 
 Declaration nodes expose token start/length/line/column, identifier
-`name_start`/`name_length`, `exported` and five links:
+`name_start`/`name_length`, `exported`, parameter-only `immutable` and five links:
 
 - `Module.header` is a header-arena ID; `items` is its first declaration.
 - `Constant.type` is an expression-arena `Type`; `body` is its initializer.
 - `Function.type` is its written result `Type`; `items` is the first declaration-
   arena `Parameter`, and `body` is the statement-arena block, not an expression ID.
-  This ownership replaces the superseded expression-body contract without changing
-  the provisional declaration Node layout.
-- `Parameter.type` is its written `Type`. Parameters have no initializer.
+  This ownership replaces the superseded expression-body contract.
+- `Parameter.type` is its written `Type`; `immutable` records leading `const`.
+  Parameters have no initializer. Other declaration kinds keep `immutable` false,
+  including constants whose kind already records their separate intended meaning.
 - `Alias.type` is its written target `Type`; `header`, `items` and `body` are
   absent. Its identifier and `pub` flag use the normal declaration metadata.
 - `Namespace.items` is its first nested declaration in this same arena. Its
@@ -699,8 +721,8 @@ Declaration nodes expose token start/length/line/column, identifier
   is recorded normally, with no initializer or own export flag.
 - `next` links declaration/parameter siblings. Other links are absent (-1).
   Declaration metadata refers to the leading `pub`, result type or binding name,
-  not the whole span. Parameter metadata refers to its written type token, with a
-  separate identifier span. Parameter const qualifiers are not part of this slice.
+  not the whole span. Parameter metadata refers to leading `const` or its written
+  type token, with a separate identifier span.
 
 The existing expression `Node` shape is unchanged. Replacement-only internal kinds use
 the same expression arena:
@@ -773,6 +795,13 @@ Exact limits cover full/shared statement arenas, mixed block/namespace/expressio
 depth and first rejected cases. Generated bodies assert every statement kind,
 local type and both const flags. The extra block/return levels reduce the available
 expression depth inside functions; the shared budget itself has not increased.
+Const-parameter models check every written type and both qualifier states, mixed
+parameter lists, exact qualifier/type/name spans, false flags on nonparameters,
+retained strings, syntax-only mutation/signature conflicts, malformed qualifiers,
+replay and rollback. Exact bounds include full const-parameter declaration/type
+arenas, type storage shared with earlier/later bodies, unchanged function/record
+counts and deepest namespace signatures. Generated models assert all parameter
+types in both const states and preserve ordinary local-const metadata separately.
 
 ## Limits and verification
 
@@ -860,9 +889,9 @@ under `make test`, `make sanitize`, `make coverage` and the Nix checks. The exis
 a coverage gate for L source. No arbitrary mutant bytecode or cyclic verifier
 graphs are executed by these tests.
 
-The replacement suite has **659 fixtures / 219670 modeled node checks** across
-its declaration, header, statement and expression arenas, in **207 batches / 879 commands**.
-The scanner suite has **1184 fixtures / 116112 token checks**. All legacy
+The replacement suite has **738 fixtures / 260650 modeled node checks** across
+its declaration, header, statement and expression arenas, in **232 batches / 987 commands**.
+The scanner suite has **1184 fixtures / 116284 token checks**. All legacy
 expression, statement, header and function-file suites still pass. Stage 0 C
 coverage remains **2596 lines / 163 functions / 2660 branches (100%)**; these
 numbers do not measure L-source coverage.
