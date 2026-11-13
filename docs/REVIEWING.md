@@ -7,8 +7,8 @@ remains unchanged and reachable. Current IR/bytecode is **1.9**.
 
 ## Review status
 
-The initial stack and Stage 1 PRs through **#25 are merged**. The latest reviewed
-feature merge is `730ded9`, integrating C-function parser head `75dcab8`.
+The initial stack and Stage 1 PRs through **#28 are merged**. The latest reviewed
+feature merge is `7ac48d4`, integrating static/extern parser head `a0214f8`.
 GitHub COMMENT self-reviews are recorded as such; they are **not independent
 approvals**. Later documentation or syntax changes need their own review.
 The syntax-status documentation in [#19](https://github.com/flakesonnix/l/pull/19)
@@ -51,6 +51,9 @@ commits carried the CI foundation forward without rewriting those commits.
 | [Transparent alias bindings #23](https://github.com/flakesonnix/l/pull/23) | `review/stage1-alias-bindings` | `3655330` |
 | [Namespace bindings #24](https://github.com/flakesonnix/l/pull/24) | `review/stage1-namespace-bindings` | `b2f53ea` |
 | [C-style functions #25](https://github.com/flakesonnix/l/pull/25) | `review/stage1-c-functions` | `730ded9` |
+| [Const parameters #26](https://github.com/flakesonnix/l/pull/26) | `review/stage1-const-parameters` | `559e535` |
+| [Enums and structs #27](https://github.com/flakesonnix/l/pull/27) | `review/stage1-enum-struct` | `9d22966` |
+| [Static/extern declarations #28](https://github.com/flakesonnix/l/pull/28) | `review/stage1-static-extern` | `7ac48d4` |
 
 PRs #13–#18 received GitHub COMMENT reviews before merging in dependency order.
 Each prospective merge tree and actual merge tree matched its already-tested PR
@@ -96,14 +99,46 @@ passed, checked separately from one another.
 PR #25 received a fresh COMMENT merge-gate review and 659-fixture model rerun.
 Its prospective and actual merge trees exactly matched tested head `75dcab8`;
 the original history and review branch were preserved. All eight PR-head checks
-passed. The resulting [main run at `730ded9`](https://github.com/flakesonnix/l/actions/runs/43438650628)
-is checked separately from that PR-head evidence.
+passed. All four jobs in the resulting
+[main run at `730ded9`](https://github.com/flakesonnix/l/actions/runs/43438650628)
+also passed, checked separately from that PR-head evidence.
+
+PR #26 received a fresh COMMENT merge-gate review and 738-fixture model rerun.
+Its prospective and actual merge trees exactly matched tested head `0c123d2`;
+the original history and review branch were preserved. All eight PR-head checks
+and all four resulting [main CI jobs at `559e535`](https://github.com/flakesonnix/l/actions/runs/43457333621)
+passed, verified separately from one another.
+
+PR #27 was retargeted to `main` after #26 merged, without rewriting head `510beb1`.
+Its fresh COMMENT merge-gate review and 856-fixture model rerun found no blockers;
+the prospective and actual merge trees exactly matched that tested head.
+All eight PR-head checks, all four
+[retarget-workflow jobs](https://github.com/flakesonnix/l/actions/runs/43457488482)
+and all four resulting [main CI jobs at `9d22966`](https://github.com/flakesonnix/l/actions/runs/43459608292)
+passed, checked separately. The original commits and review branch were retained.
+
+PR #28 was likewise retargeted to `main` after #27 merged, preserving head `a0214f8`.
+Fresh COMMENT merge-gate review, full `make test`/`make coverage` reruns and
+1043 replacement fixtures / 366266 modeled checks passed. Its prospective and
+actual merge trees exactly matched the tested head. All eight PR-head checks,
+all four [retarget-workflow jobs](https://github.com/flakesonnix/l/actions/runs/43459673707)
+and all four resulting [main CI jobs at `7ac48d4`](https://github.com/flakesonnix/l/actions/runs/43462349847)
+passed, verified separately. The downloaded main coverage artifact confirms all
+11 Stage 0 C files: **2596/2596 lines, 163/163 functions and 2660/2660 branches
+(100%)**, with no missing entries. These are not L-source coverage measurements.
+
+All three merges used merge commits after explicit user authorization. Their
+parents, tested trees, historical `f9284b1`/`e081fb3` ancestry and original remote
+review-branch heads were verified. No force push, branch deletion or protection
+bypass was used. Native/installed six-driver checks and README examples passed;
+the replacement parser remains syntax-only and artifacts remain **1.9**.
 
 The completed initial Stage 1 slices parse **legacy bootstrap syntax**. They do not resolve
 modules/names, check types, evaluate initializers, allocate input storage, generate
-code or self-host. Struct/enum declarations remain unsupported by the Stage 1
-file parser, although Stage 0 already implements them.
-The replacement binding parser is a separate, syntax-only migration slice; the
+code or self-host. Struct/enum declarations remain unsupported by the legacy
+Stage 1 file parser, although Stage 0 already implements them.
+The replacement binding parser separately records enums, structs and static/extern
+declarations as syntax-only migration slices; the
 source compiler and bootstrap implementation sources still use legacy syntax.
 
 The byte I/O and static-buffer slices change the artifact version and need
@@ -175,6 +210,12 @@ with intended bool conditions, matching result types and selected-branch evaluat
 Records use approved `Name = record { field: Type; };` declarations and
 `Name { field = value; }` literals, retaining intended nominal/by-value semantics
 and written-order value evaluation. These remain syntax-only parser slices.
+Enums use `Name = enum { Member; Member = expr; };`, with semicolon-terminated
+members. C-style `struct Name { Type field; };` is the approved second aggregate
+declaration spelling alongside records. Static scalar/array declarations and
+external functions keep their legacy spellings, including leading `const` on
+extern parameters. Enum-value checks, storage allocation/initialization, length
+evaluation and extern implementation resolution remain deferred.
 Transparent aliases use approved `Name = alias Type;` spelling, preserving the
 existing scalar-alias meaning rather than introducing nominal/runtime types.
 Targets are recorded without expansion or cycle/type checking at this stage.
