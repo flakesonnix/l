@@ -18,7 +18,7 @@ The approved direction is a **typed hybrid: C-style functions and control flow,
 with selected Nix-inspired features** such as `let/in` and name-first bindings.
 The user explicitly chose C-style definitions over the earlier arrow-function
 proposal. This is a breaking source migration, not a permanent second grammar.
-The approved binding, conditional, record, alias and namespace spellings are shown below. The rest
+The approved binding, conditional, record, enum, struct, alias and namespace spellings are shown below. The rest
 of the replacement grammar and the full executable-source migration remain incomplete.
 
 Static typing, eager left-to-right evaluation and the
@@ -88,6 +88,26 @@ checking or executing them. Missing/unknown/duplicate fields and invalid field
 types are semantic work for later. Positional values and anonymous literals are
 not replacement syntax.
 
+Enums use name-first declarations with `;`-terminated members; structs use a
+C-style keyword-first form as a second aggregate spelling alongside records:
+
+```text
+module app.aggregates;
+pub Color = enum { Off; On = 1; };
+pub struct Point { int x; bool ready; };
+int main() { return 0; }
+```
+
+Enum members are `Name`, optionally followed by `= expr`, each terminated by
+`;`; empty member lists parse and the closing `}` requires `;`. Member values
+are full expression nodes recorded in written order, never evaluated, and no
+member value, uniqueness or range check runs yet. Structs declare scalar fields
+as `Type name;` with the type written first; field arrays, initializers and
+inline aggregate declarations are not field syntax, and the closing `}` requires `;`.
+Struct nodes share the aggregate budget with records and differ only in a
+distinct node kind, so field order, types and duplicate names remain unchecked
+semantic work.
+
 Transparent aliases use the approved `Name = alias Type;` form:
 
 ```text
@@ -119,9 +139,8 @@ The new driver rejects the superseded arrow-function form. It is a C-like subset
 not full C: pointer/variadic signatures, prototypes/externs and
 implicit uninitialized scalar locals are not added. Stage 0 and the legacy
 Stage 1 drivers remain temporary bootstrap scaffolding while the replacement is
-incomplete, not a permanent second user grammar. Static storage and enum
-declarations are not part of these new
-file-parser slices. See the [parser contract](bootstrap/stage1/README.md#replacement-binding-file-contract).
+incomplete, not a permanent second user grammar. Static storage declarations are
+not part of these new file-parser slices. See the [parser contract](bootstrap/stage1/README.md#replacement-binding-file-contract).
 
 ## Build and run the current bootstrap
 

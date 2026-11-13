@@ -4,7 +4,8 @@ These are the first L-written implementation slices. Stage 0 compiles them to
 existing **1.9 bytecode**, and the Stage 0 VM executes them. The file parser accepts
 headers, functions, aliases, module constants, static storage and namespaces in
 legacy syntax; the replacement binding parser adds a separate migration slice.
-Struct/enum declarations remain unimplemented.
+Legacy struct/enum declarations remain unimplemented there, while the replacement
+binding parser records name-first enums and C-style structs.
 There is no semantic checker, code generator or complete compiler yet. The
 statement parser includes local declarations; the separate header driver handles
 module/import prefixes only. Running a
@@ -17,7 +18,10 @@ Unless marked as replacement syntax, contracts and examples below describe
 replacement is a typed hybrid: **C-style functions/control flow plus selected
 Nix-inspired features**. The user explicitly replaced the earlier arrow-function
 proposal with C-style definitions. Name-first records/aliases/namespaces and
-eager/sequential `let/in` remain approved. It is a breaking source migration, not
+eager/sequential `let/in` remain approved. Enums use the name-first
+`Name = enum { Member; ... };` spelling; structs use the C-style keyword-first
+`struct Name { Type field; ... };` form as a second aggregate spelling. It is a
+breaking source migration, not
 a permanent dual grammar. The remaining grammar, semantic checker and complete
 executable-source migration are not implemented.
 
@@ -470,7 +474,8 @@ execution. Stage 0 still compiles and runs the parser implementation.
 The implementation is still compiled from legacy source by Stage 0. This is not
 self-hosting, a Stage 0 grammar replacement or a claim that the new source can be
 compiled/executed yet. The replacement driver accepts the approved hybrid grammar:
-C-style functions and selected name-first bindings:
+C-style functions and selected name-first bindings, plus C-style struct
+declarations:
 
 ```text
 module app.main;
@@ -523,8 +528,9 @@ duplicate/forward local bindings, invalid written `void`/`auto` types, mutation 
 plain bindings and nonconstant top-level initializers may be syntax-valid here.
 These are not semantic acceptance claims. No input initializer, function or
 import is executed, and no input program storage is allocated.
-Nested function values/definitions, externs, statics, module arrays and enums are
-not declarations in these replacement slices.
+Nested function values/definitions, externs, statics and module arrays are
+not declarations in these replacement slices; name-first enums and C-style
+structs are, as separate declaration nodes below.
 
 ### Const parameters
 
@@ -613,12 +619,63 @@ duplicate declarations/fields, unknown/missing fields, invalid `void`/`auto` fie
 types and oversized initializer lists may be syntax-valid, not semantically valid.
 The intended existing nonempty/scalar-field restrictions remain semantic work.
 
-There are seed limits of **256 record declarations** per file and **64 fields**
+There are seed limits of **256 aggregate declarations** (records plus structs)
+per file and **64 fields**
 per declaration, shared with the same **1024 declaration-node** arena as functions,
 parameters and constants. Record/function counts are independent and reset on
 replay or failure. Named literal fields use only the shared expression arena;
 their count is bounded by that arena, not checked against an unresolved record's
 arity. These are parser resource limits, not new language or artifact limits.
+
+### Enum declarations
+
+The approved declaration is `[pub] Name = enum { Member; ... };` at module or
+namespace scope. Members are single identifiers, each terminated by `;`; a member
+may carry an optional `= expr` value that accepts the same full replacement
+expressions as initializers, including `let`, conditionals, calls and record
+temporaries. Empty member lists parse, trailing member values need their `;`,
+and the closing `}` requires `;`. Stage 0's C-style spelling `enum Name {
+Member, ... }` is not replacement syntax and is rejected.
+
+```text
+module app.enums;
+pub Color = enum { Off; On = 1; };
+int main() { return 0; }
+```
+
+Member values are expression nodes in written order, never evaluated; no member
+value, duplicate/overflow or range check runs yet. Enum nodes are recorded with
+their identifier span and `pub` flag; `Member` nodes keep their identifier span
+and optional `body` value link. Members are siblings in the declaration arena,
+one `Member` per member plus the parent `Enum` node. A seed limit of **256 enum
+declarations** per file applies, shared across namespaces, resetting on replay
+or failure like the record/function counts.
+
+### Struct declarations
+
+The second aggregate spelling is `[pub] struct Name { Type field; ... };`,
+keyword-first like Stage 0 structs and separate from name-first records.
+The name is a single identifier, required before `{`. Each field is
+`Type name;` with the written type first — the same primitive/qualified type
+grammar as record fields — and requires its `;`. Empty field lists parse;
+there are no initializers, array suffixes, visibility modifiers or inline
+aggregate declarations. The closing `}` requires `;`.
+
+```text
+module app.structs;
+pub struct Point { int x; bool ready; };
+int main() { return 0; }
+```
+
+Struct nodes share the record budget: the same **256 aggregate declarations**
+per file (records plus structs combined), the same **64-field** limit, and the
+same **1024 declaration-node** arena. A struct records its own identifier span,
+`pub` flag and first `Field`; each `Field` keeps its identifier span and written
+`Type`, parsed before the field name (unlike name-first record fields). Named
+aggregate literals keep the existing `Name { field = expr; }` syntax; positional
+Stage 0 literals remain rejected.
+Field order, types, duplicate names and struct/enum identity are unchecked
+semantic work. These are parser resource limits, not new language limits.
 
 ### Transparent alias bindings
 
@@ -654,8 +711,8 @@ a serialized alias format or a source-compatibility guarantee for legacy syntax.
 The approved form is `Name = namespace { declarations };` at module or namespace
 scope. Names are single identifiers, not dotted or `::`-qualified paths. The
 trailing semicolon is required, including for empty namespaces. The body accepts
-the same constants, functions, records, aliases and namespaces as the module body,
-but not module/import headers. Namespace bindings are not expression/local values;
+the same constants, functions, records, enums, structs, aliases and namespaces
+as the module body, but not module/import headers. Namespace bindings are not expression/local values;
 keyword-first `namespace Name { ... }` remains legacy bootstrap syntax only.
 
 ```text
@@ -676,10 +733,10 @@ remain semantic work; even conflicting repeated members can be syntax-valid here
 
 Each namespace consumes one node in the same **1024-node declaration arena** and
 one active level of the shared **48-level syntax budget** while parsing its body.
-No arena or function/record count resets at entry or reopening. Thus **48 nested
+No arena or function/aggregate/enum count resets at entry or reopening. Thus **48 nested
 empty namespaces** fit, **47 around an empty function block or constant expression**,
 or **45 around a function block containing `return 0;`**.
-Written types add arena nodes but no expression-depth level; aliases and record
+Written types add arena nodes but no expression-depth level; aliases and aggregate
 field types can occur at the deepest namespace level. Namespace exit releases its
 depth level before later siblings; any failure still hides all four arenas and
 retained strings with the first diagnostic preserved. These are seed parser limits,
@@ -719,6 +776,14 @@ Declaration nodes expose token start/length/line/column, identifier
 - `Record.items` is its first declaration-arena `Field`. `type` and `body` are
   absent. `Field.type` is its written expression-arena `Type`; its identifier span
   is recorded normally, with no initializer or own export flag.
+- `Struct` matches the record shape except for its node kind: `items` is its first
+  declaration-arena `Field`, each `Field` carrying its written `Type` and
+  identifier span, and its identifier/`pub` metadata uses the normal declaration
+  fields. `type` and `body` are absent.
+- `Enum.items` is its first declaration-arena `Member`; `type` and `body` are
+  absent on the enum node. `Member` metadata refers to its identifier;
+  `body` is its optional written value expression, or absent for plain members.
+  `Member.type`, `items` and `header` are absent, and members carry no export flag.
 - `next` links declaration/parameter siblings. Other links are absent (-1).
   Declaration metadata refers to the leading `pub`, result type or binding name,
   not the whole span. Parameter metadata refers to leading `const` or its written
@@ -802,6 +867,16 @@ replay and rollback. Exact bounds include full const-parameter declaration/type
 arenas, type storage shared with earlier/later bodies, unchanged function/record
 counts and deepest namespace signatures. Generated models assert all parameter
 types in both const states and preserve ordinary local-const metadata separately.
+Enum/struct models check member/field ownership, both aggregate spellings,
+all written field/member types, both visibilities, name spans, retained strings,
+malformed declarations, punctuation errors and mode isolation. Exact limits cover
+the 256-enum count, the shared 256-aggregate record+struct count across
+namespaces, the 64-field limit, the declaration arena (255 empty enums plus an
+enum with 767 members), member-value expression storage shared with earlier/later bodies and
+first rejected cases. Generated mixed corpora assert enum/member/struct/field
+nodes, every written field type, both aggregate visibilities and
+valued/plain members. The 48-level budget is unchanged: aggregate declarations
+add no depth, while member values consume one expression level like any other.
 
 ## Limits and verification
 
@@ -889,9 +964,9 @@ under `make test`, `make sanitize`, `make coverage` and the Nix checks. The exis
 a coverage gate for L source. No arbitrary mutant bytecode or cyclic verifier
 graphs are executed by these tests.
 
-The replacement suite has **738 fixtures / 260650 modeled node checks** across
-its declaration, header, statement and expression arenas, in **232 batches / 987 commands**.
-The scanner suite has **1184 fixtures / 116284 token checks**. All legacy
+The replacement suite has **856 fixtures / 303580 modeled node checks** across
+its declaration, header, statement and expression arenas, in **271 batches / 1165 commands**.
+The scanner suite has **1184 fixtures / 119852 token checks**. All legacy
 expression, statement, header and function-file suites still pass. Stage 0 C
 coverage remains **2596 lines / 163 functions / 2660 branches (100%)**; these
 numbers do not measure L-source coverage.

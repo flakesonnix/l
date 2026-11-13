@@ -9,9 +9,8 @@ The current compiler, Stage 1 implementation sources and executable examples use
 **legacy bootstrap syntax**. The approved replacement combines C-style functions
 and control flow with selected Nix-inspired features, superseding the earlier
 arrow-function proposal. Syntax-only bindings, C bodies, conditional expressions,
-records, aliases, namespaces and C-style `const` parameters are implemented, but
-the full grammar and
-executable source migration are not. See
+records, enums, structs, aliases, namespaces and C-style `const` parameters are
+implemented, but the full grammar and executable source migration are not. See
 [source syntax status](../README.md#source-syntax-status). Static typing, eager
 left-to-right evaluation, explicit module semantics and IR/bytecode **1.9** remain
 unchanged. Source compilation still uses the legacy grammar; the new
