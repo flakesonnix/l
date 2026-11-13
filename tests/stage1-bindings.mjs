@@ -33,6 +33,7 @@ const fn = (body = integer(42), fields = {}) => ({ kind: 'Function', name: 'main
 const constant = (fields = {}) => ({ kind: 'Constant', name: 'answer', type: 'Int', body: integer(42), ...fields });
 const record = (fields = [], options = {}) => ({ kind: 'Record', name: 'Pair', fields, ...options });
 const alias = (type = 'Int', options = {}) => ({ kind: 'Alias', name: 'Count', type, ...options });
+const namespace = (name, declarations = []) => ({ kind: 'Namespace', name, declarations });
 const recordValue = (fields = [], options = {}) => ({ kind: 'Record', left: named('Pair'), fields, ...options });
 const types = ['Int', 'Bool', 'Byte', 'String', 'Void', 'Auto', 'Named'];
 const operators = { '+': 'Plus', '-': 'Minus', '!': 'Bang', '*': 'Star', '/': 'Slash', '%': 'Percent', '<': 'Less', '>': 'Greater',
@@ -151,39 +152,45 @@ function rendered(name, declarations, options = {}) {
     }
     put(`;${gap}`); if (lastImport) lastImport.next = item; else header.items = item; lastImport = item;
   }
-  const tree = d('Module', header.start, 6, { header }); let last = null;
-  for (const declaration of declarations) {
-    const start = input.length;
-    if (declaration.exported) put(`pub${gap}`);
-    const nameStart = put(declaration.name);
-    const item = d(declaration.kind, start, declaration.exported ? 3 : declaration.name.length,
-      { nameStart, nameLength: declaration.name.length, exported: !!declaration.exported });
-    if (declaration.kind === 'Constant') { put(':'); item.type = type(declaration.type, declaration.typeName); put('='); }
-    else if (declaration.kind === 'Alias') { put(`=alias${gap}`); item.type = type(declaration.type, declaration.typeName); }
-    else if (declaration.kind === 'Record') {
-      put(`=record${gap}{`); let lastField = null;
-      for (const field of declaration.fields) {
-        const start = put(field.name), current = d('Field', start, field.name.length, { nameStart: start, nameLength: field.name.length });
-        put(':'); current.type = type(field.type, field.typeName); put(`;${gap}`);
-        if (lastField) lastField.next = current; else item.items = current;
-        lastField = current;
+  const tree = d('Module', header.start, 6, { header });
+  function declarationList(trees) {
+    let first = null, last = null;
+    for (const declaration of trees) {
+      const start = input.length;
+      if (declaration.exported) put(`pub${gap}`);
+      const nameStart = put(declaration.name);
+      const item = d(declaration.kind, start, declaration.exported ? 3 : declaration.name.length,
+        { nameStart, nameLength: declaration.name.length, exported: !!declaration.exported });
+      if (declaration.kind === 'Constant') { put(':'); item.type = type(declaration.type, declaration.typeName); put('='); }
+      else if (declaration.kind === 'Alias') { put(`=alias${gap}`); item.type = type(declaration.type, declaration.typeName); }
+      else if (declaration.kind === 'Namespace') { put(`=namespace${gap}{`); item.items = declarationList(declaration.declarations); put('}'); }
+      else if (declaration.kind === 'Record') {
+        put(`=record${gap}{`); let lastField = null;
+        for (const field of declaration.fields) {
+          const start = put(field.name), current = d('Field', start, field.name.length, { nameStart: start, nameLength: field.name.length });
+          put(':'); current.type = type(field.type, field.typeName); put(`;${gap}`);
+          if (lastField) lastField.next = current; else item.items = current;
+          lastField = current;
+        }
+        put('}');
+      } else {
+        put('=('); let lastParameter = null;
+        for (const parameter of declaration.parameters) {
+          if (lastParameter) put(',');
+          const start = put(parameter.name), current = d('Parameter', start, parameter.name.length, { nameStart: start, nameLength: parameter.name.length });
+          put(':'); current.type = type(parameter.type, parameter.typeName);
+          if (lastParameter) lastParameter.next = current; else item.items = current;
+          lastParameter = current;
+        }
+        put('):'); item.type = type(declaration.type, declaration.typeName); put('=>');
       }
-      put('}');
-    } else {
-      put('=('); let lastParameter = null;
-      for (const parameter of declaration.parameters) {
-        if (lastParameter) put(',');
-        const start = put(parameter.name), current = d('Parameter', start, parameter.name.length, { nameStart: start, nameLength: parameter.name.length });
-        put(':'); current.type = type(parameter.type, parameter.typeName);
-        if (lastParameter) lastParameter.next = current; else item.items = current;
-        lastParameter = current;
-      }
-      put('):'); item.type = type(declaration.type, declaration.typeName); put('=>');
+      if (!['Record', 'Alias', 'Namespace'].includes(declaration.kind)) item.body = expression(declaration.body);
+      put(`;${gap}`);
+      if (last) last.next = item; else first = item; last = item;
     }
-    if (!['Record', 'Alias'].includes(declaration.kind)) item.body = expression(declaration.body);
-    put(`;${gap}`);
-    if (last) last.next = item; else tree.items = item; last = item;
+    return first;
   }
+  tree.items = declarationList(declarations);
   input += options.trailing ?? '';
   const fixture = { name, input, tree, passes: options.passes ?? 2 }; fixtures.push(fixture); return fixture;
 }
@@ -467,6 +474,92 @@ bad(bodyAfterAliasOverflow.input, 'Expression', '++', { expression: 'TooManyNode
 rendered('aliases do not consume function/record counts', [alias(), ...Array.from({ length: 256 }, (_, i) => record([{ name: 'x', type: 'Int' }], { name: `R${i}` })),
   ...Array.from({ length: 256 }, (_, i) => fn(integer(0), { name: `f${i}` })), alias('Bool', { name: 'Flag' })], { passes: 1 });
 
+rendered('approved namespace spelling', [namespace('math', [fn({ kind: 'Binary', operator: '+', left: named('a'), right: named('b') },
+  { name: 'add', exported: true, parameters: [{ name: 'a', type: 'Int' }, { name: 'b', type: 'Int' }] })]),
+  fn({ kind: 'Call', left: named('math::add'), arguments: [integer(20), integer(22)] })]);
+rendered('empty namespace', [namespace('n')]);
+rendered('nested and reopened namespaces retain separate syntax', [constant(), namespace('n', [alias('Int'),
+  record([{ name: 'x', type: 'Named', typeName: 'Count' }], { exported: true }),
+  namespace('inner', [constant({ name: 'x', exported: true }), fn(named('missing'), { name: 'private_value' })])]),
+  namespace('n', [namespace('inner', [fn(named('unknown'), { name: 'private_value', exported: true })])]),
+  alias('Named', { typeName: 'n::Count' }), fn(recordValue([{ name: 'x', value: named('n::inner::x') }], { left: named('n::Pair') }))]);
+for (const type of types) for (const exported of [false, true]) rendered(`namespace member ${type} ${exported}`, [namespace('outer', [
+  namespace('inner', [alias(type, { exported }), record([{ name: 'x', type }], { exported }),
+    constant({ type, exported }), fn(named('p'), { type, exported, parameters: [{ name: 'p', type }] })]),
+])]);
+for (const name of ['constructor', '__proto__', 'Namespace', 'namespaceX']) rendered(`namespace identifier ${name}`, [namespace(name, [fn()])]);
+for (const gap of ['\n', '\r', '\t', '/*gap*/', '//gap\n']) rendered(`namespace trivia ${JSON.stringify(gap)}`, [
+  constant({ type: 'String', body: { kind: 'Text', text: 'before\0\xff' } }), namespace('outer', [
+    namespace('inner', [fn({ kind: 'Text', text: 'inside\0\x80' }, { type: 'String', exported: true })]),
+    namespace('inner', [constant({ type: 'String', body: { kind: 'Text', text: 'reopened\xff' } })]),
+  ]), fn({ kind: 'Text', text: 'after\0\x80' }, { type: 'String' }),
+], { gap, leading: '\n/*lead*/', trailing: '\n//end', imports: [{ path: 'pkg.types', alias: 'types' }] });
+for (const [tail, error, marker, nested] of [
+  ['namespace n{}', 'ExpectedName', 'namespace'], ['n::inner=namespace{};', 'ExpectedAssign', '::'],
+  ['n.inner=namespace{};', 'ExpectedAssign', '.'], ['=namespace{};', 'ExpectedName', '='],
+  ['n=namespace;', 'ExpectedNamespaceOpen', ';'], ['n=namespace{', 'ExpectedNamespaceClose', ''],
+  ['n=namespace{}', 'ExpectedSemicolon', ''], ['n=namespace{f=():int=>0;}', 'ExpectedSemicolon', ''],
+  ['n=namespace{inner=namespace{};f=():int=>0;', 'ExpectedNamespaceClose', ''],
+  ['n=namespace{};}', 'ExpectedName', '}'], ['n=namespace{;};', 'ExpectedName', ';};'],
+  ['pub n=namespace{};', 'NamespaceVisibility', 'pub'], ['n=namespace{pub inner=namespace{};};', 'NamespaceVisibility', 'pub'],
+  ['n=namespace{module other;};', 'MisplacedHeader', 'module other'], ['n=namespace{import p;};', 'MisplacedHeader', 'import'],
+  ['n=namespace{pub import p;};', 'ExpectedName', 'import'], ['n=namespace{namespace old{}};', 'ExpectedName', 'namespace old'],
+  ['n=namespace{inner=namespace{} f=():int=>0;};', 'ExpectedSemicolon', 'f='],
+  ['n=namespace{int f(){}};', 'ExpectedName', 'int'], ['f=():int=>namespace{};', 'Expression', 'namespace', { expression: 'ExpectedExpression' }],
+  ['f=():int=>let n=namespace{};in 0;', 'Expression', 'namespace', { expression: 'ExpectedExpression' }],
+  ['n=namespace{x:string="kept";inner=namespace{Count=alias;};};', 'Expression', ';};};', { expression: 'ExpectedType' }],
+  ['n=namespace{x:string="kept";inner=namespace{f=():int=>@;};};', 'Expression', '@', { expression: 'Lexical', lexical: 'UnsupportedCharacter' }],
+  ['n=namespace{x:string="kept";};@', 'Expression', '@', { expression: 'Lexical', lexical: 'UnsupportedCharacter' }],
+]) bad(`module m; ${tail}`, error, marker, nested);
+const inNamespaces = (count, items = []) => {
+  for (let n = 0; n < count; n++) items = [namespace(`n${n}`, items)];
+  return items;
+};
+rendered('namespace declaration arena', Array.from({ length: 1023 }, (_, i) => namespace(`n${i}`)), { passes: 1 });
+const namespaceArenaOverflow = rendered('namespace declaration arena overflow', Array.from({ length: 1024 }, (_, i) => namespace(`n${i}`))); fixtures.pop();
+bad(namespaceArenaOverflow.input, 'TooManyNodes', 'n1023'); fixtures.at(-1).passes = 1;
+rendered('maximum empty namespace depth', inNamespaces(48));
+const namespaceDepthOverflow = rendered('namespace depth overflow', inNamespaces(49)); fixtures.pop();
+bad(namespaceDepthOverflow.input, 'Expression', 'namespace', { expression: 'TooDeep' });
+rendered('namespace depth with function body', inNamespaces(47, [fn(integer(0))]));
+const namespaceBodyDepthOverflow = rendered('namespace/function depth overflow', inNamespaces(48, [fn(integer(0))])); fixtures.pop();
+bad(namespaceBodyDepthOverflow.input, 'Expression', '0', { expression: 'TooDeep' });
+rendered('deep namespace types add no expression depth', inNamespaces(48, [alias('Named', { typeName: 'pkg::T' }), record(recordFields(64))]));
+rendered('namespace and let share depth', [namespace('n', [fn(nested.body)])]);
+const namespaceLetOverflow = rendered('namespace/let depth overflow', [namespace('n', [fn(nested)])]); fixtures.pop();
+bad(namespaceLetOverflow.input, 'Expression', '0', { expression: 'TooDeep' });
+rendered('namespace and conditional share depth', [namespace('n', [fn(deepConditional.negative)])]);
+const namespaceConditionalOverflow = rendered('namespace/conditional depth overflow', [namespace('n', [fn(deepConditional)])]); fixtures.pop();
+bad(namespaceConditionalOverflow.input, 'Expression', 'true', { expression: 'TooDeep' });
+rendered('namespace and record literal share depth', [namespace('n', [fn(deepRecord.fields[0].value)])]);
+const namespaceLiteralOverflow = rendered('namespace/record depth overflow', [namespace('n', [fn(deepRecord)])]); fixtures.pop();
+bad(namespaceLiteralOverflow.input, 'Expression', '0', { expression: 'TooDeep' });
+rendered('namespace leaves depth before sibling expressions', [...inNamespaces(48), fn(deepConditional), ...inNamespaces(48)]);
+rendered('reopened namespace types share earlier body arena', [namespace('n', [fn({ kind: 'Chain', count: 2044 })]), namespace('n', [alias('Named', { typeName: 'T' })])]);
+const namespaceTypeOverflow = rendered('reopened namespace type arena overflow', [namespace('n', [fn({ kind: 'Chain', count: 2044 })]), namespace('n', [alias('Named', { typeName: 'pkg::T' })])]); fixtures.pop();
+bad(namespaceTypeOverflow.input, 'Expression', 'pkg::T', { expression: 'TooManyNodes' });
+rendered('reopened namespace bodies share earlier type arena', [namespace('n', [alias('Named', { typeName: 'T' })]), namespace('n', [fn({ kind: 'Chain', count: 2044 })])]);
+const namespaceExpressionOverflow = rendered('reopened namespace body arena overflow', [namespace('n', [alias('Named', { typeName: 'pkg::T' })]), namespace('n', [fn({ kind: 'Chain', count: 2044 })])]); fixtures.pop();
+bad(namespaceExpressionOverflow.input, 'Expression', '++', { expression: 'TooManyNodes' });
+rendered('record/function counts shared across namespaces', [namespace('n', [alias(),
+  ...Array.from({ length: 128 }, (_, i) => record(recordFields(1), { name: `R${i}` })),
+  ...Array.from({ length: 128 }, (_, i) => fn(integer(0), { name: `f${i}` })),
+]), namespace('n', [namespace('inner', [
+  ...Array.from({ length: 128 }, (_, i) => record(recordFields(1), { name: `R${i + 128}` })),
+  ...Array.from({ length: 128 }, (_, i) => fn(integer(0), { name: `f${i + 128}` })),
+])])], { passes: 1 });
+const namespaceFunctionOverflow = rendered('function count across namespace overflow', [namespace('n', Array.from({ length: 256 }, (_, i) => fn(integer(0), { name: `f${i}` }))),
+  namespace('n', [fn(integer(0), { name: 'f256' })])]); fixtures.pop();
+bad(namespaceFunctionOverflow.input, 'TooManyFunctions', 'f256');
+const namespaceRecordOverflow = rendered('record count across namespace overflow', [namespace('n', Array.from({ length: 256 }, (_, i) => record([], { name: `R${i}` }))),
+  namespace('n', [record([], { name: 'R256' })])]); fixtures.pop();
+bad(namespaceRecordOverflow.input, 'TooManyRecords', 'R256');
+rendered('nested declaration arena shared with earlier siblings', [namespace('n', Array.from({ length: 510 }, () => alias())),
+  namespace('n', [namespace('inner', Array.from({ length: 510 }, () => alias()))])], { passes: 1 });
+const namespaceSharedDeclarationOverflow = rendered('namespace shared declaration arena overflow', [namespace('n', Array.from({ length: 510 }, () => alias())),
+  namespace('n', [namespace('inner', Array.from({ length: 511 }, () => alias()))])]); fixtures.pop();
+bad(namespaceSharedDeclarationOverflow.input, 'TooManyNodes', 'Count'); fixtures.at(-1).passes = 1;
+
 let state = 0x4e495842;
 function random(n) { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return Math.floor(state / 0x100000000 * n); }
 function generated(depth) {
@@ -496,6 +589,14 @@ const aliasGeneratedStart = fixtures.length;
 for (let n = 0; n < 32; n++) rendered(`generated alias ${n}`, [alias(types[random(types.length)], { exported: !!random(2) }),
   record([{ name: 'x', type: 'Named', typeName: 'Count' }]), fn(generatedConditional(2), { type: 'Named', typeName: 'Count' }),
   alias('Named', { name: 'Later', typeName: 'pkg::Count' })]);
+const namespaceGeneratedStart = fixtures.length;
+for (let n = 0; n < 32; n++) rendered(`generated namespace ${n}`, [namespace('outer', [
+  alias(types[n % types.length], { exported: !!random(2) }), namespace('inner', [
+    record([{ name: 'x', type: types[(n + 1) % types.length] }], { exported: !!random(2) }),
+    constant({ type: types[(n + 2) % types.length], exported: !!random(2), body: generatedConditional(2) }),
+    fn(generatedConditional(2), { type: types[(n + 3) % types.length], exported: !!random(2), parameters: [{ name: 'x', type: types[(n + 4) % types.length] }] }),
+  ]),
+]), namespace('outer', [namespace('inner', [fn(generatedConditional(2), { type: 'Named', typeName: 'outer::Count' })])])]);
 function flatten(roots, links) {
   const nodes = [], ids = new Map(), pending = [...roots].reverse();
   while (pending.length) { const node = pending.pop(); if (!node || ids.has(node)) continue;
@@ -523,6 +624,15 @@ for (const exported of [false, true]) assert.ok(generatedRecordArenas.some(a => 
 const generatedAliasNodes = fixtures.slice(aliasGeneratedStart).flatMap(f => arenas(f.tree).d.nodes).filter(n => n.kind === 'Alias');
 for (let tag = 1; tag <= 7; tag++) assert.ok(generatedAliasNodes.some(n => n.type.value === tag), `alias target type ${tag}`);
 for (const exported of [false, true]) assert.ok(generatedAliasNodes.some(n => n.exported === exported), `alias visibility ${exported}`);
+const generatedNamespaceNodes = fixtures.slice(namespaceGeneratedStart).flatMap(f => arenas(f.tree).d.nodes);
+for (const kind of ['Namespace', 'Alias', 'Constant', 'Record', 'Field', 'Function', 'Parameter']) assert.ok(generatedNamespaceNodes.some(n => n.kind === kind), `namespace member ${kind}`);
+assert.ok(generatedNamespaceNodes.some(n => n.kind === 'Namespace' && n.items?.kind === 'Namespace'), 'nested namespace');
+for (const kind of ['Alias', 'Constant', 'Record', 'Function']) for (const exported of [false, true]) {
+  assert.ok(generatedNamespaceNodes.some(n => n.kind === kind && n.exported === exported), `namespace ${kind} visibility ${exported}`);
+}
+for (const kind of ['Alias', 'Constant', 'Field', 'Function', 'Parameter']) for (let tag = 1; tag <= 7; tag++) {
+  assert.ok(generatedNamespaceNodes.some(n => n.kind === kind && n.type.value === tag), `namespace ${kind} type ${tag}`);
+}
 
 const helpers = `
 static int dids[parser::max_nodes]; static bool dseen[parser::max_nodes];
@@ -614,6 +724,7 @@ int main(){for(int pass=0;pass<2;pass++){
  if(!load("let in 1")||expressions::parse()!=-1||expressions::diagnostic().kind!=expressions::Error::TrailingInput)return 2;
  if(!load("let+in+var+then+record+alias")||expressions::parse()==-1)return 6;
  if(!load("module m; f=():int=>if true then 1 else 0;")||parser::parse()==-1)return 7;
+ if(!load("module m;n=namespace{f=():int=>0;};")||parser::parse()==-1)return 9;
  if(!load("if true then 1 else 0")||expressions::parse()!=-1||expressions::diagnostic().kind!=expressions::Error::ExpectedExpression)return 8;
  if(!load("1+2")||expressions::parse()==-1)return 3;
  if(parser::parse()!=-1||parser::node_count()!=0||expressions::node_count()!=0)return 4;
@@ -634,6 +745,8 @@ for (const [input, status, error] of [
   ['module m;Pair=record{};main=():void=>Unknown{extra=missing();};', 0, ''],
   ['module m;pub Count=alias int;increment=(value:Count):Count=>value+1;', 0, ''],
   ['module m;A=alias B;B=alias A;Self=alias Self;', 0, ''],
+  ['module m;math=namespace{pub add=(a:int,b:int):int=>a+b;};main=():int=>math::add(20,22);', 0, ''],
+  ['module m;n=namespace{Count=alias int;};n=namespace{Count=alias n::Count;};', 0, ''],
   ['', 65, 'binding:1:1: error: source must begin with a module declaration\n'],
   ['module m; int main(){}', 65, 'binding:1:11: error: expected binding or parameter name\n'],
   ['module m; f=():int= >0;', 65, "binding:1:19: error: expected '=>' before function expression\n"],
@@ -641,6 +754,8 @@ for (const [input, status, error] of [
   ['module m; f=():int=>let in @;', 65, 'binding:1:28: error: unsupported character in Stage 0 source\n'],
   ['module m; f=():int=>if true 1 else 0;', 65, "binding:1:29: error: expected 'then' after condition\n"],
   ['module m; f=():int=>if true then 1;', 65, "binding:1:35: error: expected 'else' after conditional branch\n"],
+  ['module m; n=namespace{', 65, "binding:1:23: error: expected '}' after namespace declarations\n"],
+  ['module m; pub n=namespace{};', 65, 'binding:1:11: error: namespace bindings cannot use pub; export their members individually\n'],
   [Buffer.concat([Buffer.from('module m;'), Buffer.alloc(65526, 32)]), 0, ''],
   [Buffer.alloc(65536, 32), 65, 'binding: source exceeds 65535 bytes\n'],
 ]) for (const args of [['run', driver, '--manifest', driverManifest], ['run', output]]) command(status, args, { input, error });

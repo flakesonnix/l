@@ -17,7 +17,7 @@ replacement slice; the source compiler does not yet compile that syntax.
 The approved direction is a **typed, Nix-inspired replacement**: declarative
 bindings, `let/in`, records and expression-oriented functions, with explicit
 modules. This is a breaking source migration, not a permanent second grammar.
-The approved binding, conditional, record and alias spellings are shown below. The rest
+The approved binding, conditional, record, alias and namespace spellings are shown below. The rest
 of the replacement grammar and the full executable-source migration remain incomplete.
 
 Static typing, eager left-to-right evaluation and the
@@ -90,10 +90,25 @@ Aliases are intended to retain the existing scalar-alias semantics, not create
 nominal types or runtime values. The parser records written targets but does not
 resolve/expand them, validate target types, check visibility or detect cycles.
 
+Namespaces use name-first bindings too:
+
+```text
+module app.math;
+math = namespace {
+  pub add = (a: int, b: int): int => a + b;
+};
+main = (): int => math::add(20, 22);
+```
+
+These remain compile-time scopes, not runtime records or recursive attribute
+sets. Nested/reopened namespaces retain separate syntax nodes in written order;
+scope merging, lookup and duplicate checking are deferred. Export members with
+their own `pub`; `pub` on a namespace is rejected and visibility is not inherited.
+
 The new driver rejects C-style function/declaration syntax. Stage 0 and the legacy
 Stage 1 drivers remain temporary bootstrap scaffolding while the replacement is
 incomplete, not a permanent second user grammar. Statement blocks,
-namespaces, static storage and enum declarations are not part of these new
+static storage and enum declarations are not part of these new
 file-parser slices. See the [parser contract](bootstrap/stage1/README.md#replacement-binding-file-contract).
 
 ## Build and run the current bootstrap

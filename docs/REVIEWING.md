@@ -7,8 +7,8 @@ remains unchanged and reachable. Current IR/bytecode is **1.9**.
 
 ## Review status
 
-The initial stack and Stage 1 PRs through **#22 are merged**. The latest reviewed
-feature merge is `b54f278`, integrating record-parser head `637e67b`.
+The initial stack and Stage 1 PRs through **#23 are merged**. The latest reviewed
+feature merge is `3655330`, integrating alias-parser head `e3ff752`.
 GitHub COMMENT self-reviews are recorded as such; they are **not independent
 approvals**. Later documentation or syntax changes need their own review.
 The syntax-status documentation in [#19](https://github.com/flakesonnix/l/pull/19)
@@ -48,6 +48,7 @@ commits carried the CI foundation forward without rewriting those commits.
 | [Replacement bindings #20](https://github.com/flakesonnix/l/pull/20) | `review/stage1-nix-bindings` | `c98fb6f` |
 | [Conditional expressions #21](https://github.com/flakesonnix/l/pull/21) | `review/stage1-conditionals` | `6af87d9` |
 | [Named record syntax #22](https://github.com/flakesonnix/l/pull/22) | `review/stage1-records` | `b54f278` |
+| [Transparent alias bindings #23](https://github.com/flakesonnix/l/pull/23) | `review/stage1-alias-bindings` | `3655330` |
 
 PRs #13–#18 received GitHub COMMENT reviews before merging in dependency order.
 Each prospective merge tree and actual merge tree matched its already-tested PR
@@ -76,6 +77,12 @@ the original history and review branch were preserved. All eight PR-head checks
 passed. All four jobs in the resulting
 [main run at `b54f278`](https://github.com/flakesonnix/l/actions/runs/43403721928)
 also passed, checked separately from that PR-head evidence.
+
+PR #23 received a fresh COMMENT merge-gate review and 467-fixture model rerun.
+Its prospective and actual merge trees exactly matched tested head `e3ff752`;
+the original history and review branch were preserved. All eight PR-head checks
+passed. The resulting [main run at `3655330`](https://github.com/flakesonnix/l/actions/runs/43407994500)
+is checked separately from that PR-head evidence.
 
 The completed initial Stage 1 slices parse **legacy bootstrap syntax**. They do not resolve
 modules/names, check types, evaluate initializers, allocate input storage, generate
@@ -151,6 +158,10 @@ and written-order value evaluation. These remain syntax-only parser slices.
 Transparent aliases use approved `Name = alias Type;` spelling, preserving the
 existing scalar-alias meaning rather than introducing nominal/runtime types.
 Targets are recorded without expansion or cycle/type checking at this stage.
+Namespaces use approved `Name = namespace { declarations };` bindings, retaining
+intended compile-time scopes, nesting/reopening and member-specific visibility.
+Namespace-level `pub` is rejected; logical scope merging, lookup, duplicate checks
+and visibility enforcement remain deferred.
 The first replacement parser records these forms without implementing their
 semantics or completing the source migration; the remaining grammar is unfinished.
 Existing executable examples and legacy parser contracts still use bootstrap syntax. Expanding that

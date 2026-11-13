@@ -18,11 +18,13 @@ namespace kind {
     pub const int Record = 5;
     pub const int Field = 6;
     pub const int Alias = 7;
+    pub const int Namespace = 8;
 }
 pub enum Error { None, Header, Expression, ExpectedName, ExpectedAssign,
                  ExpectedOpen, ExpectedClose, ExpectedColon, ExpectedArrow,
                  ExpectedSemicolon, MisplacedHeader, TooManyNodes, TooManyFunctions,
-                 ExpectedRecordOpen, ExpectedRecordClose, ExpectedFieldName, TooManyRecords, TooManyFields };
+                 ExpectedRecordOpen, ExpectedRecordClose, ExpectedFieldName, TooManyRecords, TooManyFields,
+                 ExpectedNamespaceOpen, ExpectedNamespaceClose, NamespaceVisibility };
 pub struct Diagnostic {
     Error kind;
     headers::Error header;
@@ -180,6 +182,25 @@ int record_declaration(lexer::Token start) {
     if (!ok()) return -1;
     return result;
 }
+int namespace_declaration(lexer::Token start) {
+    if (!expressions::enter()) { ok(); return -1; }
+    take(lexer::Kind::Namespace);
+    expect(lexer::Kind::LeftBrace, Error::ExpectedNamespaceOpen);
+    int result = make_node(kind::Namespace, start);
+    int last = -1;
+    while (ok() && !take(lexer::Kind::RightBrace)) {
+        if (current().kind == lexer::Kind::End) { reject(Error::ExpectedNamespaceClose, current()); break; }
+        int item = declaration();
+        if (!ok()) break;
+        if (last == -1) items[result] = item;
+        else nexts[last] = item;
+        last = item;
+    }
+    expressions::leave();
+    expect(lexer::Kind::Semicolon, Error::ExpectedSemicolon);
+    if (!ok()) return -1;
+    return result;
+}
 int declaration() {
     lexer::Token start = current();
     if (start.kind == lexer::Kind::Module || start.kind == lexer::Kind::Import) {
@@ -205,6 +226,9 @@ int declaration() {
             expect(lexer::Kind::Semicolon, Error::ExpectedSemicolon);
             result = make_node(kind::Alias, start);
             if (result != -1) types[result] = declared;
+        } else if (ok() && current().kind == lexer::Kind::Namespace) {
+            if (exported) reject(Error::NamespaceVisibility, start);
+            else result = namespace_declaration(start);
         } else {
             expect(lexer::Kind::LeftParen, Error::ExpectedOpen);
             if (ok() && function_count == max_functions) reject(Error::TooManyFunctions, start);
@@ -313,6 +337,9 @@ pub string error_message(Error error) {
         case Error::ExpectedFieldName: return "expected record field name";
         case Error::TooManyRecords: return "binding file exceeds 256 records";
         case Error::TooManyFields: return "record exceeds 64 fields";
+        case Error::ExpectedNamespaceOpen: return "expected '{' after namespace";
+        case Error::ExpectedNamespaceClose: return "expected '}' after namespace declarations";
+        case Error::NamespaceVisibility: return "namespace bindings cannot use pub; export their members individually";
         default: return "unknown binding-file error";
     }
 }

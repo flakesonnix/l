@@ -501,8 +501,8 @@ duplicate/forward local bindings, invalid written `void`/`auto` types, mutation 
 plain bindings and nonconstant top-level initializers may be syntax-valid here.
 These are not semantic acceptance claims. No input initializer, function or
 import is executed, and no input program storage is allocated.
-Statement blocks/loops, nested function values, namespaces,
-externs, statics, arrays and enums are not declarations in this first slice.
+Statement blocks/loops, nested function values, externs, statics, arrays and enums
+are not declarations in these replacement slices.
 
 ### Conditional expressions
 
@@ -604,6 +604,41 @@ followed as alias dependencies. Exhaustion still hides all three owned arenas;
 replay resets diagnostics and storage. These are provisional internal ASTs, not
 a serialized alias format or a source-compatibility guarantee for legacy syntax.
 
+### Namespace bindings
+
+The approved form is `Name = namespace { declarations };` at module or namespace
+scope. Names are single identifiers, not dotted or `::`-qualified paths. The
+trailing semicolon is required, including for empty namespaces. The body accepts
+the same constants, functions, records, aliases and namespaces as the module body,
+but not module/import headers. Namespace bindings are not expression/local values;
+keyword-first `namespace Name { ... }` remains legacy bootstrap syntax only.
+
+```text
+module app.math;
+math = namespace {
+  pub add = (a: int, b: int): int => a + b;
+};
+main = (): int => math::add(20, 22);
+```
+
+Namespaces retain their intended compile-time organizational meaning. They do not
+create runtime objects, perform initialization, introduce imports or change member
+visibility. **`pub` on the namespace itself is rejected**; each contained exported
+declaration records its own `pub`, not an inherited flag. Nested and reopened
+namespaces remain **distinct syntax nodes in written order**. Logical scope merging,
+qualified-name synthesis, name lookup, duplicate checks and visibility enforcement
+remain semantic work; even conflicting repeated members can be syntax-valid here.
+
+Each namespace consumes one node in the same **1024-node declaration arena** and
+one active level of the shared **48-level syntax budget** while parsing its body.
+No arena or function/record count resets at entry or reopening. Thus **48 nested
+empty namespaces** fit, or **47 around a bare function/constant expression**.
+Written types add arena nodes but no expression-depth level; aliases and record
+field types can occur at the deepest namespace level. Namespace exit releases its
+depth level before later siblings; any failure still hides all three arenas and
+retained strings with the first diagnostic preserved. These are seed parser limits,
+not language limits or an executable namespace implementation.
+
 ### Arenas and node ownership
 
 `bindings::parse()` replays input and requires EOF. It returns a `Module` root in
@@ -611,7 +646,8 @@ its own **1024-node declaration arena**; at most **256 functions** fit. Paramete
 and constants use declaration nodes but do not count as functions. The shared
 header and expression arenas each retain their **2048-node** limit. All budgets
 cover the whole file; the shared expression depth remains **48**, including `let`
-initializers and bodies. Iterative declaration/parameter lists add no depth level.
+initializers and bodies. Iterative sibling/parameter lists add no depth level;
+each active namespace body adds one.
 Any failure hides all three owned arenas and retains the first diagnostic.
 Diagnostics distinguish header, expression/lexical and declaration failures.
 Repeated parses reset both data and errors. Invalid IDs return zero metadata and
@@ -627,6 +663,9 @@ Declaration nodes expose token start/length/line/column, identifier
 - `Parameter.type` is its written `Type`. Parameters have no initializer.
 - `Alias.type` is its written target `Type`; `header`, `items` and `body` are
   absent. Its identifier and `pub` flag use the normal declaration metadata.
+- `Namespace.items` is its first nested declaration in this same arena. Its
+  identifier span is recorded normally; `exported` is false and `header`, `type`
+  and `body` are absent. Reopenings keep separate nodes and child lists.
 - `Record.items` is its first declaration-arena `Field`. `type` and `body` are
   absent. `Field.type` is its written expression-arena `Type`; its identifier span
   is recorded normally, with no initializer or own export flag.
@@ -688,6 +727,14 @@ rollback. Bounds cover full alias declaration/target arenas and type storage
 shared with earlier/later bodies. Combined count fixtures retain 256 records and
 256 functions alongside aliases. Generated aliases assert all written types and
 both visibility forms; legacy keyword-name isolation remains checked.
+Namespace models check nested/reopened lists, all supported member kinds/types
+and visibilities, source order/spans, retained strings, punctuation/header/local
+errors, rejected namespace `pub`, replay and all-three-arena rollback. Exact
+bounds cover namespace-only and mixed declaration arenas, independent shared
+function/record counts across reopenings, type/body storage shared across sibling
+namespaces, and namespace-only or mixed let/conditional/record syntax depth.
+Generated mixed namespaces assert all member kinds, written types and visibility
+forms. No logical scopes or input namespace objects are constructed by these models.
 
 ## Limits and verification
 
@@ -775,9 +822,9 @@ under `make test`, `make sanitize`, `make coverage` and the Nix checks. The exis
 a coverage gate for L source. No arbitrary mutant bytecode or cyclic verifier
 graphs are executed by these tests.
 
-The replacement suite has **467 fixtures / 137636 modeled node checks** across
-its declaration, header and expression arenas, in **125 batches / 541 commands**.
-The scanner suite has **1184 fixtures / 112800 token checks**. All legacy
+The replacement suite has **572 fixtures / 177784 modeled node checks** across
+its declaration, header and expression arenas, in **160 batches / 689 commands**.
+The scanner suite has **1184 fixtures / 113880 token checks**. All legacy
 expression, statement, header and function-file suites still pass. Stage 0 C
 coverage remains **2596 lines / 163 functions / 2660 branches (100%)**; these
 numbers do not measure L-source coverage.
