@@ -27,6 +27,8 @@ namespace kind {
     pub const int Let = 16;
     pub const int Conditional = 17;
     pub const int Branches = 18;
+    pub const int Record = 19;
+    pub const int FieldInit = 20;
 }
 
 // Written types in the replacement parser, not resolved semantic types.
@@ -65,7 +67,8 @@ namespace op {
 
 pub enum Error { None, Lexical, ExpectedExpression, ExpectedName, ExpectedOpen,
                  ExpectedClose, TrailingInput, TooDeep, TooManyNodes,
-                 ExpectedType, ExpectedAssign, ExpectedSemicolon, ExpectedThen, ExpectedElse };
+                 ExpectedType, ExpectedAssign, ExpectedSemicolon, ExpectedThen, ExpectedElse,
+                 ExpectedRecordType, ExpectedFieldAssign, ExpectedFieldSemicolon };
 pub struct Diagnostic {
     Error kind;
     lexer::Error lexical;
@@ -146,7 +149,7 @@ void advance() {
     current_kind = at.kind;
     // Temporary bootstrap compatibility: these are names in the legacy grammar.
     switch (at.kind) {
-        case lexer::Kind::Let: case lexer::Kind::In: case lexer::Kind::Var: case lexer::Kind::Then:
+        case lexer::Kind::Let: case lexer::Kind::In: case lexer::Kind::Var: case lexer::Kind::Then: case lexer::Kind::Record:
             if (!replacement_mode) current_kind = lexer::Kind::Name;
             break;
     }
@@ -385,6 +388,30 @@ int primary() {
     return postfix(result);
 }
 
+int record_literal(int name, lexer::Token at) {
+    if (name < 0 || kinds[name] != kind::Name) { reject(Error::ExpectedRecordType, at); return -1; }
+    advance();
+    int result = make_node(kind::Record, op::None, at, name, -1);
+    int first = -1;
+    int last = -1;
+    while (failure == Error::None && !take(lexer::Kind::RightBrace)) {
+        if (current_kind == lexer::Kind::End) { reject(Error::ExpectedClose, look()); break; }
+        lexer::Token field = look();
+        expect(lexer::Kind::Name, Error::ExpectedName);
+        expect(lexer::Kind::Assign, Error::ExpectedFieldAssign);
+        int value = expression(1);
+        expect(lexer::Kind::Semicolon, Error::ExpectedFieldSemicolon);
+        int item = make_node(kind::FieldInit, op::None, field, value, -1);
+        if (failure != Error::None) break;
+        if (last == -1) first = item;
+        else nexts[last] = item;
+        last = item;
+    }
+    if (failure != Error::None) return -1;
+    rights[result] = first;
+    return result;
+}
+
 int postfix(int result) {
     while (failure == Error::None) {
         lexer::Token at = look();
@@ -392,10 +419,12 @@ int postfix(int result) {
             int first = arguments(lexer::Kind::RightParen, false);
             result = make_node(kind::Call, op::None, at, result, first);
         } else if (current_kind == lexer::Kind::LeftBrace) {
-            if (replacement_mode) break;
-            advance();
-            int first = arguments(lexer::Kind::RightBrace, true);
-            result = make_node(kind::Struct, op::None, at, result, first);
+            if (replacement_mode) result = record_literal(result, at);
+            else {
+                advance();
+                int first = arguments(lexer::Kind::RightBrace, true);
+                result = make_node(kind::Struct, op::None, at, result, first);
+            }
         } else if (take(lexer::Kind::Dot)) {
             lexer::Token field = look();
             expect(lexer::Kind::Name, Error::ExpectedName);
@@ -526,6 +555,9 @@ pub string error_message(Error error) {
         case Error::ExpectedSemicolon: return "expected ';' after local binding";
         case Error::ExpectedThen: return "expected 'then' after condition";
         case Error::ExpectedElse: return "expected 'else' after conditional branch";
+        case Error::ExpectedRecordType: return "record literal requires a type name";
+        case Error::ExpectedFieldAssign: return "expected '=' after record field name";
+        case Error::ExpectedFieldSemicolon: return "expected ';' after record field value";
         default: return "unknown expression error";
     }
 }

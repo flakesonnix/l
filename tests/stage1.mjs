@@ -25,7 +25,7 @@ const quote = value => `"${[...bytes(value)].map(byte => `\\x${byte.toString(16)
 const keywords = new Map([
   'int', 'bool', 'void', 'auto', 'const', 'true', 'false', 'if', 'else', 'while', 'for',
   'return', 'module', 'break', 'continue', 'switch', 'case', 'default', 'import', 'as',
-  'pub', 'namespace', 'static', 'using', 'struct', 'enum', 'byte', 'string', 'extern', 'let', 'in', 'var', 'then',
+  'pub', 'namespace', 'static', 'using', 'struct', 'enum', 'byte', 'string', 'extern', 'let', 'in', 'var', 'then', 'record',
 ].map(word => [word, word[0].toUpperCase() + word.slice(1)]));
 const singles = Object.fromEntries([...('{}()[];:,.+-*/%!<>=')].map((value, index) => [value, [
   'LeftBrace', 'RightBrace', 'LeftParen', 'RightParen', 'LeftBracket', 'RightBracket',

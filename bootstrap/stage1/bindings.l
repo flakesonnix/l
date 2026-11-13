@@ -7,16 +7,21 @@ import l.compiler.headers as headers;
 
 pub const int max_nodes = 1024;
 pub const int max_functions = 256;
+pub const int max_records = 256;
+pub const int max_fields = 64;
 namespace kind {
     pub const int Invalid = 0;
     pub const int Module = 1;
     pub const int Constant = 2;
     pub const int Function = 3;
     pub const int Parameter = 4;
+    pub const int Record = 5;
+    pub const int Field = 6;
 }
 pub enum Error { None, Header, Expression, ExpectedName, ExpectedAssign,
                  ExpectedOpen, ExpectedClose, ExpectedColon, ExpectedArrow,
-                 ExpectedSemicolon, MisplacedHeader, TooManyNodes, TooManyFunctions };
+                 ExpectedSemicolon, MisplacedHeader, TooManyNodes, TooManyFunctions,
+                 ExpectedRecordOpen, ExpectedRecordClose, ExpectedFieldName, TooManyRecords, TooManyFields };
 pub struct Diagnostic {
     Error kind;
     headers::Error header;
@@ -58,6 +63,7 @@ static int bodies[max_nodes];
 static int nexts[max_nodes];
 static int used = 0;
 static int function_count = 0;
+static int record_count = 0;
 static Error failure = Error::None;
 static headers::Error header_failure = headers::Error::None;
 static expressions::Error expression_failure = expressions::Error::None;
@@ -143,6 +149,36 @@ int parameter() {
     }
     return result;
 }
+int record_declaration(lexer::Token start) {
+    expect(lexer::Kind::LeftBrace, Error::ExpectedRecordOpen);
+    if (ok() && record_count == max_records) reject(Error::TooManyRecords, start);
+    if (!ok()) return -1;
+    record_count++;
+    int result = make_node(kind::Record, start);
+    int count = 0;
+    int last = -1;
+    while (ok() && !take(lexer::Kind::RightBrace)) {
+        if (current().kind == lexer::Kind::End) { reject(Error::ExpectedRecordClose, current()); break; }
+        if (count == max_fields) { reject(Error::TooManyFields, current()); break; }
+        lexer::Token name = current();
+        expect(lexer::Kind::Name, Error::ExpectedFieldName);
+        expect(lexer::Kind::Colon, Error::ExpectedColon);
+        int declared = type();
+        expect(lexer::Kind::Semicolon, Error::ExpectedSemicolon);
+        int item = make_node(kind::Field, name);
+        if (!ok()) break;
+        name_starts[item] = name.start;
+        name_lengths[item] = name.length;
+        types[item] = declared;
+        if (last == -1) items[result] = item;
+        else nexts[last] = item;
+        last = item;
+        count++;
+    }
+    expect(lexer::Kind::Semicolon, Error::ExpectedSemicolon);
+    if (!ok()) return -1;
+    return result;
+}
 int declaration() {
     lexer::Token start = current();
     if (start.kind == lexer::Kind::Module || start.kind == lexer::Kind::Import) {
@@ -162,33 +198,36 @@ int declaration() {
         if (result != -1) { types[result] = declared; bodies[result] = initial; }
     } else {
         expect(lexer::Kind::Assign, Error::ExpectedAssign);
-        expect(lexer::Kind::LeftParen, Error::ExpectedOpen);
-        if (ok() && function_count == max_functions) reject(Error::TooManyFunctions, start);
-        if (!ok()) return -1;
-        function_count++;
-        result = make_node(kind::Function, start);
-        int first = -1;
-        int last = -1;
-        if (!take(lexer::Kind::RightParen)) {
-            while (ok()) {
-                int item = parameter();
-                if (!ok()) break;
-                if (last == -1) first = item;
-                else nexts[last] = item;
-                last = item;
-                if (!take(lexer::Kind::Comma)) break;
+        if (take(lexer::Kind::Record)) result = record_declaration(start);
+        else {
+            expect(lexer::Kind::LeftParen, Error::ExpectedOpen);
+            if (ok() && function_count == max_functions) reject(Error::TooManyFunctions, start);
+            if (!ok()) return -1;
+            function_count++;
+            result = make_node(kind::Function, start);
+            int first = -1;
+            int last = -1;
+            if (!take(lexer::Kind::RightParen)) {
+                while (ok()) {
+                    int item = parameter();
+                    if (!ok()) break;
+                    if (last == -1) first = item;
+                    else nexts[last] = item;
+                    last = item;
+                    if (!take(lexer::Kind::Comma)) break;
+                }
+                expect(lexer::Kind::RightParen, Error::ExpectedClose);
             }
-            expect(lexer::Kind::RightParen, Error::ExpectedClose);
+            expect(lexer::Kind::Colon, Error::ExpectedColon);
+            int declared = type();
+            expect(lexer::Kind::Arrow, Error::ExpectedArrow);
+            int body = value();
+            expect(lexer::Kind::Semicolon, Error::ExpectedSemicolon);
+            if (!ok()) return -1;
+            types[result] = declared;
+            items[result] = first;
+            bodies[result] = body;
         }
-        expect(lexer::Kind::Colon, Error::ExpectedColon);
-        int declared = type();
-        expect(lexer::Kind::Arrow, Error::ExpectedArrow);
-        int body = value();
-        expect(lexer::Kind::Semicolon, Error::ExpectedSemicolon);
-        if (!ok()) return -1;
-        types[result] = declared;
-        items[result] = first;
-        bodies[result] = body;
     }
     if (result != -1) {
         name_starts[result] = name.start;
@@ -200,6 +239,7 @@ int declaration() {
 pub int parse() {
     used = 0;
     function_count = 0;
+    record_count = 0;
     failure = Error::None;
     header_failure = headers::Error::None;
     expression_failure = expressions::Error::None;
@@ -233,7 +273,7 @@ pub int parse() {
         else nexts[last] = item;
         last = item;
     }
-    if (!ok()) { used = 0; function_count = 0; headers::discard(); return -1; }
+    if (!ok()) { used = 0; function_count = 0; record_count = 0; headers::discard(); return -1; }
     header_ids[root] = header;
     return root;
 }
@@ -262,6 +302,11 @@ pub string error_message(Error error) {
         case Error::MisplacedHeader: return "module and import declarations must precede bindings";
         case Error::TooManyNodes: return "binding file exceeds 1024 declaration nodes";
         case Error::TooManyFunctions: return "binding file exceeds 256 functions";
+        case Error::ExpectedRecordOpen: return "expected '{' after record";
+        case Error::ExpectedRecordClose: return "expected '}' after record fields";
+        case Error::ExpectedFieldName: return "expected record field name";
+        case Error::TooManyRecords: return "binding file exceeds 256 records";
+        case Error::TooManyFields: return "record exceeds 64 fields";
         default: return "unknown binding-file error";
     }
 }

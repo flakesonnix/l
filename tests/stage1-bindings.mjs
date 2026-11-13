@@ -31,6 +31,8 @@ const letIn = (bindings, body, fields = {}) => ({ kind: 'Let', bindings, body, .
 const conditional = (condition, positive, negative, fields = {}) => ({ kind: 'Conditional', condition, positive, negative, ...fields });
 const fn = (body = integer(42), fields = {}) => ({ kind: 'Function', name: 'main', type: 'Int', parameters: [], body, ...fields });
 const constant = (fields = {}) => ({ kind: 'Constant', name: 'answer', type: 'Int', body: integer(42), ...fields });
+const record = (fields = [], options = {}) => ({ kind: 'Record', name: 'Pair', fields, ...options });
+const recordValue = (fields = [], options = {}) => ({ kind: 'Record', left: named('Pair'), fields, ...options });
 const types = ['Int', 'Bool', 'Byte', 'String', 'Void', 'Auto', 'Named'];
 const operators = { '+': 'Plus', '-': 'Minus', '!': 'Bang', '*': 'Star', '/': 'Slash', '%': 'Percent', '<': 'Less', '>': 'Greater',
   '<=': 'LessEqual', '>=': 'GreaterEqual', '==': 'Equal', '!=': 'NotEqual', '&&': 'And', '||': 'Or', '=': 'Assign', '++': 'Increment', '--': 'Decrement', int: 'Int', byte: 'Byte' };
@@ -66,6 +68,17 @@ function rendered(name, declarations, options = {}) {
       let value = e('Name', put('x'), 1);
       for (let n = 0; n < tree.count; n++) value = e('Postfix', put('++'), 2, { op: 'Increment', left: value });
       return value;
+    }
+    if (tree.kind === 'Record') {
+      const left = expression(tree.left), result = e('Record', put('{'), 1, { left });
+      let last = null;
+      for (const field of tree.fields) {
+        const item = e('FieldInit', put(field.name), field.name.length); put('=');
+        item.left = expression(field.value); put(`;${gap}`);
+        if (last) last.next = item; else result.right = item;
+        last = item;
+      }
+      put('}'); return result;
     }
     if (tree.kind === 'Conditional') {
       if (!tree.bare) put('(');
@@ -145,7 +158,16 @@ function rendered(name, declarations, options = {}) {
     const item = d(declaration.kind, start, declaration.exported ? 3 : declaration.name.length,
       { nameStart, nameLength: declaration.name.length, exported: !!declaration.exported });
     if (declaration.kind === 'Constant') { put(':'); item.type = type(declaration.type, declaration.typeName); put('='); }
-    else {
+    else if (declaration.kind === 'Record') {
+      put(`=record${gap}{`); let lastField = null;
+      for (const field of declaration.fields) {
+        const start = put(field.name), current = d('Field', start, field.name.length, { nameStart: start, nameLength: field.name.length });
+        put(':'); current.type = type(field.type, field.typeName); put(`;${gap}`);
+        if (lastField) lastField.next = current; else item.items = current;
+        lastField = current;
+      }
+      put('}');
+    } else {
       put('=('); let lastParameter = null;
       for (const parameter of declaration.parameters) {
         if (lastParameter) put(',');
@@ -156,7 +178,8 @@ function rendered(name, declarations, options = {}) {
       }
       put('):'); item.type = type(declaration.type, declaration.typeName); put('=>');
     }
-    item.body = expression(declaration.body); put(`;${gap}`);
+    if (declaration.kind !== 'Record') item.body = expression(declaration.body);
+    put(`;${gap}`);
     if (last) last.next = item; else tree.items = item; last = item;
   }
   input += options.trailing ?? '';
@@ -227,7 +250,7 @@ for (const [tail, error, marker, nested] of [
   ['f=():int=>let x=1;', 'Expression', '', { expression: 'ExpectedName' }],
   ['f=():int=>let in ;', 'Expression', ';', { expression: 'ExpectedExpression' }],
   ['f=():int=>f(1,);', 'Expression', ');', { expression: 'ExpectedExpression' }],
-  ['f=():int=>P{1};', 'ExpectedSemicolon', '{'], ['f=():int=>{return 0;};', 'Expression', '{', { expression: 'ExpectedExpression' }],
+  ['f=():int=>P{1};', 'Expression', '1', { expression: 'ExpectedName' }], ['f=():int=>{return 0;};', 'Expression', '{', { expression: 'ExpectedExpression' }],
   ['f=():int=>let x=1; in @;', 'Expression', '@', { expression: 'Lexical', lexical: 'UnsupportedCharacter' }],
   ['x:string="old"; f=():int=>let y="new"; in ;', 'Expression', ';', { expression: 'ExpectedExpression' }],
   ['f=():int=>let let=1; in 0;', 'Expression', 'let=1', { expression: 'ExpectedName' }],
@@ -329,6 +352,80 @@ rendered('conditional budget after earlier declarations', [constant(), fn(condit
 const sharedConditionalOverflow = rendered('conditional budget after earlier declarations overflow', [constant(), fn(conditional(truth, { kind: 'Chain', count: 2041 }, integer(0), { bare: true }))]); fixtures.pop();
 bad(sharedConditionalOverflow.input, 'Expression', 'else', { expression: 'TooManyNodes' });
 
+rendered('approved record spelling', [record([{ name: 'x', type: 'Int' }, { name: 'ready', type: 'Bool' }], { exported: true }),
+  fn(letIn([local('pair', recordValue([{ name: 'x', value: integer(42) }, { name: 'ready', value: truth }]), { type: 'Named', typeName: 'Pair' })],
+    { kind: 'Field', left: named('pair'), name: 'x' }, { bare: true }))]);
+for (const type of types) for (const exported of [false, true]) rendered(`record field ${type} ${exported}`, [record([{ name: 'value', type }], { exported }),
+  fn(recordValue([{ name: 'value', value: named('unknown') }]), { type: 'Named', typeName: 'Pair' })]);
+rendered('empty and duplicate record syntax is not semantic acceptance', [record(), record([{ name: 'x', type: 'Void' }, { name: 'x', type: 'Auto' }]),
+  fn(recordValue([{ name: 'x', value: integer(1) }, { name: 'x', value: integer(2) }, { name: 'unknown', value: truth }]))]);
+rendered('empty record literal', [fn(recordValue())]);
+rendered('qualified record type and written field order', [fn(recordValue([{ name: 'second', value: { kind: 'Text', text: 'first\0\xff' } },
+  { name: 'first', value: { kind: 'Text', text: 'second\x80' } }], { left: named('pkg::types::Pair') }))]);
+for (const name of ['constructor', '__proto__', 'recordx']) rendered(`record identifier ${name}`, [record([{ name, type: 'Int' }], { name }),
+  fn(recordValue([{ name, value: integer(1) }], { left: named(name) }))]);
+for (const gap of ['\n', '\t', '\r', '/*gap*/', '//gap\n']) rendered(`record trivia ${JSON.stringify(gap)}`, [record([{ name: 'x', type: 'Named', typeName: 'pkg::T' }], { exported: true }),
+  fn(recordValue([{ name: 'x', value: { kind: 'Text', text: 'text\0\xff' } }]))], { gap });
+rendered('record literal in conditional and let positions', [fn(letIn([local('p', conditional(truth,
+  recordValue([{ name: 'x', value: integer(1) }]), recordValue([{ name: 'x', value: integer(2) }]), { bare: true }))],
+  recordValue([{ name: 'x', value: conditional(lie, integer(3), integer(4), { bare: true }) },
+    { name: 'y', value: letIn([local('x', integer(5))], named('x'), { bare: true }) }]), { bare: true }))]);
+rendered('nested record temporary field access', [fn(recordValue([{ name: 'x', value: { kind: 'Field', name: 'y', left: recordValue([{ name: 'y', value: integer(42) }]) } }]))]);
+rendered('record call arguments and following field/index access', [fn({ kind: 'Index', left: { kind: 'Field', name: 'items', left: { kind: 'Call', left: named('f'),
+  arguments: [recordValue([{ name: 'x', value: integer(1) }]), recordValue([{ name: 'x', value: integer(2) }])] } }, right: integer(0) })]);
+rendered('record field assignment remains syntax-only', [fn({ kind: 'Assign', operator: '=', left: { kind: 'Field', name: 'x', left: recordValue([{ name: 'x', value: integer(1) }]) }, right: integer(2) })]);
+for (const [tail, error, marker, nested] of [
+  ['record Pair{x:int;};', 'ExpectedName', 'record'], ['Pair=record;', 'ExpectedRecordOpen', ';'],
+  ['Pair=record{x:int;', 'ExpectedRecordClose', ''], ['Pair=record{x:int;}', 'ExpectedSemicolon', ''],
+  ['Pair=record{pub x:int;};', 'ExpectedFieldName', 'pub'], ['Pair=record{x int;};', 'ExpectedColon', 'int'],
+  ['Pair=record{x:;};', 'Expression', ';}', { expression: 'ExpectedType' }],
+  ['Pair=record{x:int=0;};', 'ExpectedSemicolon', '=0'], ['Pair=record{x:int,};', 'ExpectedSemicolon', ','],
+  ['Pair=record{x:int[2];};', 'ExpectedSemicolon', '['], ['Pair=record{record:int;};', 'ExpectedFieldName', 'record:int'],
+  ['f=():int=>Pair{x=1};', 'Expression', '};', { expression: 'ExpectedFieldSemicolon' }],
+  ['f=():int=>Pair{x=1,};', 'Expression', ',', { expression: 'ExpectedFieldSemicolon' }],
+  ['f=():int=>Pair{x=1;,};', 'Expression', ',', { expression: 'ExpectedName' }],
+  ['f=():int=>Pair{x;};', 'Expression', ';}', { expression: 'ExpectedFieldAssign' }],
+  ['f=():int=>Pair{x:int;};', 'Expression', ':int', { expression: 'ExpectedFieldAssign' }],
+  ['f=():int=>Pair{x=;};', 'Expression', ';}', { expression: 'ExpectedExpression' }],
+  ['f=():int=>Pair{x=1;', 'Expression', '', { expression: 'ExpectedClose' }],
+  ['f=():int=>1{x=1;};', 'Expression', '{', { expression: 'ExpectedRecordType' }],
+  ['f=():int=>f(){x=1;};', 'Expression', '{', { expression: 'ExpectedRecordType' }],
+  ['f=():int=>pkg.Pair{x=1;};', 'Expression', '{', { expression: 'ExpectedRecordType' }],
+  ['f=():int=>{x=1;};', 'Expression', '{', { expression: 'ExpectedExpression' }],
+  ['f=():int=>record{x=1;};', 'Expression', 'record', { expression: 'ExpectedExpression' }],
+  ['f=():int=>Pair{record=1;};', 'Expression', 'record', { expression: 'ExpectedName' }],
+  ['x:string="old";Pair=record{x:@;};', 'Expression', '@', { expression: 'Lexical', lexical: 'UnsupportedCharacter' }],
+  ['f=():int=>Pair{x="old";y=@;};', 'Expression', '@', { expression: 'Lexical', lexical: 'UnsupportedCharacter' }],
+]) bad(`module m; ${tail}`, error, marker, nested);
+bad('module record;', 'Header', 'record', { header: 'ExpectedName' });
+bad('module m; import p as record;', 'Header', 'record', { header: 'ExpectedName' });
+const recordFields = n => Array.from({ length: n }, (_, i) => ({ name: `f${i}`, type: 'Int' }));
+rendered('record field limit', [record(recordFields(64))]);
+const fieldOverflow = rendered('record field overflow', [record(recordFields(65))]); fixtures.pop();
+bad(fieldOverflow.input, 'TooManyFields', 'f64');
+rendered('record/function counts are independent', [...Array.from({ length: 256 }, (_, i) => record([{ name: 'x', type: 'Int' }], { name: `R${i}` })),
+  ...Array.from({ length: 256 }, (_, i) => fn(integer(0), { name: `f${i}` }))], { passes: 1 });
+const recordOverflow = rendered('record count overflow', Array.from({ length: 257 }, (_, i) => record([], { name: `R${i}` }))); fixtures.pop();
+bad(recordOverflow.input, 'TooManyRecords', 'R256');
+rendered('record full declaration arena', [...Array.from({ length: 15 }, () => record(recordFields(64))), record(recordFields(47))], { passes: 1 });
+const recordDeclarationOverflow = rendered('record declaration arena overflow', [...Array.from({ length: 15 }, () => record(recordFields(64))), record(recordFields(48))]); fixtures.pop();
+bad(recordDeclarationOverflow.input, 'TooManyNodes', 'f47'); fixtures.at(-1).passes = 1;
+const literalFields = n => Array.from({ length: n }, (_, i) => ({ name: `f${i}`, value: integer(0) }));
+rendered('record full expression arena', [fn(recordValue(literalFields(1022), { left: named('ns::Pair') }))], { passes: 1 });
+const recordExpressionOverflow = rendered('record expression arena overflow', [fn(recordValue(literalFields(1023)))]); fixtures.pop();
+bad(recordExpressionOverflow.input, 'Expression', 'f1022', { expression: 'TooManyNodes' }); fixtures.at(-1).passes = 1;
+let deepRecord = integer(0);
+for (let i = 0; i < 47; i++) deepRecord = recordValue([{ name: 'x', value: deepRecord }]);
+rendered('record maximum expression depth', [fn(deepRecord)]);
+const recordDepthOverflow = rendered('record expression depth overflow', [fn(recordValue([{ name: 'x', value: deepRecord }]))]); fixtures.pop();
+bad(recordDepthOverflow.input, 'Expression', '0', { expression: 'TooDeep' });
+rendered('record field type shares earlier body arena', [fn({ kind: 'Chain', count: 2044 }), record([{ name: 'x', type: 'Named', typeName: 'T' }])]);
+const fieldTypeOverflow = rendered('record field type arena overflow', [fn({ kind: 'Chain', count: 2044 }), record([{ name: 'x', type: 'Named', typeName: 'ns::T' }])]); fixtures.pop();
+bad(fieldTypeOverflow.input, 'Expression', 'ns::T', { expression: 'TooManyNodes' });
+rendered('body shares earlier record field type arena', [record([{ name: 'x', type: 'Named', typeName: 'T' }]), fn({ kind: 'Chain', count: 2044 })]);
+const afterFieldTypeOverflow = rendered('body after record field type arena overflow', [record([{ name: 'x', type: 'Named', typeName: 'ns::T' }]), fn({ kind: 'Chain', count: 2044 })]); fixtures.pop();
+bad(afterFieldTypeOverflow.input, 'Expression', '++', { expression: 'TooManyNodes' });
+
 let state = 0x4e495842;
 function random(n) { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return Math.floor(state / 0x100000000 * n); }
 function generated(depth) {
@@ -351,6 +448,9 @@ function generatedConditional(depth) {
 }
 const conditionalGeneratedStart = fixtures.length;
 for (let n = 0; n < 32; n++) rendered(`generated conditional ${n}`, [fn(conditional(generatedConditional(2), generatedConditional(2), generatedConditional(2)))]);
+const recordGeneratedStart = fixtures.length;
+for (let n = 0; n < 32; n++) rendered(`generated record ${n}`, [record(Array.from({ length: random(6) + 1 }, (_, i) => ({ name: `field${i}`, type: types[random(types.length)] })), { exported: !!random(2) }),
+  fn(recordValue(Array.from({ length: random(5) + 1 }, (_, i) => ({ name: `value${i}`, value: generatedConditional(2) }))))]);
 function flatten(roots, links) {
   const nodes = [], ids = new Map(), pending = [...roots].reverse();
   while (pending.length) { const node = pending.pop(); if (!node || ids.has(node)) continue;
@@ -364,13 +464,17 @@ function arenas(tree) {
   return { d, h, e };
 }
 const generatedNodes = fixtures.slice(generatedStart).flatMap(f => arenas(f.tree).e.nodes);
-for (const kind of ['Let', 'Binding', 'Type', 'Integer', 'Bool', 'Text', 'Name', 'Call', 'Unary', 'Binary', 'Conditional', 'Branches']) assert.ok(generatedNodes.some(n => n.kind === kind), kind);
+for (const kind of ['Let', 'Binding', 'Type', 'Integer', 'Bool', 'Text', 'Name', 'Call', 'Unary', 'Binary', 'Conditional', 'Branches', 'Record', 'FieldInit']) assert.ok(generatedNodes.some(n => n.kind === kind), kind);
 for (const mutable of [0, 1]) assert.ok(generatedNodes.some(n => n.kind === 'Binding' && n.value === mutable), `generated mutability ${mutable}`);
 for (let tag = 1; tag <= 7; tag++) assert.ok(generatedNodes.some(n => n.kind === 'Type' && n.value === tag), `generated type ${tag}`);
 const conditionalGeneratedNodes = fixtures.slice(conditionalGeneratedStart).flatMap(f => arenas(f.tree).e.nodes);
 for (const position of ['left', 'right']) assert.ok(conditionalGeneratedNodes.some(n => n.kind === 'Conditional' &&
   (position === 'left' ? n.left.kind === 'Conditional' : [n.right.left.kind, n.right.right.kind].includes('Conditional'))), `nested conditional ${position}`);
 for (const node of conditionalGeneratedNodes.filter(n => n.kind === 'Branches')) assert.equal(node.next, null);
+const generatedRecordArenas = fixtures.slice(recordGeneratedStart).map(f => arenas(f.tree));
+for (const kind of ['Record', 'Field']) assert.ok(generatedRecordArenas.some(a => a.d.nodes.some(n => n.kind === kind)), kind);
+for (let tag = 1; tag <= 7; tag++) assert.ok(generatedRecordArenas.some(a => a.d.nodes.some(n => n.kind === 'Field' && n.type.value === tag)), `record field type ${tag}`);
+for (const exported of [false, true]) assert.ok(generatedRecordArenas.some(a => a.d.nodes.some(n => n.kind === 'Record' && n.exported === exported)), `record visibility ${exported}`);
 
 const helpers = `
 static int dids[parser::max_nodes]; static bool dseen[parser::max_nodes];
@@ -460,7 +564,7 @@ bool load(string s){lexer::reset();for(int i=0;i<s.length;i++)if(!lexer::append(
 int main(){for(int pass=0;pass<2;pass++){
  if(!load("module m; f=():int=>let x=1; in x; ")||parser::parse()==-1)return 1;
  if(!load("let in 1")||expressions::parse()!=-1||expressions::diagnostic().kind!=expressions::Error::TrailingInput)return 2;
- if(!load("let+in+var+then")||expressions::parse()==-1)return 6;
+ if(!load("let+in+var+then+record")||expressions::parse()==-1)return 6;
  if(!load("module m; f=():int=>if true then 1 else 0;")||parser::parse()==-1)return 7;
  if(!load("if true then 1 else 0")||expressions::parse()!=-1||expressions::diagnostic().kind!=expressions::Error::ExpectedExpression)return 8;
  if(!load("1+2")||expressions::parse()==-1)return 3;
@@ -478,6 +582,8 @@ for (const [input, status, error] of [
   ['module m; main=():void=>unknown(2147483648);', 0, ''],
   ['module m; main=():int=>if true then 42 else unknown(1/0);', 0, ''],
   ['module m; main=():int=>if 1 then "wrong" else false;', 0, ''],
+  ['module m;pub Pair=record{x:int;ready:bool;};main=():int=>let p:Pair=Pair{x=42;ready=true;};in p.x;', 0, ''],
+  ['module m;Pair=record{};main=():void=>Unknown{extra=missing();};', 0, ''],
   ['', 65, 'binding:1:1: error: source must begin with a module declaration\n'],
   ['module m; int main(){}', 65, 'binding:1:11: error: expected binding or parameter name\n'],
   ['module m; f=():int= >0;', 65, "binding:1:19: error: expected '=>' before function expression\n"],

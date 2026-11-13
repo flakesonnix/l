@@ -11,7 +11,7 @@ pub enum Kind {
     LeftBrace, RightBrace, LeftParen, RightParen, LeftBracket, RightBracket,
     Semicolon, Colon, Comma, Dot, Plus, Minus, Star, Slash, Percent,
     Bang, Less, Greater, Assign, Equal, NotEqual, LessEqual, GreaterEqual,
-    And, Or, Increment, Decrement, Scope, Let, In, Var, Arrow, Then
+    And, Or, Increment, Decrement, Scope, Let, In, Var, Arrow, Then, Record
 };
 
 pub enum Error {
@@ -155,7 +155,10 @@ Kind keyword() {
         case 109: if (word("module")) return Kind::Module; break;
         case 110: if (word("namespace")) return Kind::Namespace; break;
         case 112: if (word("pub")) return Kind::Pub; break;
-        case 114: if (word("return")) return Kind::Return; break;
+        case 114:
+            if (word("return")) return Kind::Return;
+            if (word("record")) return Kind::Record;
+            break;
         case 115:
             if (word("switch")) return Kind::Switch;
             if (word("static")) return Kind::Static;
