@@ -17,9 +17,8 @@ replacement slice; the source compiler does not yet compile that syntax.
 The approved direction is a **typed, Nix-inspired replacement**: declarative
 bindings, `let/in`, records and expression-oriented functions, with explicit
 modules. This is a breaking source migration, not a permanent second grammar.
-The approved function/binding spelling is shown below. The rest of the replacement
-grammar and the full source migration remain incomplete; records are not added by
-this slice.
+The approved binding, conditional and record spellings are shown below. The rest
+of the replacement grammar and the full executable-source migration remain incomplete.
 
 Static typing, eager left-to-right evaluation and the
 [module-system semantics](spec/module-system-v0.1.1.md) stay intact. Nix-style lazy
@@ -62,9 +61,26 @@ branch; both branches must still parse. This driver does not check condition or
 branch types, select a branch, or execute either branch. Parentheses delimit a
 conditional when an operator should apply outside its full `else` expression.
 
+Records use name-first declarations and explicitly named literals:
+
+```text
+module app.records;
+pub Pair = record { x: int; ready: bool; };
+main = (): int =>
+  let pair: Pair = Pair { x = 42; ready = true; };
+  in pair.x;
+```
+
+The intended semantics remain nominal, copied-by-value records with values
+evaluated in written field order, not anonymous structural attribute sets. The
+parser records declarations, field names/types and initializer order without
+checking or executing them. Missing/unknown/duplicate fields and invalid field
+types are semantic work for later. Positional values and anonymous literals are
+not replacement syntax.
+
 The new driver rejects C-style function/declaration syntax. Stage 0 and the legacy
 Stage 1 drivers remain temporary bootstrap scaffolding while the replacement is
-incomplete, not a permanent second user grammar. Records, statement blocks,
+incomplete, not a permanent second user grammar. Statement blocks,
 namespaces, static storage and enum declarations are not part of this first new
 file-parser slice. See its [parser contract](bootstrap/stage1/README.md#replacement-binding-file-contract).
 

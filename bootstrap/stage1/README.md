@@ -146,8 +146,8 @@ magnitude is legal; the lexer does not accept it as an ordinary positive int val
 
 ASCII identifiers, decimal literals, comments and literal-backed string escapes
 match Stage 0's lexical subset. The scanner additionally recognizes replacement
-keywords `let`, `in`, `var`, `then` and the adjacent `=>` token. `= >` is two tokens, not
-an arrow. Legacy parser cursors temporarily expose those four keywords as names
+keywords `let`, `in`, `var`, `then`, `record` and the adjacent `=>` token. `= >` is two tokens, not
+an arrow. Legacy parser cursors temporarily expose those five keywords as names
 to keep existing bootstrap inputs usable; the replacement parser reserves them
 in both headers and bodies. This compatibility is migration scaffolding, not a
 permanent second source grammar. Comments are non-nesting and may contain high bytes, but not NUL.
@@ -500,8 +500,8 @@ resolution, inference, type/readonly checks or evaluation. Unknown names/calls,
 duplicate/forward local bindings, invalid written `void`/`auto` types, mutation of
 plain bindings and nonconstant top-level initializers may be syntax-valid here.
 These are not semantic acceptance claims. No input initializer, function or
-import is executed, and no input program storage is allocated. Records,
-statement blocks/loops, nested function values, namespaces, aliases,
+import is executed, and no input program storage is allocated.
+Statement blocks/loops, nested function values, namespaces, aliases,
 externs, statics, arrays and enums are not declarations in this first slice.
 
 ### Conditional expressions
@@ -535,6 +535,46 @@ strings are retained; malformed syntax or lexical errors in either branch still
 fail parsing, even for a literal condition. `ExpectedThen`/`ExpectedElse` preserve
 the first detected token span and underlying lexical failures.
 
+### Record declarations and named literals
+
+The approved declaration is `[pub] Name = record { field: Type; ... };` at module
+scope. Field names are single identifiers; every written type and field requires
+its colon/semicolon, with no default values, array suffixes or visibility modifiers.
+Public record declarations record `pub`; fields keep the existing intended public-
+field semantics, not inherited private/export flags.
+
+Literals use `Name { field = expression; ... }`, with `::`-qualified names allowed.
+The prefix must be a name chain, not a call, field read or other computed value.
+Every field value requires its trailing semicolon, including the last. Positional
+values, commas, anonymous literals, shorthand and dotted field paths are not added.
+Values can contain calls, operators, `let`, conditionals and record temporaries;
+field reads/indexing/calls can follow a completed literal as ordinary syntax.
+
+```text
+module app.records;
+pub Pair = record { x: int; ready: bool; };
+main = (): int =>
+  let pair: Pair = Pair { x = 42; ready = true; };
+  in pair.x;
+```
+
+Intended semantics preserve nominal identity, by-value copies and eager left-to-
+right evaluation of values in **written field order**, independently of eventual
+field layout. This is not structural typing, a Nix recursive attribute scope, new
+aggregate runtime capabilities or permission to evaluate initializers. The parser
+does not match fields/types, resolve the type prefix, check visibility/readonly
+writes or enforce nominal identity/copy behavior. Empty declarations/literals,
+duplicate declarations/fields, unknown/missing fields, invalid `void`/`auto` field
+types and oversized initializer lists may be syntax-valid, not semantically valid.
+The intended existing nonempty/scalar-field restrictions remain semantic work.
+
+There are seed limits of **256 record declarations** per file and **64 fields**
+per declaration, shared with the same **1024 declaration-node** arena as functions,
+parameters and constants. Record/function counts are independent and reset on
+replay or failure. Named literal fields use only the shared expression arena;
+their count is bounded by that arena, not checked against an unresolved record's
+arity. These are parser resource limits, not new language or artifact limits.
+
 ### Arenas and node ownership
 
 `bindings::parse()` replays input and requires EOF. It returns a `Module` root in
@@ -556,6 +596,9 @@ Declaration nodes expose token start/length/line/column, identifier
 - `Function.type` is its written result `Type`; `items` is the first declaration-
   arena `Parameter`, and `body` is the expression body.
 - `Parameter.type` is its written `Type`. Parameters have no initializer.
+- `Record.items` is its first declaration-arena `Field`. `type` and `body` are
+  absent. `Field.type` is its written expression-arena `Type`; its identifier span
+  is recorded normally, with no initializer or own export flag.
 - `next` links declaration/parameter siblings. Other links are absent (-1).
   Declaration metadata refers to the leading `pub` or name, not the whole span.
 
@@ -576,6 +619,11 @@ the same expression arena:
   `right` the negative expression. Its `next` is absent. Both new conditional kinds
   have zero `value`/`text_length` and no operation tag. The container is syntax
   structure, not input allocation, a new runtime record, or a serialized format.
+- Expression-arena `Record` metadata refers to `{`; `left` is the written type's
+  `Name` chain and `right` the first `FieldInit`. `FieldInit` metadata refers to its
+  identifier; `left` is its value, `right` is absent, and `next` links fields in
+  written order. Both kinds have zero values/text lengths and no operation tag.
+  Literal roots can link call-argument siblings through `next` as usual.
 
 Retained string bytes, first-error spans and invalid-node conventions are unchanged.
 `expressions::replacement()` and `parse_type()` are provisional internal migration
@@ -597,6 +645,12 @@ trees assert nested conditionals and branch-container ownership. Exact limits
 cover branch-pair allocation, arena budgets shared with earlier declarations, and
 conditional-only or mixed let/conditional depth; the same 2048-node/48-level
 expression limits are unchanged.
+Record models check declaration/literal field ownership, all written types,
+visibility, field order, name spans, retained strings, invalid forms and mode
+isolation. Exact limits cover fields/records, combined record/function counts,
+the declaration arena, literal expression storage, named-field types shared with
+earlier/later function bodies, and nested literal depth. Generated mixed corpora
+assert record/field nodes, all written field types and both record visibilities.
 
 ## Limits and verification
 
@@ -684,9 +738,9 @@ under `make test`, `make sanitize`, `make coverage` and the Nix checks. The exis
 a coverage gate for L source. No arbitrary mutant bytecode or cyclic verifier
 graphs are executed by these tests.
 
-The replacement suite has **285 fixtures / 61716 modeled node checks** across
-its declaration, header and expression arenas, in **71 batches / 317 commands**.
-The scanner suite has **1182 fixtures / 109432 token checks**. All legacy
+The replacement suite has **389 fixtures / 100600 modeled node checks** across
+its declaration, header and expression arenas, in **101 batches / 441 commands**.
+The scanner suite has **1183 fixtures / 112460 token checks**. All legacy
 expression, statement, header and function-file suites still pass. Stage 0 C
 coverage remains **2596 lines / 163 functions / 2660 branches (100%)**; these
 numbers do not measure L-source coverage.
