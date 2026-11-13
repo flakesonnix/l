@@ -5,17 +5,19 @@ Stage 0 is the C11 compiler and verified bytecode VM described in the
 implementation of L 0.1. The module rules follow
 [module-system specification 0.1.1](../spec/module-system-v0.1.1.md).
 
-The current compiler, Stage 1 implementation sources and executable examples use
+The Stage 1 implementation sources and original executable examples retain
 **legacy bootstrap syntax**. The approved replacement combines C-style functions
 and control flow with selected Nix-inspired features, superseding the earlier
 arrow-function proposal. Syntax-only bindings, C bodies, conditional expressions,
 records, enums, structs, aliases, namespaces, C-style `const` parameters and
 static/extern declarations are implemented, but the full grammar and executable
-source migration are not. See
+source migration are not complete. The CLI now executes the first `int`/`bool`
+function/local and eager `let/in` subset via the existing C pipeline. See
 [source syntax status](../README.md#source-syntax-status). Static typing, eager
 left-to-right evaluation, explicit module semantics and IR/bytecode **1.9** remain
-unchanged. Source compilation still uses the legacy grammar; the new
-`build/stage1-binding.lbc` stdin driver checks replacement syntax without executing it.
+unchanged. Source compilation extends the bootstrap grammar with that bounded
+executable subset; the `build/stage1-binding.lbc` stdin driver still checks
+replacement syntax without executing it.
 
 ## Checkout and prerequisites
 
@@ -60,6 +62,12 @@ covered; there are no production-source exclusions. The report is
 Arbitrary bytecode mutants and potentially cyclic verifier graphs are verified,
 never executed. Executed models have independently known results, traps or
 explicit resource-limit expectations.
+
+`tests/replacement.mjs` checks actual CLI semantics, deterministic bytecode 1.9,
+source/serialized execution agreement, scopes, diagnostics, visibility and
+transactional rejection. `tests/fuzz.c` adds independent full-width lexical-cell
+and expression models, plus repeated execution after traps and cleanup. These
+are compiler/VM tests, not evidence of L-source coverage or self-hosting.
 
 ## Nix workflow
 
@@ -131,6 +139,7 @@ bytes, including NUL and values above 127; they do not perform text conversion.
 | Models, observers, Nix and CI | 1.9 | No additional syntax or artifact-format change. |
 | Syntax-only Stage 1 frontend | 1.9 | Provisional in-memory ASTs; no serialized AST format. |
 | Replacement function/binding parser | 1.9 | Syntax-only migration slice; Stage 0 source compilation remains legacy. |
+| First executable replacement subset | 1.9 | C frontend adds scoped `let/in` and reserves `let`, `in`, `var`; existing backend/VM reused. |
 
 The loader accepts only the current exact version, including for programs that do
 not use the new feature. The C observer API and its callback contract are described

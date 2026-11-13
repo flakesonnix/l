@@ -22,6 +22,7 @@ static size_t string_programs;
 static size_t io_programs;
 static size_t global_array_programs, global_array_lifecycles;
 static size_t io_array_programs, io_array_executions;
+static size_t let_programs;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -431,7 +432,7 @@ static int32_t expression_value(void) {
 /* Emit typed expressions while a host-side model tracks values, effects and traps. */
 static int32_t expression_model(ExpressionModel *model, unsigned depth, bool boolean) {
     if (boolean) {
-        unsigned kind = random_number(depth ? 5 : 2);
+        unsigned kind = random_number(depth ? 6 : 2);
         if (!kind) {
             int32_t value = (int32_t)random_number(2);
             append(value ? "true" : "false"); return value;
@@ -450,6 +451,13 @@ static int32_t expression_model(ExpressionModel *model, unsigned depth, bool boo
         if (kind == 2) {
             append("(!"); int32_t value = expression_model(model, depth - 1, true); append(")"); return !value;
         }
+        if (kind == 5) {
+            append("(let var flag:bool=");
+            int32_t flag = expression_model(model, depth - 1, true);
+            append(";in (flag=!flag)==");
+            int32_t value = expression_model(model, depth - 1, true);
+            append(")"); return (!flag) == value;
+        }
         append("("); int32_t a = expression_model(model, depth - 1, true);
         bool conjunction = kind == 3;
         append(conjunction ? "&&" : "||");
@@ -458,7 +466,7 @@ static int32_t expression_model(ExpressionModel *model, unsigned depth, bool boo
         int32_t b = expression_model(shorted ? &skipped : model, depth - 1, true);
         append(")"); return conjunction ? a && b : a || b;
     }
-    unsigned kind = random_number(depth ? 9 : 6);
+    unsigned kind = random_number(depth ? 10 : 6);
     if (kind < 6) {
         int32_t value = expression_value();
         if (!kind || kind == 5) { append("(%d)", value); return value; }
@@ -480,6 +488,17 @@ static int32_t expression_model(ExpressionModel *model, unsigned depth, bool boo
         append(negative ? "(-" : "(+");
         int32_t value = expression_model(model, depth - 1, false);
         append(")"); return expression_checked(model, negative ? -(int64_t)value : value);
+    }
+    if (kind == 9) {
+        append("(let var n:int=");
+        int32_t initial = expression_model(model, depth - 1, false);
+        /* The initializer changes outer n before the new binding shadows it. */
+        int32_t outer = model->variable;
+        model->variable = initial;
+        append(";in ");
+        int32_t value = expression_model(model, depth - 1, false);
+        model->variable = outer;
+        append(")"); return value;
     }
     unsigned op = random_number(5);
     append(kind == 8 ? "pair(" : "(");
@@ -516,6 +535,30 @@ static void expression_cases(void) {
         semantic_case(model.status ? 0 : expected, model.status);
     }
     if (!successes || !traps) failed("expression model did not exercise values and traps");
+}
+/* Model lexical cells directly, independently of the compiler's slot assignment. */
+static int32_t let_model(int32_t outer, int32_t delta) {
+    int32_t local = outer++, captured = local;
+    int32_t first = local++, second = local++;
+    int32_t next = first * 3 + second;
+    int32_t inner = local + delta, snapshot = inner;
+    first = inner++;
+    int32_t result = first * 3 + snapshot + next + captured;
+    return result * 2 + outer;
+}
+static void let_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        int32_t a = (int32_t)random_number(2001) - 1000;
+        int32_t b = (int32_t)random_number(2001) - 1000;
+        int32_t delta = (int32_t)random_number(201) - 100;
+        source_length = 0;
+        append("int pair(int a,int b){return a*3+b;}int calc(int n){"
+               "int result=let var n=n++;captured=n;next=pair(n++,n++);in "
+               "(let var n=n+(%d);snapshot=n;in pair(n++,snapshot))+next+captured;"
+               "return result*2+n;}int main(){return calc(%d)+calc(%d);}", delta, a, b);
+        ++let_programs;
+        semantic_case(let_model(a, delta) + let_model(b, delta), 0);
+    }
 }
 /* Independent shared-state model, with repeated runs of each source/bytecode program. */
 static void static_cases(void) {
@@ -569,6 +612,36 @@ static void reuse_execution(Context *ctx, const Program *p, int status) {
     if (!status && (ctx->allocated || ctx->allocations)) failed("successful static execution leaked memory");
     cleanup(ctx);
     if (ctx->allocated || ctx->allocations) failed("trapped static execution could not be cleaned up");
+}
+static void let_lifecycle(void) {
+    Context *owner = context("let-lifecycle-source");
+    if (setjmp(owner->failure)) failed("let lifecycle program was rejected");
+    Program *compiled = compile(owner,
+        "int main(){return let var x=40;snapshot=x++;y=(let var x=x+1;in x++);in snapshot/(y-42);}"
+        "int recover(){return let var x=40;y=x++;in x+1;}");
+    Program *loaded = roundtrip(owner, compiled);
+    const Program *versions[] = {compiled, loaded};
+    for (unsigned version = 0; version < 2; ++version) {
+        const Program *p = versions[version];
+        Program recovery = *p;
+        recovery.entry = 1;
+        verify(owner, &recovery);
+        write_bytecode(owner, p, "build/fuzz-roundtrip.lbc");
+        size_t before_size;
+        const unsigned char *before = read_file(owner, "build/fuzz-roundtrip.lbc", &before_size);
+        Context *execution = context("let-lifecycle-execution");
+        for (unsigned attempt = 0; attempt < 4; ++attempt) {
+            reuse_execution(execution, p, 70);
+            reuse_execution(execution, &recovery, 0);
+            reuse_execution(execution, &recovery, 0);
+        }
+        dispose(execution);
+        write_bytecode(owner, p, "build/fuzz-roundtrip.lbc");
+        size_t after_size;
+        const unsigned char *after = read_file(owner, "build/fuzz-roundtrip.lbc", &after_size);
+        if (after_size != before_size || memcmp(before, after, before_size)) failed("let execution changed serialized bytecode");
+    }
+    dispose(owner);
 }
 static void static_lifecycle_case(size_t test, const char *trap) {
     source_length = 0;
@@ -1359,6 +1432,8 @@ int main(void) {
     switch_loop_cases();
     switch_limit_cases();
     expression_cases();
+    let_cases();
+    let_lifecycle();
     static_cases();
     static_lifecycle_cases();
     graph_cases();
@@ -1386,5 +1461,6 @@ int main(void) {
     printf("fuzz: %zu static array programs matched independent shared storage and evaluation-order models\n", global_array_programs);
     printf("fuzz: %zu static array lifecycle programs survived traps, cleanup and fresh retries\n", global_array_lifecycles);
     printf("fuzz: %zu static-buffer I/O lifecycle program passed 5 failure modes and %zu executions\n", io_array_programs, io_array_executions);
+    printf("fuzz: %zu let programs matched lexical-cell models; source/bytecode trap cleanup and retries passed\n", let_programs);
     return 0;
 }

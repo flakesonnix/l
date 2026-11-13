@@ -71,10 +71,28 @@ static int precedence(int op) {
     default: return 0;
     }
 }
+static Expr *let_expression(Parser *p, Token token) {
+    Expr *e = new_expr(p, EX_LET, token);
+    Decl **tail = &e->bindings;
+    while (!take(p, TK_IN)) {
+        Decl *d = allocate(p->ctx, sizeof(*d));
+        d->immutable = !take(p, TK_VAR);
+        d->name = expect(p, TK_NAME, "expected let binding name or 'in'");
+        d->type = take(p, ':') ? parse_type(p, &d->type_name) : TY_AUTO;
+        expect(p, '=', "expected '=' after let binding name/type");
+        d->value = expression(p, 1);
+        expect(p, ';', "expected ';' after let binding initializer");
+        *tail = d; tail = &d->next;
+    }
+    e->right = expression(p, 1);
+    return e;
+}
 static Expr *primary(Parser *p) {
     Token token = peek(p);
     Expr *e;
-    if (take(p, TK_TEXT)) {
+    if (take(p, TK_LET)) {
+        e = let_expression(p, token);
+    } else if (take(p, TK_TEXT)) {
         e = new_expr(p, EX_STRING, token);
     } else if (take(p, TK_INTEGER)) {
         e = new_expr(p, EX_INT, token); e->integer = token.integer;

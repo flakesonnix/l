@@ -6,7 +6,7 @@ headers, functions, aliases, module constants, static storage and namespaces in
 legacy syntax; the replacement binding parser adds a separate migration slice.
 Legacy struct/enum declarations remain unimplemented there, while the replacement
 binding parser records name-first enums, C-style structs and static/extern declarations.
-There is no semantic checker, code generator or complete compiler yet. The
+There is no L-written semantic checker, code generator or complete compiler yet. The
 statement parser includes local declarations; the separate header driver handles
 module/import prefixes only. Running a
 lexer over its own source is **not self-hosting**.
@@ -23,7 +23,13 @@ eager/sequential `let/in` remain approved. Enums use the name-first
 `struct Name { Type field; ... };` form as a second aggregate spelling. It is a
 breaking source migration, not
 a permanent dual grammar. The remaining grammar, semantic checker and complete
-executable-source migration are not implemented.
+executable-source migration are not implemented in these L-written modules.
+The actual CLI now executes a first `int`/`bool`, C-function/local and eager
+`let/in` subset by extending the existing C frontend and reusing its semantic
+analyzer, LIR, bytecode backend and VM. See the
+[executable contract](../../README.md#first-executable-replacement-subset).
+This does not turn `binding_main.l` into an executable compiler: it still checks
+syntax only and returns 0 rather than running the supplied program.
 
 Static typing, eager left-to-right evaluation and the normative
 [module-system semantics](../../spec/module-system-v0.1.1.md) are preserved.

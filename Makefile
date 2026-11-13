@@ -39,6 +39,7 @@ build/stage1-binding.lbc: build/l bootstrap/stage1/lexer.l bootstrap/stage1/expr
 test: build/l
 	sh tests/run.sh ./build/l
 	node tests/modules.mjs ./build/l
+	node tests/replacement.mjs ./build/l
 	node tests/stage1.mjs ./build/l
 	node tests/stage1-expressions.mjs ./build/l
 	node tests/stage1-statements.mjs ./build/l

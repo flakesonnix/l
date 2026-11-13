@@ -330,6 +330,26 @@ static uint32_t intern_string(Semantic *s, Token token) {
 static Type analyze_expr(Semantic *s, Expr *e) {
     enter(s->ctx, e->token);
     switch (e->kind) {
+    case EX_LET: {
+        if (s->constant_expression) token_fail(s->ctx, e->token, "let is not a compile-time constant expression");
+        Binding *saved = s->bindings;
+        ++s->depth;
+        for (Decl *d = e->bindings; d; d = d->next) {
+            d->type = resolve_type(s, d->type, d->type_name, NULL);
+            /* Eager, sequential scope: the initializer sees outer/earlier bindings only. */
+            Type init = analyze_expr(s, d->value);
+            if (d->type == TY_AUTO) d->type = init;
+            if (d->type != TY_INT && d->type != TY_BOOL)
+                token_fail(s->ctx, d->name, "let binding type must be int or bool");
+            require(s, d->name, init, d->type);
+            bind(s, d);
+        }
+        e->type = analyze_expr(s, e->right);
+        if (e->type != TY_INT && e->type != TY_BOOL)
+            token_fail(s->ctx, e->token, "let body must have int or bool type");
+        --s->depth; s->bindings = saved;
+        break;
+    }
     case EX_INT:
         if (e->integer > INT32_MAX || e->integer < INT32_MIN) token_fail(s->ctx, e->token, "integer literal exceeds int range");
         e->type = TY_INT; break;
