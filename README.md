@@ -14,9 +14,10 @@ Stage 0 compilation, the L-written compiler sources and executable examples use
 runnable. A separate syntax-only Stage 1 driver now accepts the first approved
 replacement slice; the source compiler does not yet compile that syntax.
 
-The approved direction is a **typed, Nix-inspired replacement**: declarative
-bindings, `let/in`, records and expression-oriented functions, with explicit
-modules. This is a breaking source migration, not a permanent second grammar.
+The approved direction is a **typed hybrid: C-style functions and control flow,
+with selected Nix-inspired features** such as `let/in` and name-first bindings.
+The user explicitly chose C-style definitions over the earlier arrow-function
+proposal. This is a breaking source migration, not a permanent second grammar.
 The approved binding, conditional, record, alias and namespace spellings are shown below. The rest
 of the replacement grammar and the full executable-source migration remain incomplete.
 
@@ -31,28 +32,30 @@ Stage 1 grammar with enum/struct declarations.
 ```text
 module app.main;
 
-pub add = (a: int, b: int): int => a + b;
-main = (): int =>
-  let
-    value: int = add(20, 22);
-  in value;
+pub int add(int a, int b) { return a + b; }
+int main() {
+  int value = add(20, 22);
+  return let bonus = 0; in value + bonus;
+}
 ```
 
 Run `make stage1`, then pipe this source into
 `./build/l run build/stage1-binding.lbc`. Success returns **0**, not 42: this
 driver checks syntax without running input. Name-first top-level constants
-(`answer: int = 42;`), typed parameters/results, ordinary calls and nested
-`let/in` are supported. Local bindings may omit their type annotation; plain
-bindings are immutable and `var x: int = 0;` records explicit mutability.
-The intended local semantics are eager and sequential, not Nix laziness or
-recursive binding groups. The parser does not yet enforce those semantic rules.
+(`answer: int = 42;`), C-style typed parameters/results, ordinary calls and nested
+`let/in` are supported. C-style bodies accept blocks, `if`/`else`, `while`, `for`,
+`switch`, `break`, `continue`, explicit `return` and initialized local declarations.
+C locals are mutable by default; `const` records readonly intent. Within `let`,
+plain bindings remain immutable, `var` marks mutability, and types may be omitted.
+The intended semantics remain eager/sequential, not Nix laziness, currying or
+recursive attribute scopes. The parser does not yet enforce semantic rules.
 
 Conditional expressions use the approved `if condition then value else value`
 spelling, with a mandatory `else`, anywhere an expression is accepted:
 
 ```text
 module app.choose;
-choose = (ready: bool): int => if ready then 42 else 0;
+int choose(bool ready) { return if ready then 42 else 0; }
 ```
 
 They can nest in conditions, either branch, calls and `let` initializers. The
@@ -60,15 +63,19 @@ intended runtime semantics evaluate the condition once and only the selected
 branch; both branches must still parse. This driver does not check condition or
 branch types, select a branch, or execute either branch. Parentheses delimit a
 conditional when an operator should apply outside its full `else` expression.
+C statement `if (condition) statement else statement` is separate and may omit
+`else`. At statement start, `if` selects that C form; parenthesize a Nix conditional
+used as a discarded expression statement.
 
 Records use name-first declarations and explicitly named literals:
 
 ```text
 module app.records;
 pub Pair = record { x: int; ready: bool; };
-main = (): int =>
-  let pair: Pair = Pair { x = 42; ready = true; };
-  in pair.x;
+int main() {
+  Pair pair = Pair { x = 42; ready = true; };
+  return pair.x;
+}
 ```
 
 The intended semantics remain nominal, copied-by-value records with values
@@ -83,7 +90,7 @@ Transparent aliases use the approved `Name = alias Type;` form:
 ```text
 module app.types;
 pub Count = alias int;
-increment = (value: Count): Count => value + 1;
+Count increment(Count value) { return value + 1; }
 ```
 
 Aliases are intended to retain the existing scalar-alias semantics, not create
@@ -95,9 +102,9 @@ Namespaces use name-first bindings too:
 ```text
 module app.math;
 math = namespace {
-  pub add = (a: int, b: int): int => a + b;
+  pub int add(int a, int b) { return a + b; }
 };
-main = (): int => math::add(20, 22);
+int main() { return math::add(20, 22); }
 ```
 
 These remain compile-time scopes, not runtime records or recursive attribute
@@ -105,10 +112,12 @@ sets. Nested/reopened namespaces retain separate syntax nodes in written order;
 scope merging, lookup and duplicate checking are deferred. Export members with
 their own `pub`; `pub` on a namespace is rejected and visibility is not inherited.
 
-The new driver rejects C-style function/declaration syntax. Stage 0 and the legacy
+The new driver rejects the superseded arrow-function form. It is a C-like subset,
+not full C: pointer/variadic signatures, prototypes/externs, const parameters and
+implicit uninitialized scalar locals are not added. Stage 0 and the legacy
 Stage 1 drivers remain temporary bootstrap scaffolding while the replacement is
-incomplete, not a permanent second user grammar. Statement blocks,
-static storage and enum declarations are not part of these new
+incomplete, not a permanent second user grammar. Static storage and enum
+declarations are not part of these new
 file-parser slices. See the [parser contract](bootstrap/stage1/README.md#replacement-binding-file-contract).
 
 ## Build and run the current bootstrap
@@ -158,8 +167,8 @@ printf 'module app.main; import std.io; import app.types::{Pair as P,};' | ./bui
 ./build/l run build/stage1-function.lbc < examples/answer.l
 printf 'module app.main; pub using Count=int; namespace math{pub Count answer(){return 42;}}' | ./build/l run build/stage1-function.lbc
 printf 'module app.data; pub const int answer=42; namespace buffers{static byte data[8];}' | ./build/l run build/stage1-function.lbc
-printf 'module app.main; main=():int=>let var x=40; in x+2;' | ./build/l run build/stage1-binding.lbc
-printf 'module app.main; main=():int=>if true then 42 else 0;' | ./build/l run build/stage1-binding.lbc
+printf 'module app.main; int main(){return let var x=40; in x+2;}' | ./build/l run build/stage1-binding.lbc
+printf 'module app.main; int main(){return if true then 42 else 0;}' | ./build/l run build/stage1-binding.lbc
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
 node tests/stage1-statements.mjs ./build/l

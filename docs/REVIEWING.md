@@ -7,8 +7,8 @@ remains unchanged and reachable. Current IR/bytecode is **1.9**.
 
 ## Review status
 
-The initial stack and Stage 1 PRs through **#23 are merged**. The latest reviewed
-feature merge is `3655330`, integrating alias-parser head `e3ff752`.
+The initial stack and Stage 1 PRs through **#24 are merged**. The latest reviewed
+feature merge is `b2f53ea`, integrating namespace-parser head `45a7f60`.
 GitHub COMMENT self-reviews are recorded as such; they are **not independent
 approvals**. Later documentation or syntax changes need their own review.
 The syntax-status documentation in [#19](https://github.com/flakesonnix/l/pull/19)
@@ -49,6 +49,7 @@ commits carried the CI foundation forward without rewriting those commits.
 | [Conditional expressions #21](https://github.com/flakesonnix/l/pull/21) | `review/stage1-conditionals` | `6af87d9` |
 | [Named record syntax #22](https://github.com/flakesonnix/l/pull/22) | `review/stage1-records` | `b54f278` |
 | [Transparent alias bindings #23](https://github.com/flakesonnix/l/pull/23) | `review/stage1-alias-bindings` | `3655330` |
+| [Namespace bindings #24](https://github.com/flakesonnix/l/pull/24) | `review/stage1-namespace-bindings` | `b2f53ea` |
 
 PRs #13–#18 received GitHub COMMENT reviews before merging in dependency order.
 Each prospective merge tree and actual merge tree matched its already-tested PR
@@ -81,8 +82,15 @@ also passed, checked separately from that PR-head evidence.
 PR #23 received a fresh COMMENT merge-gate review and 467-fixture model rerun.
 Its prospective and actual merge trees exactly matched tested head `e3ff752`;
 the original history and review branch were preserved. All eight PR-head checks
-passed. The resulting [main run at `3655330`](https://github.com/flakesonnix/l/actions/runs/43407994500)
-is checked separately from that PR-head evidence.
+passed. All four jobs in the resulting
+[main run at `3655330`](https://github.com/flakesonnix/l/actions/runs/43407994500)
+also passed, checked separately from that PR-head evidence.
+
+PR #24 received a fresh COMMENT merge-gate review and 572-fixture model rerun.
+Its prospective and actual merge trees exactly matched tested head `45a7f60`;
+the original history and review branch were preserved. All eight PR-head checks
+and all four resulting [main CI jobs at `b2f53ea`](https://github.com/flakesonnix/l/actions/runs/43425640628)
+passed, checked separately from one another.
 
 The completed initial Stage 1 slices parse **legacy bootstrap syntax**. They do not resolve
 modules/names, check types, evaluate initializers, allocate input storage, generate
@@ -146,10 +154,12 @@ present on the default branch, so manual dispatch is available.
 
 ## Approved syntax replacement
 
-The user approved a **typed, Nix-inspired replacement**, not a permanent parallel
-grammar. Declarative bindings, `let/in`, records and expression-oriented functions
-are the direction. Name-first types, `name = (arg: Type): Result => expression;`,
-eager/sequential `let/in`, and immutable locals with explicit `var` are approved.
+The user approved a **typed hybrid: C-style functions/control flow plus selected
+Nix-inspired features**, not a permanent parallel grammar. The explicit choice
+of `pub int add(int a, int b) { return a + b; }` supersedes the earlier name-first
+arrow-function proposal; that former function form is rejected by the replacement
+parser. C locals are mutable by default, with `const` readonly intent. Eager,
+sequential `let/in` retains immutable bindings and explicit `var` mutability.
 Mandatory-else `if condition then value else value` expressions are approved too,
 with intended bool conditions, matching result types and selected-branch evaluation.
 Records use approved `Name = record { field: Type; };` declarations and

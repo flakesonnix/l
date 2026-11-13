@@ -4,6 +4,7 @@ module l.compiler.binding_main;
 import l.compiler.lexer as lexer;
 import l.compiler.expressions as expressions;
 import l.compiler.headers as headers;
+import l.compiler.statements as statements;
 import l.compiler.bindings as bindings;
 import std.io as io;
 
@@ -42,6 +43,11 @@ int main() {
     if (error.kind == bindings::Error::Header) {
         if (error.header == headers::Error::Lexical) io::write_error(lexer::error_message(error.lexical));
         else io::write_error(headers::error_message(error.header));
+    } else if (error.kind == bindings::Error::Statement) {
+        if (error.statement == statements::Error::Expression || error.statement == statements::Error::TooDeep) {
+            if (error.expression == expressions::Error::Lexical) io::write_error(lexer::error_message(error.lexical));
+            else io::write_error(expressions::error_message(error.expression));
+        } else io::write_error(statements::error_message(error.statement));
     } else if (error.kind == bindings::Error::Expression) {
         if (error.expression == expressions::Error::Lexical) io::write_error(lexer::error_message(error.lexical));
         else io::write_error(expressions::error_message(error.expression));

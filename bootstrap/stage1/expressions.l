@@ -252,13 +252,8 @@ int arguments(lexer::Kind closing, bool trailing_comma) {
     return first;
 }
 
-// Read a type/name prefix without consuming a following declaration identifier.
-pub int parse_name() {
-    if (failure != Error::None) return -1;
-    if (current_kind != lexer::Kind::Name) { reject(Error::ExpectedName, look()); return -1; }
-    int result = make_node(kind::Name, op::None, look(), -1, -1);
+int name_tail(int result) {
     int last = result;
-    advance();
     while (take(lexer::Kind::Scope)) {
         if (current_kind != lexer::Kind::Name) { reject(Error::ExpectedName, look()); break; }
         int part = make_node(kind::Name, op::None, look(), -1, -1);
@@ -268,6 +263,24 @@ pub int parse_name() {
         advance();
     }
     if (failure != Error::None) return -1;
+    return result;
+}
+
+// Read a type/name prefix without consuming a following declaration identifier.
+pub int parse_name() {
+    if (failure != Error::None) return -1;
+    if (current_kind != lexer::Kind::Name) { reject(Error::ExpectedName, look()); return -1; }
+    int result = make_node(kind::Name, op::None, look(), -1, -1);
+    advance();
+    return name_tail(result);
+}
+
+// Resume a consumed identifier after distinguishing a binding from a C signature.
+pub int parse_type_from_name(lexer::Token at) {
+    if (at.kind != lexer::Kind::Name) { reject(Error::ExpectedName, at); return -1; }
+    int name = name_tail(make_node(kind::Name, op::None, at, -1, -1));
+    int result = make_node(kind::Type, op::None, at, name, -1);
+    if (result != -1) values[result] = type_kind::Named;
     return result;
 }
 

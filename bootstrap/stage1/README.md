@@ -13,13 +13,13 @@ lexer over its own source is **not self-hosting**.
 ## Source syntax status
 
 Unless marked as replacement syntax, contracts and examples below describe
-**legacy bootstrap syntax**, the currently compiled C-like grammar. The approved replacement is typed and
-Nix-inspired: declarative bindings, `let/in`, records and expression-oriented
-functions, with explicit modules. It is a breaking source migration, not a
-permanent dual grammar. Name-first types, expression-bodied function bindings and
-immutable locals with explicit `var` are approved and parsed by the first new
-slice below. The remaining grammar and complete executable-source migration are
-not implemented.
+**legacy bootstrap syntax**, the currently compiled C-like grammar. The approved
+replacement is a typed hybrid: **C-style functions/control flow plus selected
+Nix-inspired features**. The user explicitly replaced the earlier arrow-function
+proposal with C-style definitions. Name-first records/aliases/namespaces and
+eager/sequential `let/in` remain approved. It is a breaking source migration, not
+a permanent dual grammar. The remaining grammar, semantic checker and complete
+executable-source migration are not implemented.
 
 Static typing, eager left-to-right evaluation and the normative
 [module-system semantics](../../spec/module-system-v0.1.1.md) are preserved.
@@ -44,7 +44,7 @@ printf 'module app.main; import std.io; import app.types::{Pair as P,};' | ./bui
 ./build/l run build/stage1-function.lbc < examples/answer.l
 printf 'module app.main; pub using Count=int; namespace math{pub Count answer(){return 42;}}' | ./build/l run build/stage1-function.lbc
 printf 'module app.data; pub const int answer=42; namespace buffers{static byte data[8];}' | ./build/l run build/stage1-function.lbc
-printf 'module app.main; main=():int=>let value:int=42; in value;' | ./build/l run build/stage1-binding.lbc
+printf 'module app.main; int main(){return let value:int=42; in value;}' | ./build/l run build/stage1-binding.lbc
 node tests/stage1.mjs ./build/l
 node tests/stage1-expressions.mjs ./build/l
 node tests/stage1-statements.mjs ./build/l
@@ -146,8 +146,9 @@ magnitude is legal; the lexer does not accept it as an ordinary positive int val
 
 ASCII identifiers, decimal literals, comments and literal-backed string escapes
 match Stage 0's lexical subset. The scanner additionally recognizes replacement
-keywords `let`, `in`, `var`, `then`, `record`, `alias` and the adjacent `=>` token. `= >` is two tokens, not
-an arrow. Legacy parser cursors temporarily expose those six keywords as names
+keywords `let`, `in`, `var`, `then`, `record`, `alias` and the adjacent `=>` token.
+The latter remains lexable for diagnostics/models, but arrow function definitions
+are no longer replacement syntax. Legacy parser cursors temporarily expose those six keywords as names
 to keep existing bootstrap inputs usable; the replacement parser reserves them
 in both headers and bodies. This compatibility is migration scaffolding, not a
 permanent second source grammar. Comments are non-nesting and may contain high bytes, but not NUL.
@@ -468,24 +469,45 @@ execution. Stage 0 still compiles and runs the parser implementation.
 `bindings.l` and `binding_main.l` are the first **replacement-syntax** file slice.
 The implementation is still compiled from legacy source by Stage 0. This is not
 self-hosting, a Stage 0 grammar replacement or a claim that the new source can be
-compiled/executed yet. The replacement driver accepts only its new declaration
-grammar, not a mixture of C-style declarations and new bindings:
+compiled/executed yet. The replacement driver accepts the approved hybrid grammar:
+C-style functions and selected name-first bindings:
 
 ```text
 module app.main;
 import app.types as types;
 
 pub answer: int = 42;
-pub add = (a: int, b: int): int => a + b;
-main = (): int =>
-  let
-    value: int = add(20, 22);
-    var saved = value;
-  in saved;
+pub int add(int a, int b) { return a + b; }
+int main() {
+  int value = add(20, 22);
+  return let var saved = value; in saved;
+}
 ```
 
-Top-level constants require a written type. Function parameters/results are
-explicitly typed, with no parameter defaults or trailing parameter/call commas.
+Top-level constants require a written type. Functions use `[pub] Type name(Type
+parameter, ...) { statements }`, without a trailing semicolon. Parameters/results
+use the same primitive/qualified written types as bindings and fields. Named result
+types are distinguished from name-first bindings without backtracking or retaining
+extra name nodes for ordinary binding identifiers. No parameter defaults, const
+parameters, array/pointer/variadic signatures, `(void)` shorthand, prototypes or
+extern declarations are added. Empty parameter lists use `()`.
+
+C-style bodies compose the existing statement parser in replacement-expression
+mode: blocks, `if`/optional `else`, `while`, `for`, `switch`/`case`/`default`,
+`break`, `continue`, bare/value `return`, expression statements and C-style local
+declarations. Locals are mutable by default, with explicit `const` readonly intent;
+scalar initializers remain required. Local arrays retain the existing single-length,
+zero-initialized syntax and reject explicit initializers. Types, lengths, readonly
+writes, return flow and control-flow contexts are not checked. This is not full C,
+and does not introduce pointers, implicit conversions or unspecified argument order.
+
+`let/in`, Nix conditional expressions and named record literals can occur in return
+values, conditions, loop headers, calls and initializers. Statement-start `if`
+selects C statement syntax; a discarded Nix conditional must be parenthesized.
+`return if ready then 1 else 0;` needs no such grouping. The superseded
+`name = (arg: Type): Result => expression;` form is rejected, not retained as a
+second function-definition grammar.
+
 Local bindings inside `let` may omit `: Type`, but require `= expression;`.
 `var` marks a mutable local; plain locals are immutable. Empty binding lists and
 nested `let/in` expressions are syntax-valid. The body after `in` is a full
@@ -501,23 +523,24 @@ duplicate/forward local bindings, invalid written `void`/`auto` types, mutation 
 plain bindings and nonconstant top-level initializers may be syntax-valid here.
 These are not semantic acceptance claims. No input initializer, function or
 import is executed, and no input program storage is allocated.
-Statement blocks/loops, nested function values, externs, statics, arrays and enums
-are not declarations in these replacement slices.
+Nested function values/definitions, externs, statics, module arrays and enums are
+not declarations in these replacement slices.
 
 ### Conditional expressions
 
 The replacement parser additionally accepts **`if condition then positive else
-negative`** as an expression. `else` is mandatory; C-style statement `if` syntax
-is not accepted by this driver. Nested conditionals can occur in any of the three
+negative`** as an expression. `else` is mandatory for this form, independently of
+C statement `if`/optional `else`. Nested expressions can occur in any of the three
 positions, including bare nested branches. Each `else` belongs to the conditional
 whose positive expression is being completed. For example:
 
 ```text
 module app.choose;
-choose = (ready: bool): int =>
-  let
+int choose(bool ready) {
+  return let
     value = if ready then 42 else 0;
   in if ready then value else 1;
+}
 ```
 
 Conditions and both branches are full expressions, so `let` bindings, calls,
@@ -553,9 +576,10 @@ field reads/indexing/calls can follow a completed literal as ordinary syntax.
 ```text
 module app.records;
 pub Pair = record { x: int; ready: bool; };
-main = (): int =>
-  let pair: Pair = Pair { x = 42; ready = true; };
-  in pair.x;
+int main() {
+  Pair pair = Pair { x = 42; ready = true; };
+  return pair.x;
+}
 ```
 
 Intended semantics preserve nominal identity, by-value copies and eager left-to-
@@ -586,7 +610,7 @@ name in written parameter/result/local/field types:
 ```text
 module app.types;
 pub Count = alias int;
-increment = (value: Count): Count => value + 1;
+Count increment(Count value) { return value + 1; }
 ```
 
 Intended semantics are the existing **transparent scalar aliases**, ultimately
@@ -600,7 +624,7 @@ named targets can remain syntax-valid data, not semantically accepted types.
 An alias uses one declaration node and its written `Type` subtree in the same
 expression arena as fields and bodies. It adds no depth level and does not consume
 the record/function counts. Long target chains are parsed iteratively, never
-followed as alias dependencies. Exhaustion still hides all three owned arenas;
+followed as alias dependencies. Exhaustion still hides all four owned arenas;
 replay resets diagnostics and storage. These are provisional internal ASTs, not
 a serialized alias format or a source-compatibility guarantee for legacy syntax.
 
@@ -616,9 +640,9 @@ keyword-first `namespace Name { ... }` remains legacy bootstrap syntax only.
 ```text
 module app.math;
 math = namespace {
-  pub add = (a: int, b: int): int => a + b;
+  pub int add(int a, int b) { return a + b; }
 };
-main = (): int => math::add(20, 22);
+int main() { return math::add(20, 22); }
 ```
 
 Namespaces retain their intended compile-time organizational meaning. They do not
@@ -632,10 +656,11 @@ remain semantic work; even conflicting repeated members can be syntax-valid here
 Each namespace consumes one node in the same **1024-node declaration arena** and
 one active level of the shared **48-level syntax budget** while parsing its body.
 No arena or function/record count resets at entry or reopening. Thus **48 nested
-empty namespaces** fit, or **47 around a bare function/constant expression**.
+empty namespaces** fit, **47 around an empty function block or constant expression**,
+or **45 around a function block containing `return 0;`**.
 Written types add arena nodes but no expression-depth level; aliases and record
 field types can occur at the deepest namespace level. Namespace exit releases its
-depth level before later siblings; any failure still hides all three arenas and
+depth level before later siblings; any failure still hides all four arenas and
 retained strings with the first diagnostic preserved. These are seed parser limits,
 not language limits or an executable namespace implementation.
 
@@ -644,12 +669,13 @@ not language limits or an executable namespace implementation.
 `bindings::parse()` replays input and requires EOF. It returns a `Module` root in
 its own **1024-node declaration arena**; at most **256 functions** fit. Parameters
 and constants use declaration nodes but do not count as functions. The shared
-header and expression arenas each retain their **2048-node** limit. All budgets
-cover the whole file; the shared expression depth remains **48**, including `let`
+header and expression arenas each retain their **2048-node** limit; function bodies
+share the existing **1024-node statement arena**. All budgets cover the whole file;
+the shared expression/statement depth remains **48**, including `let`
 initializers and bodies. Iterative sibling/parameter lists add no depth level;
 each active namespace body adds one.
-Any failure hides all three owned arenas and retains the first diagnostic.
-Diagnostics distinguish header, expression/lexical and declaration failures.
+Any failure hides all four owned arenas and retains the first diagnostic.
+Diagnostics distinguish header, statement, expression/lexical and declaration failures.
 Repeated parses reset both data and errors. Invalid IDs return zero metadata and
 absent links; IDs expire at source replacement or any shared-parser restart.
 
@@ -659,7 +685,9 @@ Declaration nodes expose token start/length/line/column, identifier
 - `Module.header` is a header-arena ID; `items` is its first declaration.
 - `Constant.type` is an expression-arena `Type`; `body` is its initializer.
 - `Function.type` is its written result `Type`; `items` is the first declaration-
-  arena `Parameter`, and `body` is the expression body.
+  arena `Parameter`, and `body` is the statement-arena block, not an expression ID.
+  This ownership replaces the superseded expression-body contract without changing
+  the provisional declaration Node layout.
 - `Parameter.type` is its written `Type`. Parameters have no initializer.
 - `Alias.type` is its written target `Type`; `header`, `items` and `body` are
   absent. Its identifier and `pub` flag use the normal declaration metadata.
@@ -670,7 +698,9 @@ Declaration nodes expose token start/length/line/column, identifier
   absent. `Field.type` is its written expression-arena `Type`; its identifier span
   is recorded normally, with no initializer or own export flag.
 - `next` links declaration/parameter siblings. Other links are absent (-1).
-  Declaration metadata refers to the leading `pub` or name, not the whole span.
+  Declaration metadata refers to the leading `pub`, result type or binding name,
+  not the whole span. Parameter metadata refers to its written type token, with a
+  separate identifier span. Parameter const qualifiers are not part of this slice.
 
 The existing expression `Node` shape is unchanged. Replacement-only internal kinds use
 the same expression arena:
@@ -702,7 +732,7 @@ no standard-library API is added, and IR/bytecode stays **1.9**.
 
 `tests/stage1-bindings.mjs` emits independent declaration/header/expression trees
 and checks every field/link, unique reachable IDs, source spans, retained bytes,
-replay, recovery and all-three-arena rollback through source and serialized
+replay, recovery and all-four-arena rollback through source and serialized
 execution. Generated corpora assert every new node/type kind and both mutability
 forms. Exact boundaries cover declarations, parameters, functions, shared type/body
 expression storage, `let` bindings and nested expression depth. The largest
@@ -729,12 +759,20 @@ shared with earlier/later bodies. Combined count fixtures retain 256 records and
 both visibility forms; legacy keyword-name isolation remains checked.
 Namespace models check nested/reopened lists, all supported member kinds/types
 and visibilities, source order/spans, retained strings, punctuation/header/local
-errors, rejected namespace `pub`, replay and all-three-arena rollback. Exact
+errors, rejected namespace `pub`, replay and all-four-arena rollback. Exact
 bounds cover namespace-only and mixed declaration arenas, independent shared
 function/record counts across reopenings, type/body storage shared across sibling
 namespaces, and namespace-only or mixed let/conditional/record syntax depth.
 Generated mixed namespaces assert all member kinds, written types and visibility
 forms. No logical scopes or input namespace objects are constructed by these models.
+C-body models additionally check every statement/local/label field and link,
+mutable/const locals, named-result versus binding disambiguation, full resumed
+result-type storage, dangling statement `else`, optional for headers, switch
+fallthrough, bare returns and Nix expressions in each control-flow position.
+Exact limits cover full/shared statement arenas, mixed block/namespace/expression
+depth and first rejected cases. Generated bodies assert every statement kind,
+local type and both const flags. The extra block/return levels reduce the available
+expression depth inside functions; the shared budget itself has not increased.
 
 ## Limits and verification
 
@@ -822,9 +860,9 @@ under `make test`, `make sanitize`, `make coverage` and the Nix checks. The exis
 a coverage gate for L source. No arbitrary mutant bytecode or cyclic verifier
 graphs are executed by these tests.
 
-The replacement suite has **572 fixtures / 177784 modeled node checks** across
-its declaration, header and expression arenas, in **160 batches / 689 commands**.
-The scanner suite has **1184 fixtures / 113880 token checks**. All legacy
+The replacement suite has **659 fixtures / 219670 modeled node checks** across
+its declaration, header, statement and expression arenas, in **207 batches / 879 commands**.
+The scanner suite has **1184 fixtures / 116112 token checks**. All legacy
 expression, statement, header and function-file suites still pass. Stage 0 C
 coverage remains **2596 lines / 163 functions / 2660 branches (100%)**; these
 numbers do not measure L-source coverage.
