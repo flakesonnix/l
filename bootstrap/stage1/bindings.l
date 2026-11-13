@@ -9,6 +9,7 @@ import l.compiler.statements as statements;
 pub const int max_nodes = 1024;
 pub const int max_functions = 256;
 pub const int max_records = 256;
+pub const int max_enums = 256;
 pub const int max_fields = 64;
 namespace kind {
     pub const int Invalid = 0;
@@ -20,12 +21,17 @@ namespace kind {
     pub const int Field = 6;
     pub const int Alias = 7;
     pub const int Namespace = 8;
+    pub const int Enum = 9;
+    pub const int Member = 10;
+    pub const int Struct = 11;
 }
 pub enum Error { None, Header, Statement, Expression, ExpectedName, ExpectedAssign,
                  ExpectedOpen, ExpectedClose, ExpectedColon, ExpectedBody, ExpectedBinding,
                  ExpectedSemicolon, MisplacedHeader, TooManyNodes, TooManyFunctions,
                  ExpectedRecordOpen, ExpectedRecordClose, ExpectedFieldName, TooManyRecords, TooManyFields,
-                 ExpectedNamespaceOpen, ExpectedNamespaceClose, NamespaceVisibility };
+                 ExpectedNamespaceOpen, ExpectedNamespaceClose, NamespaceVisibility,
+                 ExpectedEnumOpen, ExpectedEnumName, ExpectedEnumClose, TooManyEnums,
+                 ExpectedStructName, ExpectedStructOpen, ExpectedStructFieldName, ExpectedStructFieldSemicolon, ExpectedStructClose };
 pub struct Diagnostic {
     Error kind;
     headers::Error header;
@@ -71,6 +77,7 @@ static bool immutables[max_nodes];
 static int used = 0;
 static int function_count = 0;
 static int record_count = 0;
+static int enum_count = 0;
 static Error failure = Error::None;
 static headers::Error header_failure = headers::Error::None;
 static statements::Error statement_failure = statements::Error::None;
@@ -235,6 +242,77 @@ int record_declaration(lexer::Token start) {
     if (!ok()) return -1;
     return result;
 }
+int enum_declaration(lexer::Token start) {
+    expect(lexer::Kind::LeftBrace, Error::ExpectedEnumOpen);
+    if (ok() && enum_count == max_enums) reject(Error::TooManyEnums, start);
+    if (!ok()) return -1;
+    enum_count++;
+    int result = make_node(kind::Enum, start);
+    int last = -1;
+    while (ok() && !take(lexer::Kind::RightBrace)) {
+        if (current().kind == lexer::Kind::End) { reject(Error::ExpectedEnumClose, current()); break; }
+        lexer::Token name = current();
+        expect(lexer::Kind::Name, Error::ExpectedEnumName);
+        if (!ok()) break;
+        int item = make_node(kind::Member, name);
+        if (!ok()) break;
+        if (item != -1) { name_starts[item] = name.start; name_lengths[item] = name.length; }
+        if (take(lexer::Kind::Assign)) {
+            int initial = value();
+            if (!ok()) break;
+            if (item != -1) bodies[item] = initial;
+        }
+        expect(lexer::Kind::Semicolon, Error::ExpectedSemicolon);
+        if (!ok()) break;
+        if (last == -1) items[result] = item;
+        else nexts[last] = item;
+        last = item;
+    }
+    expect(lexer::Kind::Semicolon, Error::ExpectedSemicolon);
+    if (!ok()) return -1;
+    return result;
+}
+int struct_declaration(lexer::Token start, bool exported) {
+    take(lexer::Kind::Struct);
+    lexer::Token name = current();
+    expect(lexer::Kind::Name, Error::ExpectedStructName);
+    if (!ok()) return -1;
+    expect(lexer::Kind::LeftBrace, Error::ExpectedStructOpen);
+    if (ok() && record_count == max_records) reject(Error::TooManyRecords, start);
+    if (!ok()) return -1;
+    record_count++;
+    int result = make_node(kind::Struct, start);
+    int count = 0;
+    int last = -1;
+    while (ok() && !take(lexer::Kind::RightBrace)) {
+        if (current().kind == lexer::Kind::End) { reject(Error::ExpectedStructClose, current()); break; }
+        if (count == max_fields) { reject(Error::TooManyFields, current()); break; }
+        int declared = type();
+        if (!ok()) break;
+        lexer::Token name = current();
+        expect(lexer::Kind::Name, Error::ExpectedStructFieldName);
+        if (!ok()) break;
+        expect(lexer::Kind::Semicolon, Error::ExpectedStructFieldSemicolon);
+        if (!ok()) break;
+        int item = make_node(kind::Field, name);
+        if (!ok()) break;
+        if (item != -1) {
+            name_starts[item] = name.start;
+            name_lengths[item] = name.length;
+            types[item] = declared;
+        }
+        if (last == -1) items[result] = item;
+        else nexts[last] = item;
+        last = item;
+        count++;
+    }
+    expect(lexer::Kind::Semicolon, Error::ExpectedSemicolon);
+    if (!ok()) return -1;
+    name_starts[result] = name.start;
+    name_lengths[result] = name.length;
+    exports[result] = exported;
+    return result;
+}
 int namespace_declaration(lexer::Token start) {
     if (!expressions::enter()) { ok(); return -1; }
     take(lexer::Kind::Namespace);
@@ -265,6 +343,7 @@ int declaration() {
         int declared = type();
         return function(start, exported, declared);
     }
+    if (ok() && current().kind == lexer::Kind::Struct) return struct_declaration(start, exported);
     lexer::Token name = current();
     expect(lexer::Kind::Name, Error::ExpectedName);
     if (!ok()) return -1;
@@ -284,6 +363,7 @@ int declaration() {
     } else {
         expect(lexer::Kind::Assign, Error::ExpectedAssign);
         if (take(lexer::Kind::Record)) result = record_declaration(start);
+        else if (take(lexer::Kind::Enum)) result = enum_declaration(start);
         else if (take(lexer::Kind::Alias)) {
             int declared = type();
             expect(lexer::Kind::Semicolon, Error::ExpectedSemicolon);
@@ -307,6 +387,7 @@ pub int parse() {
     used = 0;
     function_count = 0;
     record_count = 0;
+    enum_count = 0;
     failure = Error::None;
     header_failure = headers::Error::None;
     statement_failure = statements::Error::None;
@@ -343,7 +424,7 @@ pub int parse() {
         else nexts[last] = item;
         last = item;
     }
-    if (!ok()) { used = 0; function_count = 0; record_count = 0; headers::discard(); statements::discard(); return -1; }
+    if (!ok()) { used = 0; function_count = 0; record_count = 0; enum_count = 0; headers::discard(); statements::discard(); return -1; }
     header_ids[root] = header;
     return root;
 }
@@ -369,7 +450,7 @@ pub string error_message(Error error) {
         case Error::ExpectedClose: return "expected ')' after parameters";
         case Error::ExpectedColon: return "expected ':' before written type";
         case Error::ExpectedBody: return "expected function block body";
-        case Error::ExpectedBinding: return "expected record, alias or namespace after binding '='";
+        case Error::ExpectedBinding: return "expected record, enum, alias or namespace after binding '='";
         case Error::ExpectedSemicolon: return "expected ';' after binding";
         case Error::MisplacedHeader: return "module and import declarations must precede bindings";
         case Error::TooManyNodes: return "binding file exceeds 1024 declaration nodes";
@@ -377,11 +458,20 @@ pub string error_message(Error error) {
         case Error::ExpectedRecordOpen: return "expected '{' after record";
         case Error::ExpectedRecordClose: return "expected '}' after record fields";
         case Error::ExpectedFieldName: return "expected record field name";
-        case Error::TooManyRecords: return "binding file exceeds 256 records";
+        case Error::TooManyRecords: return "binding file exceeds 256 record/struct declarations";
         case Error::TooManyFields: return "record exceeds 64 fields";
         case Error::ExpectedNamespaceOpen: return "expected '{' after namespace";
         case Error::ExpectedNamespaceClose: return "expected '}' after namespace declarations";
         case Error::NamespaceVisibility: return "namespace bindings cannot use pub; export their members individually";
+        case Error::ExpectedEnumOpen: return "expected '{' after enum";
+        case Error::ExpectedEnumName: return "expected enum member name";
+        case Error::ExpectedEnumClose: return "expected '}' after enum members";
+        case Error::TooManyEnums: return "binding file exceeds 256 enums";
+        case Error::ExpectedStructName: return "expected struct name";
+        case Error::ExpectedStructOpen: return "expected '{' after struct name";
+        case Error::ExpectedStructFieldName: return "expected struct field name";
+        case Error::ExpectedStructFieldSemicolon: return "expected ';' after scalar struct field";
+        case Error::ExpectedStructClose: return "expected '}' after struct fields";
         default: return "unknown binding-file error";
     }
 }

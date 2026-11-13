@@ -246,23 +246,53 @@ function rendered(name, declarations, options = {}) {
         if (last) last.next = item; else first = item; last = item;
         continue;
       }
-      const nameStart = put(declaration.name);
-      const item = d(declaration.kind, start, declaration.exported ? 3 : declaration.name.length,
-        { nameStart, nameLength: declaration.name.length, exported: !!declaration.exported });
-      if (declaration.kind === 'Constant') { put(':'); item.type = type(declaration.type, declaration.typeName); put('='); }
-      else if (declaration.kind === 'Alias') { put(`=alias${gap}`); item.type = type(declaration.type, declaration.typeName); }
-      else if (declaration.kind === 'Namespace') { put(`=namespace${gap}{`); item.items = declarationList(declaration.declarations); put('}'); }
-      else if (declaration.kind === 'Record') {
-        put(`=record${gap}{`); let lastField = null;
+      let nameStart, item;
+      if (declaration.kind === 'Struct') {
+        put(`struct${gap}`);
+        nameStart = put(declaration.name);
+        item = d('Struct', start, declaration.exported ? 3 : 6,
+          { nameStart, nameLength: declaration.name.length, exported: !!declaration.exported });
+        put(`${gap}{`); let lastField = null;
         for (const field of declaration.fields) {
-          const start = put(field.name), current = d('Field', start, field.name.length, { nameStart: start, nameLength: field.name.length });
-          put(':'); current.type = type(field.type, field.typeName); put(`;${gap}`);
+          const fieldType = type(field.type, field.typeName); put(gap);
+          const fieldName = put(field.name);
+          const current = d('Field', fieldName, field.name.length, { nameStart: fieldName, nameLength: field.name.length, type: fieldType });
+          put(`;${gap}`);
           if (lastField) lastField.next = current; else item.items = current;
           lastField = current;
         }
         put('}');
+      } else {
+        nameStart = put(declaration.name);
+        item = d(declaration.kind, start, declaration.exported ? 3 : declaration.name.length,
+          { nameStart, nameLength: declaration.name.length, exported: !!declaration.exported });
+        if (declaration.kind === 'Constant') { put(':'); item.type = type(declaration.type, declaration.typeName); put('='); }
+        else if (declaration.kind === 'Alias') { put(`=alias${gap}`); item.type = type(declaration.type, declaration.typeName); }
+        else if (declaration.kind === 'Namespace') { put(`=namespace${gap}{`); item.items = declarationList(declaration.declarations); put('}'); }
+        else if (declaration.kind === 'Record') {
+          put(`=record${gap}{`); let lastField = null;
+          for (const field of declaration.fields) {
+            const start = put(field.name), current = d('Field', start, field.name.length, { nameStart: start, nameLength: field.name.length });
+            put(':'); current.type = type(field.type, field.typeName); put(`;${gap}`);
+            if (lastField) lastField.next = current; else item.items = current;
+            lastField = current;
+          }
+          put('}');
+        }
+        else if (declaration.kind === 'Enum') {
+          put(`=enum${gap}{`); let lastMember = null;
+          for (const member of declaration.members) {
+            const memberStart = put(member.name);
+            const current = d('Member', memberStart, member.name.length, { nameStart: memberStart, nameLength: member.name.length });
+            if (member.value) { put('='); current.body = expression(member.value); }
+            put(`;${gap}`);
+            if (lastMember) lastMember.next = current; else item.items = current;
+            lastMember = current;
+          }
+          put('}');
+        }
       }
-      if (!['Record', 'Alias', 'Namespace'].includes(declaration.kind)) item.body = expression(declaration.body);
+      if (!['Record', 'Alias', 'Namespace', 'Enum', 'Struct'].includes(declaration.kind)) item.body = expression(declaration.body);
       put(`;${gap}`);
       if (last) last.next = item; else first = item; last = item;
     }
@@ -510,6 +540,157 @@ bad(fieldTypeOverflow.input, 'Expression', 'ns::T', { expression: 'TooManyNodes'
 rendered('body shares earlier record field type arena', [record([{ name: 'x', type: 'Named', typeName: 'T' }]), fn({ kind: 'Chain', count: 2044 })]);
 const afterFieldTypeOverflow = rendered('body after record field type arena overflow', [record([{ name: 'x', type: 'Named', typeName: 'ns::T' }]), fn({ kind: 'Chain', count: 2044 })]); fixtures.pop();
 bad(afterFieldTypeOverflow.input, 'Statement', '++', { statement: 'Expression', expression: 'TooManyNodes' });
+
+const enumeration = (members = [], options = {}) => ({ kind: 'Enum', name: 'Color', members, ...options });
+const structure = (fields = [], options = {}) => ({ kind: 'Struct', name: 'Point', fields, ...options });
+const enumMembers = n => Array.from({ length: n }, (_, i) => ({ name: `m${i}` }));
+for (const exported of [false, true]) {
+  rendered(`empty enum ${exported}`, [enumeration([], { exported })]);
+  rendered(`plain enum ${exported}`, [enumeration([{ name: 'Red' }, { name: 'Green' }, { name: 'Blue' }], { exported })]);
+  rendered(`valued enum ${exported}`, [enumeration([
+    { name: 'Zero' }, { name: 'One', value: integer(1) },
+    { name: 'Two', value: { kind: 'Binary', operator: '+', left: named('One'), right: integer(1) } },
+  ], { exported })]);
+  rendered(`empty struct ${exported}`, [structure([], { exported })]);
+  rendered(`scalar struct ${exported}`, [structure([
+    { name: 'x', type: 'Int' }, { name: 'ready', type: 'Bool' }, { name: 'tag', type: 'Named', typeName: 'pkg::Tag' },
+  ], { exported })]);
+}
+rendered('enum member values span the expression grammar', [enumeration([
+  { name: 'A', value: named('pkg::types::Value') },
+  { name: 'B', value: letIn([local('x', integer(1))], named('x'), { bare: true }) },
+  { name: 'C', value: conditional(truth, integer(2), integer(3), { bare: true }) },
+  { name: 'D', value: recordValue([{ name: 'x', value: integer(4) }], { left: named('ns::Pair') }) },
+  { name: 'E', value: { kind: 'Text', text: 'text\0\xff' } },
+  { name: 'constructor' }, { name: '__proto__' }, { name: 'enumx' }, { name: 'structx' },
+])]);
+rendered('struct fields accept named types', [structure([
+  { name: 'y', type: 'Named', typeName: 'Pair' }, { name: 'q', type: 'Named', typeName: 'pkg::Q' },
+]), enumeration([{ name: 'M', value: named('Value') }])]);
+for (const gap of ['\n', '\t', '\r', '/*gap*/', '//gap\n']) rendered(`aggregate trivia ${JSON.stringify(gap)}`, [
+  constant({ type: 'String', body: { kind: 'Text', text: 'before\0\xff' } }),
+  enumeration([{ name: 'Red' }, { name: 'Blue', value: integer(7) }], { exported: true }),
+  structure([{ name: 's', type: 'String' }]),
+  fn({ kind: 'Text', text: 'after\x80' }),
+], { gap, leading: '\n/*lead*/', trailing: '\n//end' });
+rendered('enum and struct spellings inside retained strings', [
+  constant({ type: 'String', body: { kind: 'Text', text: 'enum struct pub record' } }),
+  enumeration([{ name: 'Red', value: { kind: 'Text', text: 'struct\x80' } }]),
+  structure([{ name: 's', type: 'String' }]), fn({ kind: 'Text', text: 'enum\xff' }),
+]);
+rendered('aggregates and enums compose with namespaces', [namespace('types', [
+  enumeration([{ name: 'Off' }, { name: 'On', value: integer(1) }], { exported: true }),
+  structure([{ name: 'x', type: 'Int' }]),
+  record([{ name: 'value', type: 'Named', typeName: 'types::Color' }]),
+  alias('Named', { typeName: 'types::Point' }),
+  constant({ type: 'Named', typeName: 'types::Color', body: named('types::Color::Off') }),
+  fn(named('types::Color::On'), { type: 'Named', typeName: 'types::Point' }),
+])]);
+rendered('pub aggregates inside namespaces', [namespace('n', [
+  enumeration([{ name: 'A' }], { exported: true }), structure([{ name: 'x', type: 'Int' }], { exported: true }),
+]), namespace('m', [namespace('inner', [enumeration([])])])], { passes: 1 });
+rendered('name-first enum tree', [enumeration([{ name: 'Off' }, { name: 'On', value: integer(1) }], { exported: true })]);
+const structShape = rendered('C-style struct tree', [structure([{ name: 'x', type: 'Int' }, { name: 'ready', type: 'Bool' }], { name: 'Pair', exported: true })]);
+const recordShape = rendered('name-first record tree', [record([{ name: 'x', type: 'Int' }, { name: 'ready', type: 'Bool' }], { name: 'Pair', exported: true })]);
+const shape = node => {
+  if (node == null || typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map(shape);
+  const copy = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'start' || key === 'length' || key === 'nameStart') continue;
+    copy[key] = key === 'kind' && ['Record', 'Struct'].includes(value) ? 'Aggregate' : shape(value);
+  }
+  return copy;
+};
+assert.deepEqual(shape(structShape.tree), shape(recordShape.tree));
+for (const [tail, error, marker, nested] of [
+  ['Color=enum{Red;}', 'ExpectedSemicolon', ''], ['Color=enum{Red}', 'ExpectedSemicolon', '}'],
+  ['Color=enum{Red=1}', 'ExpectedSemicolon', '}'], ['Color=enum{', 'ExpectedEnumClose', ''],
+  ['Color=enum{Red;', 'ExpectedEnumClose', ''], ['Color=enum{1;}', 'ExpectedEnumName', '1'],
+  ['Color=enum{Red,,On;};', 'ExpectedSemicolon', ',,'], ['Color=enum{Red=;};', 'Expression', ';}', { expression: 'ExpectedExpression' }],
+  ['Color=enum{Red=1;;};', 'ExpectedEnumName', ';};'], ['Color=enum{Red=1,};', 'ExpectedSemicolon', ','],
+  ['Color=enum{@;};', 'Expression', '@', { expression: 'Lexical', lexical: 'UnsupportedCharacter' }],
+  ['Color=enum;', 'ExpectedEnumOpen', ';'], ['Color=enum x{};', 'ExpectedEnumOpen', 'x'],
+  ['enum Color{Red;};', 'ExpectedName', 'enum'], ['enum=1;', 'ExpectedName', 'enum'],
+  ['struct=1;', 'ExpectedStructName', '='],
+]) bad(`module m; ${tail}`, error, marker, nested);
+for (const [tail, error, marker, nested] of [
+  ['struct{int x;};', 'ExpectedStructName', '{'], ['struct 42{};', 'ExpectedStructName', '42'],
+  ['struct Point;', 'ExpectedStructOpen', ';'], ['struct Point{', 'ExpectedStructClose', ''],
+  ['struct Point{int x;', 'ExpectedStructClose', ''],
+  ['struct Point{int x;}', 'ExpectedSemicolon', ''], ['struct Point{}', 'ExpectedSemicolon', ''],
+  ['struct Point{;};', 'Expression', ';}', { expression: 'ExpectedType' }],
+  ['struct Point{int;};', 'ExpectedStructFieldName', ';};'],
+  ['struct Point{x;};', 'ExpectedStructFieldName', ';};'],
+  ['struct Point{int x}', 'ExpectedStructFieldSemicolon', '}'],
+  ['struct Point{int x=1;};', 'ExpectedStructFieldSemicolon', '=1'],
+  ['struct Point{int x[2];};', 'ExpectedStructFieldSemicolon', '['],
+  ['struct Point{const int x;};', 'Expression', 'const', { expression: 'ExpectedType' }],
+  ['struct Point{pub int x;};', 'Expression', 'pub', { expression: 'ExpectedType' }],
+  ['struct Point{int x;;};', 'Expression', ';};', { expression: 'ExpectedType' }],
+  ['struct Point{int x; int y;}', 'ExpectedSemicolon', ''],
+  ['Point=struct{};', 'ExpectedBinding', 'struct'],
+  ['struct Point{int x;@};', 'Expression', '@', { expression: 'Lexical', lexical: 'UnsupportedCharacter' }],
+  ['Color=enum{Red="kept";Blue=@;};', 'Expression', '@', { expression: 'Lexical', lexical: 'UnsupportedCharacter' }],
+  ['text:string="kept";struct Point{int x;bool;};', 'ExpectedStructFieldName', ';};'],
+]) bad(`module m; ${tail}`, error, marker, nested);
+rendered('duplicate aggregate declarations and invalid types remain syntax only', [
+  enumeration([{ name: 'A', value: named('later') }, { name: 'A', value: lie }]), enumeration(),
+  structure([{ name: 'x', type: 'Void' }, { name: 'x', type: 'Auto' }]), structure(),
+]);
+rendered('struct field limit', [structure(recordFields(64))]);
+const structFieldOverflow = rendered('struct field overflow', [structure(recordFields(65))]); fixtures.pop();
+bad(structFieldOverflow.input, 'TooManyFields', 'int f64');
+rendered('struct full declaration arena', [...Array.from({ length: 15 }, () => structure(recordFields(64))), structure(recordFields(47))], { passes: 1 });
+const structArenaOverflow = rendered('struct declaration arena overflow', [...Array.from({ length: 15 }, () => structure(recordFields(64))),
+  structure(recordFields(48))]); fixtures.pop();
+bad(structArenaOverflow.input, 'TooManyNodes', 'f47'); fixtures.at(-1).passes = 1;
+rendered('struct field type shares earlier body arena', [fn({ kind: 'Chain', count: 2044 }), structure([{ name: 'x', type: 'Named', typeName: 'T' }])]);
+const structTypeOverflow = rendered('struct field type arena overflow', [fn({ kind: 'Chain', count: 2044 }), structure([{ name: 'x', type: 'Named', typeName: 'ns::T' }])]); fixtures.pop();
+bad(structTypeOverflow.input, 'Expression', 'ns::T', { expression: 'TooManyNodes' });
+rendered('enum count limit', Array.from({ length: 256 }, (_, i) => enumeration([], { name: `C${i}` })), { passes: 1 });
+const enumOverflow = rendered('enum count overflow', Array.from({ length: 257 }, (_, i) => enumeration([], { name: `C${i}` }))); fixtures.pop();
+bad(enumOverflow.input, 'TooManyEnums', 'C256');
+rendered('records and structs share the aggregate cap', [...Array.from({ length: 128 }, (_, i) => record([], { name: `R${i}` })),
+  ...Array.from({ length: 128 }, (_, i) => structure([], { name: `S${i}` }))], { passes: 1 });
+const aggregateOverflow = rendered('aggregate count overflow', [...Array.from({ length: 256 }, (_, i) => record([], { name: `R${i}` })),
+  structure([], { name: 'S256' })]); fixtures.pop();
+bad(aggregateOverflow.input, 'TooManyRecords', 'struct S256');
+const recordAfterStructOverflow = rendered('record after struct aggregate count overflow', [...Array.from({ length: 256 }, (_, i) => structure([], { name: `S${i}` })),
+  record([], { name: 'R256' })]); fixtures.pop();
+bad(recordAfterStructOverflow.input, 'TooManyRecords', 'R256');
+rendered('enum count shared across namespaces', [namespace('n', Array.from({ length: 128 }, (_, i) => enumeration([], { name: `C${i}` }))),
+  namespace('n', Array.from({ length: 128 }, (_, i) => enumeration([], { name: `C${i + 128}` })))], { passes: 1 });
+const namespaceEnumOverflow = rendered('enum count across namespace overflow', [namespace('n', Array.from({ length: 256 }, (_, i) => enumeration([], { name: `C${i}` }))),
+  namespace('n', [enumeration([], { name: 'C256' })])]); fixtures.pop();
+bad(namespaceEnumOverflow.input, 'TooManyEnums', 'C256');
+const namespaceAggregateOverflow = rendered('aggregate count across namespace overflow', [namespace('n', Array.from({ length: 256 }, (_, i) => record([], { name: `R${i}` }))),
+  namespace('n', [structure([], { name: 'S256' })])]); fixtures.pop();
+bad(namespaceAggregateOverflow.input, 'TooManyRecords', 'struct S256');
+rendered('enum full declaration arena', [...Array.from({ length: 255 }, () => enumeration([])), enumeration(enumMembers(767))], { passes: 1 });
+const enumArenaOverflow = rendered('enum declaration arena overflow', [...Array.from({ length: 255 }, () => enumeration([])),
+  enumeration(enumMembers(768))], { passes: 1 }); fixtures.pop();
+bad(enumArenaOverflow.input, 'TooManyNodes', 'm767'); fixtures.at(-1).passes = 1;
+rendered('enum member full expression arena', [enumeration([{ name: 'Big', value: { kind: 'Chain', count: 2047 } }])], { passes: 1 });
+const memberExpressionOverflow = rendered('enum member expression arena overflow', [enumeration([{ name: 'Big', value: { kind: 'Chain', count: 2048 } }])]); fixtures.pop();
+bad(memberExpressionOverflow.input, 'Expression', '++', { expression: 'TooManyNodes' });
+rendered('enum member value shares earlier body arena', [fn({ kind: 'Chain', count: 2043 }), enumeration([{ name: 'Big', value: named('a::b::c') }])]);
+const memberSharedOverflow = rendered('enum member value arena overflow', [fn({ kind: 'Chain', count: 2043 }),
+  enumeration([{ name: 'Big', value: named('a::b::c::d') }])]); fixtures.pop();
+bad(memberSharedOverflow.input, 'Expression', memberSharedOverflow.tree.items.next.items.body.right.right.right.start, { expression: 'TooManyNodes' });
+rendered('body shares earlier enum member arena', [enumeration([{ name: 'Big', value: named('a::b::c') }]), fn({ kind: 'Chain', count: 2043 })]);
+const bodyAfterMemberOverflow = rendered('body after enum member arena overflow', [enumeration([{ name: 'Big', value: named('a::b::c') }]),
+  fn({ kind: 'Chain', count: 2044 })]); fixtures.pop();
+bad(bodyAfterMemberOverflow.input, 'Statement', '++', { statement: 'Expression', expression: 'TooManyNodes' });
+let deepAggregate = [enumeration([{ name: 'Off' }, { name: 'On' }]), structure([{ name: 'x', type: 'Int' }]),
+  record([{ name: 'z', type: 'Int' }]), alias()];
+for (let n = 0; n < 48; n++) deepAggregate = [namespace(`n${n}`, deepAggregate)];
+rendered('enums and structs add no namespace or syntax depth', deepAggregate);
+let aggregateValueDepth = [enumeration([{ name: 'On', value: integer(1) }])];
+for (let n = 0; n < 48; n++) aggregateValueDepth = [namespace(`n${n}`, aggregateValueDepth)];
+rendered('enum member value at maximum namespace expression depth', aggregateValueDepth[0].declarations);
+const aggregateValueDepthOverflow = rendered('aggregate member value syntax depth overflow', aggregateValueDepth); fixtures.pop();
+bad(aggregateValueDepthOverflow.input, 'Expression', '1', { expression: 'TooDeep' });
 
 for (const type of types) for (const exported of [false, true]) rendered(`alias ${type} ${exported}`, [alias(type, { exported }),
   fn(named('value'), { type: 'Named', typeName: 'Count', parameters: [{ name: 'value', type: 'Named', typeName: 'Count' }] })]);
@@ -874,6 +1055,29 @@ for (const type of types.keys()) for (const immutable of [false, true]) {
   assert.ok(generatedConstNodes.some(n => n.kind === 'Parameter' && n.type.value === type + 1 && n.immutable === immutable), `parameter type ${type + 1} const ${immutable}`);
 }
 assert.ok(generatedConstNodes.filter(n => n.kind !== 'Parameter').every(n => !n.immutable), 'only parameter nodes use declaration immutable flag');
+const aggregateGeneratedStart = fixtures.length;
+for (let n = 0; n < 32; n++) rendered(`generated aggregates ${n}`, [namespace('n', [
+  enumeration([
+    { name: 'a', value: integer(n) }, { name: 'b' },
+    { name: 'c', value: conditional(truth, named('a'), named('b'), { bare: true }) },
+    { name: 'd', value: letIn([local('x', integer(1))], named('x'), { bare: true }) },
+    { name: 'e', value: { kind: 'Text', text: 'v\0\x80' } },
+  ], { name: `C${n}`, exported: !!(n % 2) }),
+  structure([
+    { name: 'x', type: types[n % types.length] }, { name: 'y', type: 'Named', typeName: 'pkg::T' },
+  ], { name: `S${n}`, exported: !(n % 2) }),
+  record([{ name: 'z', type: 'Int' }], { name: `R${n}` }), alias(),
+])]);
+const generatedAggregateNodes = fixtures.slice(aggregateGeneratedStart).flatMap(f => arenas(f.tree).d.nodes);
+for (const kind of ['Enum', 'Member', 'Struct', 'Field']) assert.ok(generatedAggregateNodes.some(n => n.kind === kind), `generated aggregate ${kind}`);
+for (let index = 0; index < types.length; index++) {
+  assert.ok(generatedAggregateNodes.some(n => n.kind === 'Field' && n.type?.value === index + 1), `generated struct field type ${index + 1}`);
+}
+for (const kind of ['Enum', 'Struct']) for (const exported of [false, true]) {
+  assert.ok(generatedAggregateNodes.some(n => n.kind === kind && n.exported === exported), `generated ${kind} visibility ${exported}`);
+}
+assert.ok(generatedAggregateNodes.some(n => n.kind === 'Member' && n.body), 'generated member values');
+assert.ok(generatedAggregateNodes.some(n => n.kind === 'Member' && !n.body), 'generated plain members');
 
 const helpers = `
 static int dids[parser::max_nodes]; static bool dseen[parser::max_nodes];
@@ -1010,7 +1214,18 @@ for (const [input, status, error] of [
   ['module m; int main(){}', 0, ''],
   ['module m; pub int read(const int value){return let saved=value;in saved;}', 0, ''],
   ['module m; int f(const int p){p++;return p;}', 0, ''],
-  driverBad('module m; f=():int=>0;', '(', "expected record, alias or namespace after binding '='"),
+  ['module m;pub Color=enum{Red;Green=1;Blue;};int main(){return 0;}', 0, ''],
+  ['module m;pub struct Point{int x;bool ready;};Point make(){return Point(1,true);}', 0, ''],
+  ['module m;math=namespace{pub E=enum{A;B=2;};pub struct P{int v;};};int main(){return 0;}', 0, ''],
+  driverBad('module m; struct Point{int x=1;};', '=1', "expected ';' after scalar struct field"),
+  driverBad('module m; struct Point{int;};', ';}', 'expected struct field name'),
+  driverBad('module m; struct {int x;};', '{', 'expected struct name'),
+  ['module m; struct Point;', 65, "binding:1:23: error: expected '{' after struct name\n"],
+  driverBad('module m; struct Point{int x;', '', "expected '}' after struct fields"),
+  driverBad('module m; Color=enum{1;};', '1', 'expected enum member name'),
+  ['module m; Color=enum;', 65, "binding:1:21: error: expected '{' after enum\n"],
+  driverBad('module m; Point=struct{};', 'struct', "expected record, enum, alias or namespace after binding '='"),
+  driverBad('module m; f=():int=>0;', '(', "expected record, enum, alias or namespace after binding '='"),
   driverBad('module m; int f(){return let x=1 in x;}', 'in x', "expected ';' after local binding"),
   driverBad('module m; int f(){return let in @;}', '@', 'unsupported character in Stage 0 source'),
   driverBad('module m; int f(){return if true 1 else 0;}', '1 else', "expected 'then' after condition"),
