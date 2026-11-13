@@ -5,7 +5,7 @@ existing **1.9 bytecode**, and the Stage 0 VM executes them. The file parser acc
 headers, functions, aliases, module constants, static storage and namespaces in
 legacy syntax; the replacement binding parser adds a separate migration slice.
 Legacy struct/enum declarations remain unimplemented there, while the replacement
-binding parser records name-first enums and C-style structs.
+binding parser records name-first enums, C-style structs and static/extern declarations.
 There is no semantic checker, code generator or complete compiler yet. The
 statement parser includes local declarations; the separate header driver handles
 module/import prefixes only. Running a
@@ -494,8 +494,9 @@ Type parameter, ...) { statements }`, without a trailing semicolon. Parameters/r
 use the same primitive/qualified written types as bindings and fields. Named result
 types are distinguished from name-first bindings without backtracking or retaining
 extra name nodes for ordinary binding identifiers. No parameter defaults,
-array/pointer/variadic signatures, `(void)` shorthand, prototypes or
-extern declarations are added. Empty parameter lists use `()`.
+array/pointer/variadic signatures, `(void)` shorthand or prototypes without
+`extern` are added. Empty parameter lists use `()`. External declarations keep
+the same signature grammar with leading `extern` and a trailing `;`, not a body.
 
 C-style bodies compose the existing statement parser in replacement-expression
 mode: blocks, `if`/optional `else`, `while`, `for`, `switch`/`case`/`default`,
@@ -528,9 +529,47 @@ duplicate/forward local bindings, invalid written `void`/`auto` types, mutation 
 plain bindings and nonconstant top-level initializers may be syntax-valid here.
 These are not semantic acceptance claims. No input initializer, function or
 import is executed, and no input program storage is allocated.
-Nested function values/definitions, externs, statics and module arrays are
-not declarations in these replacement slices; name-first enums and C-style
-structs are, as separate declaration nodes below.
+Nested function values/definitions are not declarations in these replacement
+slices. Statics, module static arrays and external functions keep their C-style
+spellings below; name-first enums and C-style structs are separate declaration nodes.
+
+### Static storage and external functions
+
+Static storage uses `[pub] static Type name = expr;` or
+`[pub] static Type name[length];` at module/namespace scope. Scalar initializers
+are required; arrays have exactly one explicit length expression, require `]`
+and reject `= expr` initializers. The type is written first, using the same
+primitive/qualified grammar as other written types. This does not add local
+statics, `static const`, multidimensional arrays or name-first static syntax.
+
+External functions use `[pub] extern Type name([const] Type parameter, ...);`.
+The `extern` marker is required for a bodyless signature; ordinary definitions
+still require their block. External declarations require `;` and reject a body,
+default parameters, array/pointer/variadic signatures or external variables.
+Leading parameter `const` keeps the same readonly-intent metadata as definitions.
+
+```text
+module app.storage;
+pub static int value = 42;
+static byte buffer[32];
+pub extern int read(const byte value);
+int main() { return value; }
+```
+
+Both forms keep the legacy Stage 0 spellings verbatim. Intended static lifetime,
+zero-initialized arrays, constant scalar initialization and extern binding remain
+semantic/runtime work: **no input storage is allocated/initialized, expression
+evaluated, size/type/visibility checked or extern implementation resolved**.
+Unknown/nonconstant values, invalid lengths/types, duplicate/conflicting signatures
+and non-I/O externs can remain syntax-valid data, not semantic acceptance.
+
+Each static uses one declaration node plus a written `Type` and initializer or
+length in the shared expression arena. There is no extra static-count budget
+beyond the existing 1024-node declaration arena. External functions count toward
+the same 256-function cap as definitions; parameters share the declaration/type
+arenas but externs consume no statement nodes or body depth. Namespaces do not
+reset any count/storage. Static expressions consume their ordinary expression
+depth; external signatures add no depth beyond active namespaces.
 
 ### Const parameters
 
@@ -711,7 +750,7 @@ a serialized alias format or a source-compatibility guarantee for legacy syntax.
 The approved form is `Name = namespace { declarations };` at module or namespace
 scope. Names are single identifiers, not dotted or `::`-qualified paths. The
 trailing semicolon is required, including for empty namespaces. The body accepts
-the same constants, functions, records, enums, structs, aliases and namespaces
+the same constants, functions/externs, statics, records, enums, structs, aliases and namespaces
 as the module body, but not module/import headers. Namespace bindings are not expression/local values;
 keyword-first `namespace Name { ... }` remains legacy bootstrap syntax only.
 
@@ -758,12 +797,17 @@ Repeated parses reset both data and errors. Invalid IDs return zero metadata and
 absent links; IDs expire at source replacement or any shared-parser restart.
 
 Declaration nodes expose token start/length/line/column, identifier
-`name_start`/`name_length`, `exported`, parameter-only `immutable` and five links:
+`name_start`/`name_length`, `exported`, parameter-only `immutable`, function-only
+`external` and six links:
 
 - `Module.header` is a header-arena ID; `items` is its first declaration.
 - `Constant.type` is an expression-arena `Type`; `body` is its initializer.
+- `Static.type` is its written expression-arena `Type`. A scalar has an initializer
+  in `body` and absent `array`; an array has its length in expression-arena `array`
+  and absent `body`. `items`/`header` are absent and `immutable` is false.
 - `Function.type` is its written result `Type`; `items` is the first declaration-
-  arena `Parameter`, and `body` is the statement-arena block, not an expression ID.
+  arena `Parameter`. Definitions have a statement-arena block in `body`, not an
+  expression ID; externs have `external` true and absent `body`.
   This ownership replaces the superseded expression-body contract.
 - `Parameter.type` is its written `Type`; `immutable` records leading `const`.
   Parameters have no initializer. Other declaration kinds keep `immutable` false,
@@ -785,7 +829,10 @@ Declaration nodes expose token start/length/line/column, identifier
   `body` is its optional written value expression, or absent for plain members.
   `Member.type`, `items` and `header` are absent, and members carry no export flag.
 - `next` links declaration/parameter siblings. Other links are absent (-1).
-  Declaration metadata refers to the leading `pub`, result type or binding name,
+  `array` is absent on nonstatics and `external` false on nonfunctions. Invalid
+  sentinels expose false flags and absent links. These fields are provisional
+  in-memory AST data, not a permanent API or serialized/artifact change.
+  Declaration metadata refers to the leading `pub`, `static`, `extern`, `struct`, result type or binding name,
   not the whole span. Parameter metadata refers to leading `const` or its written
   type token, with a separate identifier span.
 
@@ -877,6 +924,14 @@ first rejected cases. Generated mixed corpora assert enum/member/struct/field
 nodes, every written field type, both aggregate visibilities and
 valued/plain members. The 48-level budget is unchanged: aggregate declarations
 add no depth, while member values consume one expression level like any other.
+Static/extern models check every written type and visibility, scalar/array
+ownership, const/nonconst external parameters, spans, retained strings, rejected
+modifiers/initializers/bodies and all-four-arena rollback. Exact boundaries cover
+full static/parameter/type arenas, storage shared with earlier/later bodies, mixed
+definition/extern function counts, namespace depth and independent aggregate/enum
+budgets. Generated models assert all written storage/result/parameter types,
+both qualifier/visibility states, mutually exclusive scalar/array links and
+false/absent metadata on unrelated kinds. No input storage or calls are executed.
 
 ## Limits and verification
 
@@ -964,9 +1019,9 @@ under `make test`, `make sanitize`, `make coverage` and the Nix checks. The exis
 a coverage gate for L source. No arbitrary mutant bytecode or cyclic verifier
 graphs are executed by these tests.
 
-The replacement suite has **856 fixtures / 303580 modeled node checks** across
-its declaration, header, statement and expression arenas, in **271 batches / 1165 commands**.
-The scanner suite has **1184 fixtures / 119852 token checks**. All legacy
+The replacement suite has **1043 fixtures / 366266 modeled node checks** across
+its declaration, header, statement and expression arenas, in **324 batches / 1389 commands**.
+The scanner suite has **1184 fixtures / 121540 token checks**. All legacy
 expression, statement, header and function-file suites still pass. Stage 0 C
 coverage remains **2596 lines / 163 functions / 2660 branches (100%)**; these
 numbers do not measure L-source coverage.
