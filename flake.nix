@@ -57,11 +57,16 @@
               runHook preInstallCheck
               "$out/bin/l" check "$out/share/l/examples/answer.l" --manifest "$out/share/l/examples/package.json"
               "$out/bin/l" check "$out/share/l/examples/io_demo.l" --manifest "$out/share/l/examples/package.json"
-              "$out/bin/l" compile "$out/share/l/examples/replacement/answer.l" --manifest "$out/share/l/examples/replacement/package.json" -o replacement-answer.lbc
-              "$out/bin/l" check replacement-answer.lbc
-              status=0
-              "$out/bin/l" run replacement-answer.lbc || status=$?
-              test "$status" -eq 42
+              for example in answer choose; do
+                "$out/bin/l" compile "$out/share/l/examples/replacement/$example.l" --manifest "$out/share/l/examples/replacement/package.json" -o "replacement-$example.lbc"
+                "$out/bin/l" check "replacement-$example.lbc"
+                status=0
+                "$out/bin/l" run "$out/share/l/examples/replacement/$example.l" --manifest "$out/share/l/examples/replacement/package.json" || status=$?
+                test "$status" -eq 42
+                status=0
+                "$out/bin/l" run "replacement-$example.lbc" || status=$?
+                test "$status" -eq 42
+              done
               "$out/bin/l" check "$out/share/l/bootstrap/stage1/main.l" --manifest "$out/share/l/bootstrap/stage1/package.json"
               "$out/bin/l" check "$out/share/l/bootstrap/stage1/expression_main.l" --manifest "$out/share/l/bootstrap/stage1/package.json"
               "$out/bin/l" check "$out/share/l/bootstrap/stage1/statement_main.l" --manifest "$out/share/l/bootstrap/stage1/package.json"

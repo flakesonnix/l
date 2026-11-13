@@ -60,6 +60,19 @@ static Opcode binary_op(int op) {
 static uint32_t lower_expr(Lower *l, Expr *e) {
     uint32_t a, b, r;
     switch (e->kind) {
+    case EX_CONDITIONAL: {
+        a = lower_expr(l, e->condition);
+        uint32_t temp = slot(l, e->type);
+        uint32_t branch = emit(l, e->token, OP_BRANCH, 0, a, l->fn->code_count + 1, 0);
+        b = lower_expr(l, e->left);
+        emit(l, e->left->token, OP_STORE, temp, b, 0, 0);
+        uint32_t jump = emit(l, e->token, OP_JUMP, 0, 0, 0, 0);
+        l->fn->code[branch].c = l->fn->code_count;
+        b = lower_expr(l, e->right);
+        emit(l, e->right->token, OP_STORE, temp, b, 0, 0);
+        l->fn->code[jump].a = l->fn->code_count;
+        r = reg(l, e->type); emit(l, e->token, OP_LOAD, r, temp, 0, 0); return r;
+    }
     case EX_LET:
         for (Decl *d = e->bindings; d; d = d->next) {
             a = lower_expr(l, d->value);

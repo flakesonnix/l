@@ -92,6 +92,13 @@ static Expr *primary(Parser *p) {
     Expr *e;
     if (take(p, TK_LET)) {
         e = let_expression(p, token);
+    } else if (take(p, TK_IF)) {
+        e = new_expr(p, EX_CONDITIONAL, token);
+        e->condition = expression(p, 1);
+        expect(p, TK_THEN, "expected 'then' after conditional expression condition");
+        e->left = expression(p, 1);
+        expect(p, TK_ELSE, "expected 'else' after conditional expression true branch");
+        e->right = expression(p, 1);
     } else if (take(p, TK_TEXT)) {
         e = new_expr(p, EX_STRING, token);
     } else if (take(p, TK_INTEGER)) {

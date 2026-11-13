@@ -23,6 +23,7 @@ static size_t io_programs;
 static size_t global_array_programs, global_array_lifecycles;
 static size_t io_array_programs, io_array_executions;
 static size_t let_programs;
+static size_t conditional_programs;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -431,6 +432,19 @@ static int32_t expression_value(void) {
 }
 /* Emit typed expressions while a host-side model tracks values, effects and traps. */
 static int32_t expression_model(ExpressionModel *model, unsigned depth, bool boolean) {
+    if (depth && !random_number(7)) {
+        append("(if ");
+        int32_t condition = expression_model(model, depth - 1, true);
+        ExpressionModel yes = *model, no = *model;
+        append(" then ");
+        int32_t a = expression_model(&yes, depth - 1, boolean);
+        append(" else ");
+        int32_t b = expression_model(&no, depth - 1, boolean);
+        append(")");
+        /* Generate both alternatives, but commit only the selected model state. */
+        *model = condition ? yes : no;
+        return condition ? a : b;
+    }
     if (boolean) {
         unsigned kind = random_number(depth ? 6 : 2);
         if (!kind) {
@@ -560,6 +574,24 @@ static void let_cases(void) {
         semantic_case(let_model(a, delta) + let_model(b, delta), 0);
     }
 }
+static int32_t conditional_model(int32_t outer, int32_t pivot) {
+    bool selected = outer++ < pivot;
+    int32_t local = outer++, snapshot = local;
+    int32_t value = selected ? local++ + snapshot : local-- - snapshot;
+    return value * 3 + outer;
+}
+static void conditional_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        int32_t initial = (int32_t)random_number(2001) - 1000, pivot = initial + 1;
+        source_length = 0;
+        append("int calc(int n,int pivot){int result=if n++<pivot "
+               "then (let var n=n++;snapshot=n;in n++ +snapshot) "
+               "else (let var n=n++;snapshot=n;in n-- -snapshot);return result*3+n;}"
+               "int main(){return calc(%d,%d)+calc(%d,%d);}", initial, pivot, initial + 1, pivot);
+        ++conditional_programs;
+        semantic_case(conditional_model(initial, pivot) + conditional_model(initial + 1, pivot), 0);
+    }
+}
 /* Independent shared-state model, with repeated runs of each source/bytecode program. */
 static void static_cases(void) {
     for (unsigned test = 0; test < MODEL_CASES; ++test) {
@@ -613,12 +645,10 @@ static void reuse_execution(Context *ctx, const Program *p, int status) {
     cleanup(ctx);
     if (ctx->allocated || ctx->allocations) failed("trapped static execution could not be cleaned up");
 }
-static void let_lifecycle(void) {
-    Context *owner = context("let-lifecycle-source");
-    if (setjmp(owner->failure)) failed("let lifecycle program was rejected");
-    Program *compiled = compile(owner,
-        "int main(){return let var x=40;snapshot=x++;y=(let var x=x+1;in x++);in snapshot/(y-42);}"
-        "int recover(){return let var x=40;y=x++;in x+1;}");
+static void scoped_lifecycle(const char *text) {
+    Context *owner = context("scoped-lifecycle-source");
+    if (setjmp(owner->failure)) failed("scoped lifecycle program was rejected");
+    Program *compiled = compile(owner, text);
     Program *loaded = roundtrip(owner, compiled);
     const Program *versions[] = {compiled, loaded};
     for (unsigned version = 0; version < 2; ++version) {
@@ -629,7 +659,7 @@ static void let_lifecycle(void) {
         write_bytecode(owner, p, "build/fuzz-roundtrip.lbc");
         size_t before_size;
         const unsigned char *before = read_file(owner, "build/fuzz-roundtrip.lbc", &before_size);
-        Context *execution = context("let-lifecycle-execution");
+        Context *execution = context("scoped-lifecycle-execution");
         for (unsigned attempt = 0; attempt < 4; ++attempt) {
             reuse_execution(execution, p, 70);
             reuse_execution(execution, &recovery, 0);
@@ -639,7 +669,7 @@ static void let_lifecycle(void) {
         write_bytecode(owner, p, "build/fuzz-roundtrip.lbc");
         size_t after_size;
         const unsigned char *after = read_file(owner, "build/fuzz-roundtrip.lbc", &after_size);
-        if (after_size != before_size || memcmp(before, after, before_size)) failed("let execution changed serialized bytecode");
+        if (after_size != before_size || memcmp(before, after, before_size)) failed("scoped execution changed serialized bytecode");
     }
     dispose(owner);
 }
@@ -1433,7 +1463,13 @@ int main(void) {
     switch_limit_cases();
     expression_cases();
     let_cases();
-    let_lifecycle();
+    conditional_cases();
+    scoped_lifecycle(
+        "int main(){return let var x=40;snapshot=x++;y=(let var x=x+1;in x++);in snapshot/(y-42);}"
+        "int recover(){return let var x=40;y=x++;in x+1;}");
+    scoped_lifecycle(
+        "int main(){int x=0;return if x++==0 then (let y=40;in y/(x-1)) else 42;}"
+        "int recover(){int x=0;return if x++==0 then (let y=40;in y+x+1) else 1/0;}");
     static_cases();
     static_lifecycle_cases();
     graph_cases();
@@ -1462,5 +1498,6 @@ int main(void) {
     printf("fuzz: %zu static array lifecycle programs survived traps, cleanup and fresh retries\n", global_array_lifecycles);
     printf("fuzz: %zu static-buffer I/O lifecycle program passed 5 failure modes and %zu executions\n", io_array_programs, io_array_executions);
     printf("fuzz: %zu let programs matched lexical-cell models; source/bytecode trap cleanup and retries passed\n", let_programs);
+    printf("fuzz: %zu conditional programs matched selected-branch scope models; cleanup and retries passed\n", conditional_programs);
     return 0;
 }
