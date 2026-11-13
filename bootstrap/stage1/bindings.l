@@ -17,6 +17,7 @@ namespace kind {
     pub const int Parameter = 4;
     pub const int Record = 5;
     pub const int Field = 6;
+    pub const int Alias = 7;
 }
 pub enum Error { None, Header, Expression, ExpectedName, ExpectedAssign,
                  ExpectedOpen, ExpectedClose, ExpectedColon, ExpectedArrow,
@@ -199,7 +200,12 @@ int declaration() {
     } else {
         expect(lexer::Kind::Assign, Error::ExpectedAssign);
         if (take(lexer::Kind::Record)) result = record_declaration(start);
-        else {
+        else if (take(lexer::Kind::Alias)) {
+            int declared = type();
+            expect(lexer::Kind::Semicolon, Error::ExpectedSemicolon);
+            result = make_node(kind::Alias, start);
+            if (result != -1) types[result] = declared;
+        } else {
             expect(lexer::Kind::LeftParen, Error::ExpectedOpen);
             if (ok() && function_count == max_functions) reject(Error::TooManyFunctions, start);
             if (!ok()) return -1;

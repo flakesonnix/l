@@ -146,8 +146,8 @@ magnitude is legal; the lexer does not accept it as an ordinary positive int val
 
 ASCII identifiers, decimal literals, comments and literal-backed string escapes
 match Stage 0's lexical subset. The scanner additionally recognizes replacement
-keywords `let`, `in`, `var`, `then`, `record` and the adjacent `=>` token. `= >` is two tokens, not
-an arrow. Legacy parser cursors temporarily expose those five keywords as names
+keywords `let`, `in`, `var`, `then`, `record`, `alias` and the adjacent `=>` token. `= >` is two tokens, not
+an arrow. Legacy parser cursors temporarily expose those six keywords as names
 to keep existing bootstrap inputs usable; the replacement parser reserves them
 in both headers and bodies. This compatibility is migration scaffolding, not a
 permanent second source grammar. Comments are non-nesting and may contain high bytes, but not NUL.
@@ -501,7 +501,7 @@ duplicate/forward local bindings, invalid written `void`/`auto` types, mutation 
 plain bindings and nonconstant top-level initializers may be syntax-valid here.
 These are not semantic acceptance claims. No input initializer, function or
 import is executed, and no input program storage is allocated.
-Statement blocks/loops, nested function values, namespaces, aliases,
+Statement blocks/loops, nested function values, namespaces,
 externs, statics, arrays and enums are not declarations in this first slice.
 
 ### Conditional expressions
@@ -575,6 +575,35 @@ replay or failure. Named literal fields use only the shared expression arena;
 their count is bounded by that arena, not checked against an unresolved record's
 arity. These are parser resource limits, not new language or artifact limits.
 
+### Transparent alias bindings
+
+The approved form is `[pub] Name = alias Type;` at module scope. A target uses the
+same primitive/`::`-qualified written-type grammar as signatures and fields.
+Aliases cannot have initializer expressions, array suffixes, call/function target
+syntax or local `let` declarations. A later ordinary binding can use the alias
+name in written parameter/result/local/field types:
+
+```text
+module app.types;
+pub Count = alias int;
+increment = (value: Count): Count => value + 1;
+```
+
+Intended semantics are the existing **transparent scalar aliases**, ultimately
+resolving to `int`, `bool`, `byte` or `string`, directly or through other aliases.
+This does not add nominal type wrappers, aliases to records/enums, implicit
+conversions, runtime type values or executable alias initialization. **Expansion,
+lookup, visibility/target validity, duplicate checking and cycle detection are not
+performed**. Unknown, repeated, self/mutually recursive, `void`/`auto` and record-
+named targets can remain syntax-valid data, not semantically accepted types.
+
+An alias uses one declaration node and its written `Type` subtree in the same
+expression arena as fields and bodies. It adds no depth level and does not consume
+the record/function counts. Long target chains are parsed iteratively, never
+followed as alias dependencies. Exhaustion still hides all three owned arenas;
+replay resets diagnostics and storage. These are provisional internal ASTs, not
+a serialized alias format or a source-compatibility guarantee for legacy syntax.
+
 ### Arenas and node ownership
 
 `bindings::parse()` replays input and requires EOF. It returns a `Module` root in
@@ -596,6 +625,8 @@ Declaration nodes expose token start/length/line/column, identifier
 - `Function.type` is its written result `Type`; `items` is the first declaration-
   arena `Parameter`, and `body` is the expression body.
 - `Parameter.type` is its written `Type`. Parameters have no initializer.
+- `Alias.type` is its written target `Type`; `header`, `items` and `body` are
+  absent. Its identifier and `pub` flag use the normal declaration metadata.
 - `Record.items` is its first declaration-arena `Field`. `type` and `body` are
   absent. `Field.type` is its written expression-arena `Type`; its identifier span
   is recorded normally, with no initializer or own export flag.
@@ -651,6 +682,12 @@ isolation. Exact limits cover fields/records, combined record/function counts,
 the declaration arena, literal expression storage, named-field types shared with
 earlier/later function bodies, and nested literal depth. Generated mixed corpora
 assert record/field nodes, all written field types and both record visibilities.
+Alias models check every written target kind, visibility, source spans, retained
+strings, forward/cyclic syntax without expansion, malformed declarations and
+rollback. Bounds cover full alias declaration/target arenas and type storage
+shared with earlier/later bodies. Combined count fixtures retain 256 records and
+256 functions alongside aliases. Generated aliases assert all written types and
+both visibility forms; legacy keyword-name isolation remains checked.
 
 ## Limits and verification
 
@@ -738,9 +775,9 @@ under `make test`, `make sanitize`, `make coverage` and the Nix checks. The exis
 a coverage gate for L source. No arbitrary mutant bytecode or cyclic verifier
 graphs are executed by these tests.
 
-The replacement suite has **389 fixtures / 100600 modeled node checks** across
-its declaration, header and expression arenas, in **101 batches / 441 commands**.
-The scanner suite has **1183 fixtures / 112460 token checks**. All legacy
+The replacement suite has **467 fixtures / 137636 modeled node checks** across
+its declaration, header and expression arenas, in **125 batches / 541 commands**.
+The scanner suite has **1184 fixtures / 112800 token checks**. All legacy
 expression, statement, header and function-file suites still pass. Stage 0 C
 coverage remains **2596 lines / 163 functions / 2660 branches (100%)**; these
 numbers do not measure L-source coverage.

@@ -11,7 +11,7 @@ pub enum Kind {
     LeftBrace, RightBrace, LeftParen, RightParen, LeftBracket, RightBracket,
     Semicolon, Colon, Comma, Dot, Plus, Minus, Star, Slash, Percent,
     Bang, Less, Greater, Assign, Equal, NotEqual, LessEqual, GreaterEqual,
-    And, Or, Increment, Decrement, Scope, Let, In, Var, Arrow, Then, Record
+    And, Or, Increment, Decrement, Scope, Let, In, Var, Arrow, Then, Record, Alias
 };
 
 pub enum Error {
@@ -124,6 +124,7 @@ Kind keyword() {
         case 97:
             if (word("auto")) return Kind::Auto;
             if (word("as")) return Kind::As;
+            if (word("alias")) return Kind::Alias;
             break;
         case 98:
             if (word("bool")) return Kind::Bool;

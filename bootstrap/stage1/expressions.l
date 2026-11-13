@@ -149,7 +149,7 @@ void advance() {
     current_kind = at.kind;
     // Temporary bootstrap compatibility: these are names in the legacy grammar.
     switch (at.kind) {
-        case lexer::Kind::Let: case lexer::Kind::In: case lexer::Kind::Var: case lexer::Kind::Then: case lexer::Kind::Record:
+        case lexer::Kind::Let: case lexer::Kind::In: case lexer::Kind::Var: case lexer::Kind::Then: case lexer::Kind::Record: case lexer::Kind::Alias:
             if (!replacement_mode) current_kind = lexer::Kind::Name;
             break;
     }

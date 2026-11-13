@@ -17,7 +17,7 @@ replacement slice; the source compiler does not yet compile that syntax.
 The approved direction is a **typed, Nix-inspired replacement**: declarative
 bindings, `let/in`, records and expression-oriented functions, with explicit
 modules. This is a breaking source migration, not a permanent second grammar.
-The approved binding, conditional and record spellings are shown below. The rest
+The approved binding, conditional, record and alias spellings are shown below. The rest
 of the replacement grammar and the full executable-source migration remain incomplete.
 
 Static typing, eager left-to-right evaluation and the
@@ -78,11 +78,23 @@ checking or executing them. Missing/unknown/duplicate fields and invalid field
 types are semantic work for later. Positional values and anonymous literals are
 not replacement syntax.
 
+Transparent aliases use the approved `Name = alias Type;` form:
+
+```text
+module app.types;
+pub Count = alias int;
+increment = (value: Count): Count => value + 1;
+```
+
+Aliases are intended to retain the existing scalar-alias semantics, not create
+nominal types or runtime values. The parser records written targets but does not
+resolve/expand them, validate target types, check visibility or detect cycles.
+
 The new driver rejects C-style function/declaration syntax. Stage 0 and the legacy
 Stage 1 drivers remain temporary bootstrap scaffolding while the replacement is
 incomplete, not a permanent second user grammar. Statement blocks,
-namespaces, static storage and enum declarations are not part of this first new
-file-parser slice. See its [parser contract](bootstrap/stage1/README.md#replacement-binding-file-contract).
+namespaces, static storage and enum declarations are not part of these new
+file-parser slices. See the [parser contract](bootstrap/stage1/README.md#replacement-binding-file-contract).
 
 ## Build and run the current bootstrap
 

@@ -7,8 +7,8 @@ remains unchanged and reachable. Current IR/bytecode is **1.9**.
 
 ## Review status
 
-The initial stack and Stage 1 PRs through **#21 are merged**. The latest reviewed
-feature merge is `6af87d9`, integrating conditional-parser head `cb3ea2f`.
+The initial stack and Stage 1 PRs through **#22 are merged**. The latest reviewed
+feature merge is `b54f278`, integrating record-parser head `637e67b`.
 GitHub COMMENT self-reviews are recorded as such; they are **not independent
 approvals**. Later documentation or syntax changes need their own review.
 The syntax-status documentation in [#19](https://github.com/flakesonnix/l/pull/19)
@@ -47,6 +47,7 @@ commits carried the CI foundation forward without rewriting those commits.
 | [Syntax-status docs #19](https://github.com/flakesonnix/l/pull/19) | `review/docs-syntax-status` | `a0d33e3` |
 | [Replacement bindings #20](https://github.com/flakesonnix/l/pull/20) | `review/stage1-nix-bindings` | `c98fb6f` |
 | [Conditional expressions #21](https://github.com/flakesonnix/l/pull/21) | `review/stage1-conditionals` | `6af87d9` |
+| [Named record syntax #22](https://github.com/flakesonnix/l/pull/22) | `review/stage1-records` | `b54f278` |
 
 PRs #13–#18 received GitHub COMMENT reviews before merging in dependency order.
 Each prospective merge tree and actual merge tree matched its already-tested PR
@@ -68,6 +69,13 @@ The prospective and actual merge trees exactly matched tested head `cb3ea2f`,
 with history and branch preserved. Its eight PR-head checks and resulting
 [main CI at `6af87d9`](https://github.com/flakesonnix/l/actions/runs/43292967995)
 passed, retaining the same Stage 0 C coverage gate.
+
+PR #22 received a fresh COMMENT merge-gate review and 389-fixture model rerun.
+Its prospective and actual merge trees exactly matched tested head `637e67b`;
+the original history and review branch were preserved. All eight PR-head checks
+passed. All four jobs in the resulting
+[main run at `b54f278`](https://github.com/flakesonnix/l/actions/runs/43403721928)
+also passed, checked separately from that PR-head evidence.
 
 The completed initial Stage 1 slices parse **legacy bootstrap syntax**. They do not resolve
 modules/names, check types, evaluate initializers, allocate input storage, generate
@@ -140,6 +148,9 @@ with intended bool conditions, matching result types and selected-branch evaluat
 Records use approved `Name = record { field: Type; };` declarations and
 `Name { field = value; }` literals, retaining intended nominal/by-value semantics
 and written-order value evaluation. These remain syntax-only parser slices.
+Transparent aliases use approved `Name = alias Type;` spelling, preserving the
+existing scalar-alias meaning rather than introducing nominal/runtime types.
+Targets are recorded without expansion or cycle/type checking at this stage.
 The first replacement parser records these forms without implementing their
 semantics or completing the source migration; the remaining grammar is unfinished.
 Existing executable examples and legacy parser contracts still use bootstrap syntax. Expanding that
