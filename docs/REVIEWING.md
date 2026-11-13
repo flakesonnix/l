@@ -7,8 +7,8 @@ remains unchanged and reachable. Current IR/bytecode is **1.9**.
 
 ## Review status
 
-The initial stack and Stage 1 PRs through **#24 are merged**. The latest reviewed
-feature merge is `b2f53ea`, integrating namespace-parser head `45a7f60`.
+The initial stack and Stage 1 PRs through **#25 are merged**. The latest reviewed
+feature merge is `730ded9`, integrating C-function parser head `75dcab8`.
 GitHub COMMENT self-reviews are recorded as such; they are **not independent
 approvals**. Later documentation or syntax changes need their own review.
 The syntax-status documentation in [#19](https://github.com/flakesonnix/l/pull/19)
@@ -50,6 +50,7 @@ commits carried the CI foundation forward without rewriting those commits.
 | [Named record syntax #22](https://github.com/flakesonnix/l/pull/22) | `review/stage1-records` | `b54f278` |
 | [Transparent alias bindings #23](https://github.com/flakesonnix/l/pull/23) | `review/stage1-alias-bindings` | `3655330` |
 | [Namespace bindings #24](https://github.com/flakesonnix/l/pull/24) | `review/stage1-namespace-bindings` | `b2f53ea` |
+| [C-style functions #25](https://github.com/flakesonnix/l/pull/25) | `review/stage1-c-functions` | `730ded9` |
 
 PRs #13–#18 received GitHub COMMENT reviews before merging in dependency order.
 Each prospective merge tree and actual merge tree matched its already-tested PR
@@ -91,6 +92,12 @@ Its prospective and actual merge trees exactly matched tested head `45a7f60`;
 the original history and review branch were preserved. All eight PR-head checks
 and all four resulting [main CI jobs at `b2f53ea`](https://github.com/flakesonnix/l/actions/runs/43425640628)
 passed, checked separately from one another.
+
+PR #25 received a fresh COMMENT merge-gate review and 659-fixture model rerun.
+Its prospective and actual merge trees exactly matched tested head `75dcab8`;
+the original history and review branch were preserved. All eight PR-head checks
+passed. The resulting [main run at `730ded9`](https://github.com/flakesonnix/l/actions/runs/43438650628)
+is checked separately from that PR-head evidence.
 
 The completed initial Stage 1 slices parse **legacy bootstrap syntax**. They do not resolve
 modules/names, check types, evaluate initializers, allocate input storage, generate
@@ -160,6 +167,9 @@ of `pub int add(int a, int b) { return a + b; }` supersedes the earlier name-fir
 arrow-function proposal; that former function form is rejected by the replacement
 parser. C locals are mutable by default, with `const` readonly intent. Eager,
 sequential `let/in` retains immutable bindings and explicit `var` mutability.
+C-style parameters may carry leading `const`, recording readonly intent separately
+from their type. Write checking and signature/overload identity remain deferred;
+no new runtime semantics or C pointer/reference forms are introduced.
 Mandatory-else `if condition then value else value` expressions are approved too,
 with intended bool conditions, matching result types and selected-branch evaluation.
 Records use approved `Name = record { field: Type; };` declarations and

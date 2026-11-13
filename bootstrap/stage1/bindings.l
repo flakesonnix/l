@@ -51,6 +51,7 @@ pub struct Node {
     int items;
     int body;
     int next;
+    bool immutable; // Written const on a parameter; false for other declarations.
 };
 
 static int kinds[max_nodes];
@@ -66,6 +67,7 @@ static int types[max_nodes];
 static int items[max_nodes];
 static int bodies[max_nodes];
 static int nexts[max_nodes];
+static bool immutables[max_nodes];
 static int used = 0;
 static int function_count = 0;
 static int record_count = 0;
@@ -140,6 +142,7 @@ int make_node(int kind, lexer::Token at) {
     items[id] = -1;
     bodies[id] = -1;
     nexts[id] = -1;
+    immutables[id] = false;
     return id;
 }
 int type() {
@@ -156,6 +159,7 @@ int value() {
 }
 int parameter() {
     lexer::Token start = current();
+    bool immutable = take(lexer::Kind::Const);
     int declared = type();
     lexer::Token name = current();
     expect(lexer::Kind::Name, Error::ExpectedName);
@@ -164,6 +168,7 @@ int parameter() {
         name_starts[result] = name.start;
         name_lengths[result] = name.length;
         types[result] = declared;
+        immutables[result] = immutable;
     }
     return result;
 }
@@ -344,9 +349,9 @@ pub int parse() {
 }
 pub int node_count() { return used; }
 pub Node node(int id) {
-    if (id < 0 || id >= used) return Node{kind::Invalid, 0, 0, 0, 0, 0, 0, false, -1, -1, -1, -1, -1};
+    if (id < 0 || id >= used) return Node{kind::Invalid, 0, 0, 0, 0, 0, 0, false, -1, -1, -1, -1, -1, false};
     return Node{kinds[id], starts[id], lengths[id], lines[id], columns[id], name_starts[id], name_lengths[id],
-        exports[id], header_ids[id], types[id], items[id], bodies[id], nexts[id]};
+        exports[id], header_ids[id], types[id], items[id], bodies[id], nexts[id], immutables[id]};
 }
 pub Diagnostic diagnostic() {
     return Diagnostic{failure, header_failure, statement_failure, expression_failure, lexical_failure,

@@ -22,7 +22,7 @@ function command(status, args, options = {}) {
 }
 const e = (kind, start, length, fields = {}) => ({ kind, start, length, op: 'None', value: 0, text: '', left: null, right: null, next: null, ...fields });
 const d = (kind, start, length, fields = {}) => ({ kind, start, length, nameStart: 0, nameLength: 0, exported: false,
-  header: null, type: null, items: null, body: null, next: null, ...fields });
+  header: null, type: null, items: null, body: null, next: null, immutable: false, ...fields });
 const h = (kind, start, length, fields = {}) => ({ kind, start, length, path: null, alias: null, items: null, next: null, ...fields });
 const s = (kind, start, length, fields = {}) => ({ kind, start, length, expression: null, init: null, condition: null,
   step: null, body: null, other: null, next: null, declaredType: 'Invalid', typeName: null, nameStart: 0,
@@ -234,9 +234,11 @@ function rendered(name, declarations, options = {}) {
         put('('); let lastParameter = null;
         for (const parameter of declaration.parameters) {
           if (lastParameter) put(',');
-          const start = input.length, declared = type(parameter.type, parameter.typeName); put(gap);
-          const nameStart = put(parameter.name), current = d('Parameter', start, declared.length,
-            { type: declared, nameStart, nameLength: parameter.name.length });
+          const start = input.length;
+          if (parameter.immutable) put(`const${gap}`);
+          const declared = type(parameter.type, parameter.typeName); put(gap);
+          const nameStart = put(parameter.name), current = d('Parameter', start, parameter.immutable ? 5 : declared.length,
+            { type: declared, nameStart, nameLength: parameter.name.length, immutable: !!parameter.immutable });
           if (lastParameter) lastParameter.next = current; else item.items = current;
           lastParameter = current;
         }
@@ -283,7 +285,7 @@ rendered('approved spelling', [fn({ kind: 'Binary', operator: '+', left: named('
   { name: 'add', exported: true, parameters: [{ name: 'a', type: 'Int' }, { name: 'b', type: 'Int' }] }),
 fn(letIn([local('value', { kind: 'Call', left: named('add'), arguments: [integer(20), integer(22)] }, { type: 'Int' })], named('value'), { bare: true }))]);
 for (const tag of types) for (const exported of [false, true]) {
-  rendered(`function ${tag} ${exported}`, [fn(integer(0), { type: tag, exported, parameters: [{ name: 'p', type: tag }] })]);
+  for (const immutable of [false, true]) rendered(`function ${tag} ${exported} ${immutable}`, [fn(integer(0), { type: tag, exported, parameters: [{ name: 'p', type: tag, immutable }] })]);
   rendered(`constant ${tag} ${exported}`, [constant({ type: tag, exported })]);
 }
 for (const tag of [null, ...types]) for (const mutable of [false, true]) rendered(`local ${tag} ${mutable}`, [
@@ -325,7 +327,7 @@ for (const [tail, error, marker, nested] of [
   ['int f(x:int){}', 'ExpectedName', ':'], ['int f(int){}', 'ExpectedName', ')'],
   ['int f(int x,){}', 'Expression', ')', { expression: 'ExpectedType' }],
   ['int f(int x int y){}', 'ExpectedClose', 'int y'], ['int f(int x[2]){}', 'ExpectedClose', '['],
-  ['int f(const int x){}', 'Expression', 'const', { expression: 'ExpectedType' }],
+  ['int f(const const int x){}', 'Expression', 'const int', { expression: 'ExpectedType' }],
   ['pkg:: f(){}', 'ExpectedName', '('], ['pkg.T f(){}', 'ExpectedName', '.'],
   ['int ns::f(){}', 'ExpectedOpen', '::'], ['int f(){};', 'ExpectedName', ';'],
 ]) bad(`module m; ${tail}`, error, marker, nested);
@@ -714,6 +716,60 @@ rendered('deep namespace permits empty C function block', inNamespaces(47, [fn(b
 const namespaceBlockOverflow = rendered('namespace/C block depth overflow', inNamespaces(48, [fn(block([]))])); fixtures.pop();
 bad(namespaceBlockOverflow.input, 'Statement', '{', { statement: 'TooDeep', expression: 'TooDeep' });
 
+rendered('const parameters retain independent flags and C type spelling', [alias('Int'), namespace('n', [fn(block([
+  cLocal('Int', 'copy', letIn([local('x', named('left'))], named('x'))),
+  ret(conditional(truth, named('copy'), named('right'))),
+]), { name: 'choose', type: 'Named', typeName: 'Count', exported: true, parameters: [
+  { name: 'left', type: 'Named', typeName: 'Count', immutable: true },
+  { name: 'right', type: 'Named', typeName: 'pkg::Count' },
+  { name: 'ready', type: 'Bool', immutable: true },
+] })])]);
+rendered('parameter const is syntax, not checking or overload identity', [fn(block([
+  cExpression({ kind: 'Assign', operator: '=', left: named('p'), right: integer(1) }),
+  cExpression(increment('p')), ret(named('p')),
+]), { parameters: [{ name: 'p', type: 'Int', immutable: true }] }),
+fn(named('p'), { parameters: [{ name: 'p', type: 'Int' }] })]);
+for (const name of ['constructor', '__proto__', 'constant', 'constx']) rendered(`const parameter identifier ${name}`, [fn(named(name), {
+  parameters: [{ name, type: 'Int', immutable: true }],
+})]);
+for (const gap of ['\n', '\r', '\t', '/*gap*/', '//gap\n']) rendered(`const parameter trivia ${JSON.stringify(gap)}`, [
+  constant({ type: 'String', body: { kind: 'Text', text: 'before\0\xff' } }), namespace('outer', [
+    fn({ kind: 'Text', text: 'inside\0\x80' }, { type: 'String', exported: true, parameters: [
+      { name: 'p', type: 'Named', typeName: 'pkg::T', immutable: true }, { name: 'q', type: 'Int' },
+    ] }),
+  ]), fn({ kind: 'Text', text: 'after\xff' }, { type: 'String', parameters: [{ name: 'p', type: 'Bool' }] }),
+], { gap, leading: '\n/*lead*/', trailing: '\n//end' });
+for (const [tail, error, marker, nested] of [
+  ['int f(const){}', 'Expression', ')', { expression: 'ExpectedType' }],
+  ['int f(const int){}', 'ExpectedName', ')', {}], ['int f(int const p){}', 'ExpectedName', 'const', {}],
+  ['int f(const int const p){}', 'ExpectedName', 'const p', {}],
+  ['int f(const p:int){}', 'ExpectedName', ':', {}],
+  ['int f(const int p=1){}', 'ExpectedClose', '=', {}],
+  ['int f(const int p[2]){}', 'ExpectedClose', '[', {}],
+  ['int f(const int p,){}', 'Expression', ')', { expression: 'ExpectedType' }],
+  ['int f(const const int p){}', 'Expression', 'const int', { expression: 'ExpectedType' }],
+  ['int f(const ns::){}', 'Expression', ')', { expression: 'ExpectedName' }],
+  ['int f(const int p,int){}', 'ExpectedName', ')', {}],
+  ['int f(){return "kept";} int g(const @ p){}', 'Expression', '@', { expression: 'Lexical', lexical: 'UnsupportedCharacter' }],
+]) bad(`module m; ${tail}`, error, marker, nested);
+rendered('const parameter declaration arena', [fn(integer(0), { parameters: Array.from({ length: 1022 }, () => ({ name: 'p', type: 'Int', immutable: true })) })], { passes: 1 });
+const constParameterOverflow = rendered('const parameter declaration overflow', [fn(integer(0), { parameters: Array.from({ length: 1023 }, () => ({ name: 'p', type: 'Int', immutable: true })) })]); fixtures.pop();
+bad(constParameterOverflow.input, 'TooManyNodes', 'const int p'); fixtures.at(-1).passes = 1;
+rendered('const qualified parameter expression arena', [fn(block([]), { parameters: [{ name: 'p', type: 'Named', typeName: Array(2046).fill('T').join('::'), immutable: true }] })]);
+const constTypeOverflow = rendered('const parameter type arena overflow', [fn(block([]), { parameters: [{ name: 'p', type: 'Named', typeName: Array(2047).fill('T').join('::'), immutable: true }] })]); fixtures.pop();
+bad(constTypeOverflow.input, 'Expression', constTypeOverflow.tree.items.items.type.start, { expression: 'TooManyNodes' });
+rendered('const parameter type shares earlier body arena', [fn({ kind: 'Chain', count: 2043 }), fn(block([]), { parameters: [{ name: 'p', type: 'Named', typeName: 'T', immutable: true }] })]);
+const constAfterBodyOverflow = rendered('const parameter type after body overflow', [fn({ kind: 'Chain', count: 2043 }), fn(block([]), { parameters: [{ name: 'p', type: 'Named', typeName: 'ns::T', immutable: true }] })]); fixtures.pop();
+bad(constAfterBodyOverflow.input, 'Expression', 'ns::T', { expression: 'TooManyNodes' });
+rendered('body shares earlier const parameter type arena', [fn(block([]), { parameters: [{ name: 'p', type: 'Named', typeName: 'T', immutable: true }] }), fn({ kind: 'Chain', count: 2043 })]);
+const bodyAfterConstOverflow = rendered('body after const parameter type overflow', [fn(block([]), { parameters: [{ name: 'p', type: 'Named', typeName: 'ns::T', immutable: true }] }), fn({ kind: 'Chain', count: 2043 })]); fixtures.pop();
+bad(bodyAfterConstOverflow.input, 'Statement', '++', { statement: 'Expression', expression: 'TooManyNodes' });
+rendered('const parameters add no namespace or syntax depth', inNamespaces(47, [fn(block([]), { parameters: [{ name: 'p', type: 'Named', typeName: 'pkg::T', immutable: true }] })]));
+rendered('const parameters preserve shared function and record limits', [namespace('n', [alias(),
+  ...Array.from({ length: 256 }, (_, i) => record([], { name: `R${i}` })),
+  ...Array.from({ length: 256 }, (_, i) => fn(integer(0), { name: `f${i}`, parameters: [{ name: 'p', type: 'Int', immutable: true }] })),
+])], { passes: 1 });
+
 let state = 0x4e495842;
 function random(n) { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return Math.floor(state / 0x100000000 * n); }
 function generated(depth) {
@@ -761,6 +817,14 @@ for (let n = 0; n < 32; n++) rendered(`generated C body ${n}`, [namespace('n', [
     { kind: 'Default', children: [cExpression(generatedConditional(2))] }] },
   ret(generatedConditional(2)),
 ]), { exported: !!random(2) })])]);
+const constGeneratedStart = fixtures.length;
+for (let n = 0; n < 32; n++) rendered(`generated const parameter ${n}`, [namespace('n', [fn(block([
+  cLocal('Int', 'copy', generatedConditional(2), { immutable: !!random(2) }), ret(generatedConditional(2)),
+]), { exported: !!random(2), parameters: [
+  { name: 'a', type: types[n % types.length], immutable: true },
+  { name: 'b', type: types[(n + 1) % types.length] },
+  { name: 'c', type: 'Named', typeName: 'pkg::T', immutable: !!random(2) },
+] })]), constant()]);
 function flatten(roots, links) {
   const nodes = [], ids = new Map(), pending = [...roots].reverse();
   while (pending.length) { const node = pending.pop(); if (!node || ids.has(node)) continue;
@@ -805,6 +869,11 @@ for (const kind of ['Block', 'Return', 'Declaration', 'Expression', 'Empty', 'If
 }
 for (const type of types) assert.ok(generatedStatements.some(n => n.declaredType === type), `generated C local ${type}`);
 for (const immutable of [false, true]) assert.ok(generatedStatements.some(n => n.kind === 'Declaration' && n.immutable === immutable), `generated C const ${immutable}`);
+const generatedConstNodes = fixtures.slice(constGeneratedStart).flatMap(f => arenas(f.tree).d.nodes);
+for (const type of types.keys()) for (const immutable of [false, true]) {
+  assert.ok(generatedConstNodes.some(n => n.kind === 'Parameter' && n.type.value === type + 1 && n.immutable === immutable), `parameter type ${type + 1} const ${immutable}`);
+}
+assert.ok(generatedConstNodes.filter(n => n.kind !== 'Parameter').every(n => !n.immutable), 'only parameter nodes use declaration immutable flag');
 
 const helpers = `
 static int dids[parser::max_nodes]; static bool dseen[parser::max_nodes];
@@ -812,10 +881,10 @@ static int hids[headers::max_nodes]; static bool hseen[headers::max_nodes];
 static int sids[statements::max_nodes]; static bool sseen[statements::max_nodes];
 static int eids[expressions::max_nodes]; static bool eseen[expressions::max_nodes];
 bool load(string input){lexer::reset();for(int i=0;i<input.length;i++)if(!lexer::append(input[i]))return false;return true;}
-bool invalid(int id){parser::Node n=parser::node(id);return n.kind==parser::kind::Invalid&&n.start==0&&n.length==0&&n.line==0&&n.column==0&&n.name_start==0&&n.name_length==0&&!n.exported&&n.header==-1&&n.type==-1&&n.items==-1&&n.body==-1&&n.next==-1;}
-bool check_d(int index,int kind,int start,int length,int line,int column,int ns,int nl,bool exported,int header,int type,int items,int body,int next){
+bool invalid(int id){parser::Node n=parser::node(id);return n.kind==parser::kind::Invalid&&n.start==0&&n.length==0&&n.line==0&&n.column==0&&n.name_start==0&&n.name_length==0&&!n.exported&&n.header==-1&&n.type==-1&&n.items==-1&&n.body==-1&&n.next==-1&&!n.immutable;}
+bool check_d(int index,int kind,int start,int length,int line,int column,int ns,int nl,bool exported,int header,int type,int items,int body,int next,bool immutable){
  int id=dids[index];if(id<0||id>=parser::node_count()||dseen[id])return false;dseen[id]=true;parser::Node n=parser::node(id);
- if(n.kind!=kind||n.start!=start||n.length!=length||n.line!=line||n.column!=column||n.name_start!=ns||n.name_length!=nl||n.exported!=exported)return false;
+  if(n.kind!=kind||n.start!=start||n.length!=length||n.line!=line||n.column!=column||n.name_start!=ns||n.name_length!=nl||n.exported!=exported||n.immutable!=immutable)return false;
  if(header==-1){if(n.header!=-1)return false;}else hids[header]=n.header;
  if(type==-1){if(n.type!=-1)return false;}else eids[type]=n.type;
  if(items==-1){if(n.items!=-1)return false;}else dids[items]=n.items;
@@ -871,7 +940,7 @@ function runBatch(batch) {
           const at = position(fixture.input, node.start), prefix = `${id},${{ d: 'parser', h: 'headers', s: 'statements', e: 'expressions' }[arena]}::kind::${node.kind}`;
           const metadata = `${node.start},${node.length},${at.line},${at.column}`;
           let args;
-          if (arena === 'd') args = `${prefix},${metadata},${node.nameStart},${node.nameLength},${node.exported},${ref('h', node.header)},${ref('e', node.type)},${ref('d', node.items)},${ref(node.kind === 'Function' ? 's' : 'e', node.body)},${ref('d', node.next)}`;
+          if (arena === 'd') args = `${prefix},${metadata},${node.nameStart},${node.nameLength},${node.exported},${ref('h', node.header)},${ref('e', node.type)},${ref('d', node.items)},${ref(node.kind === 'Function' ? 's' : 'e', node.body)},${ref('d', node.next)},${node.immutable}`;
           if (arena === 'h') args = `${prefix},${metadata},${[node.path, node.alias, node.items, node.next].map(n => ref('h', n)).join(',')}`;
           if (arena === 'e') args = `${prefix},expressions::op::${node.op},${metadata},${node.value},${quote(node.text)},${[node.left, node.right, node.next].map(n => ref('e', n)).join(',')}`;
           if (arena === 's') args = `${prefix},${metadata},${[node.expression, node.init, node.condition, node.step].map(n => ref('e', n)).join(',')},${[node.body, node.other, node.next].map(n => ref('s', n)).join(',')},statements::type_kind::${node.declaredType},${ref('e', node.typeName)},${node.nameStart},${node.nameLength},${node.immutable},${ref('e', node.array)},${ref('s', node.declaration)}`;
@@ -939,12 +1008,16 @@ for (const [input, status, error] of [
   ['module m;n=namespace{Count=alias int;};n=namespace{Count=alias n::Count;};', 0, ''],
   ['', 65, 'binding:1:1: error: source must begin with a module declaration\n'],
   ['module m; int main(){}', 0, ''],
+  ['module m; pub int read(const int value){return let saved=value;in saved;}', 0, ''],
+  ['module m; int f(const int p){p++;return p;}', 0, ''],
   driverBad('module m; f=():int=>0;', '(', "expected record, alias or namespace after binding '='"),
   driverBad('module m; int f(){return let x=1 in x;}', 'in x', "expected ';' after local binding"),
   driverBad('module m; int f(){return let in @;}', '@', 'unsupported character in Stage 0 source'),
   driverBad('module m; int f(){return if true 1 else 0;}', '1 else', "expected 'then' after condition"),
   driverBad('module m; int f(){return if true then 1;}', ';}', "expected 'else' after conditional branch"),
   driverBad('module m; int f(){int x;}', ';}', 'local scalar declarations require an initializer'),
+  driverBad('module m; int f(const const int p){}', 'const int', 'expected primitive or qualified type'),
+  driverBad('module m; int f(const int){}', ')', 'expected binding or parameter name'),
   ['module m; n=namespace{', 65, "binding:1:23: error: expected '}' after namespace declarations\n"],
   ['module m; pub n=namespace{};', 65, 'binding:1:11: error: namespace bindings cannot use pub; export their members individually\n'],
   [Buffer.concat([Buffer.from('module m;'), Buffer.alloc(65526, 32)]), 0, ''],

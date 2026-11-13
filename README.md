@@ -32,7 +32,7 @@ Stage 1 grammar with enum/struct declarations.
 ```text
 module app.main;
 
-pub int add(int a, int b) { return a + b; }
+pub int add(const int a, const int b) { return a + b; }
 int main() {
   int value = add(20, 22);
   return let bonus = 0; in value + bonus;
@@ -49,6 +49,9 @@ C locals are mutable by default; `const` records readonly intent. Within `let`,
 plain bindings remain immutable, `var` marks mutability, and types may be omitted.
 The intended semantics remain eager/sequential, not Nix laziness, currying or
 recursive attribute scopes. The parser does not yet enforce semantic rules.
+Parameters may use leading `const`, as in `const int value`, to record readonly
+intent for the parameter. This does not create a new type or overload signature;
+the parser does not enforce readonly writes or resolve signature identity.
 
 Conditional expressions use the approved `if condition then value else value`
 spelling, with a mandatory `else`, anywhere an expression is accepted:
@@ -113,7 +116,7 @@ scope merging, lookup and duplicate checking are deferred. Export members with
 their own `pub`; `pub` on a namespace is rejected and visibility is not inherited.
 
 The new driver rejects the superseded arrow-function form. It is a C-like subset,
-not full C: pointer/variadic signatures, prototypes/externs, const parameters and
+not full C: pointer/variadic signatures, prototypes/externs and
 implicit uninitialized scalar locals are not added. Stage 0 and the legacy
 Stage 1 drivers remain temporary bootstrap scaffolding while the replacement is
 incomplete, not a permanent second user grammar. Static storage and enum
