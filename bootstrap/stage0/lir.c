@@ -60,6 +60,12 @@ static Opcode binary_op(int op) {
 static uint32_t lower_expr(Lower *l, Expr *e) {
     uint32_t a, b, r;
     switch (e->kind) {
+    case EX_LET:
+        for (Decl *d = e->bindings; d; d = d->next) {
+            a = lower_expr(l, d->value);
+            emit(l, d->name, OP_STORE, d->slot, a, 0, 0);
+        }
+        return lower_expr(l, e->right);
     case EX_INT: case EX_BOOL: case EX_STRING: return constant(l, e->token, e->type, (int32_t)e->integer);
     case EX_LENGTH:
         a = lower_expr(l, e->left); r = reg(l, TY_INT);

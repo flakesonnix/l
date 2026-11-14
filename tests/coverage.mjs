@@ -21,6 +21,7 @@ for (let i = 0; i < sources.length; ++i) {
 invoke(cc, ['--coverage', ...objects, 'tests/entry.c', '-o', resolve(directory, 'l')]);
 invoke('sh', ['tests/run.sh', resolve(directory, 'l')]);
 invoke('node', ['tests/modules.mjs', resolve(directory, 'l')]);
+invoke('node', ['tests/replacement.mjs', resolve(directory, 'l')]);
 invoke('node', ['tests/stage1.mjs', resolve(directory, 'l')]);
 invoke('node', ['tests/stage1-expressions.mjs', resolve(directory, 'l')]);
 invoke('node', ['tests/stage1-statements.mjs', resolve(directory, 'l')]);

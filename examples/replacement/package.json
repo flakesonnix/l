@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "package": "replacement_examples",
+  "module_roots": [
+    {"package": "replacement_examples", "prefix": "app", "path": "."}
+  ],
+  "dependencies": []
+}

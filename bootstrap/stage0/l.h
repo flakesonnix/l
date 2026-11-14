@@ -59,7 +59,7 @@ enum {
     TK_MODULE, TK_EQ, TK_NE, TK_LE, TK_GE, TK_AND, TK_OR, TK_INC, TK_DEC,
     TK_BREAK, TK_CONTINUE, TK_SWITCH, TK_CASE, TK_DEFAULT,
     TK_IMPORT, TK_AS, TK_PUB, TK_NAMESPACE, TK_SCOPE, TK_STATIC, TK_USING, TK_STRUCT, TK_ENUM, TK_BYTE,
-    TK_STRING, TK_EXTERN, TK_TEXT
+    TK_STRING, TK_EXTERN, TK_TEXT, TK_LET, TK_IN, TK_VAR
 };
 
 typedef struct Expr Expr;
@@ -79,7 +79,7 @@ typedef struct Field Field;
 typedef struct Enum Enum;
 struct ExprList { Expr *value; ExprList *next; };
 struct SwitchCase { Token token; int32_t value; bool is_default; Expr *expr; Stmt *body; SwitchCase *next; };
-typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX, EX_GLOBAL, EX_STRUCT, EX_FIELD, EX_CONVERT, EX_STRING, EX_LENGTH, EX_STRING_INDEX } ExprKind;
+typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX, EX_GLOBAL, EX_STRUCT, EX_FIELD, EX_CONVERT, EX_STRING, EX_LENGTH, EX_STRING_INDEX, EX_LET } ExprKind;
 struct Expr {
     ExprKind kind;
     Token token;
@@ -91,6 +91,7 @@ struct Expr {
     Expr *left, *right;
     ExprList *args;
     Global *global;
+    Decl *bindings; /* EX_LET owns sequential declarations; right is its body. */
 };
 struct Decl { Token name, type_name; Type type; bool immutable; uint32_t slot; uint32_t array; Expr *value, *length; Decl *next; };
 typedef enum { IN_NONE, IN_READ_BYTE, IN_WRITE_BYTE, IN_WRITE_STRING, IN_WRITE_ERROR } Intrinsic;

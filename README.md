@@ -9,10 +9,11 @@ GitHub review order and merge instructions: [review guide](docs/REVIEWING.md).
 
 ## Source syntax status
 
-Stage 0 compilation, the L-written compiler sources and executable examples use
-**legacy bootstrap syntax**, the C-like grammar documented below. These examples remain
-runnable. A separate syntax-only Stage 1 driver now accepts the first approved
-replacement slice; the source compiler does not yet compile that syntax.
+The compiler now executes a **first approved replacement-syntax subset** through
+the existing Stage 0 pipeline: C-style typed functions, locals and expressions,
+plus eager, scoped `let/in` with immutable bindings and explicit `var`.
+Legacy bootstrap implementation sources and examples still compile. The separate
+L-written Stage 1 frontend accepts a broader replacement grammar as syntax only.
 
 The approved direction is a **typed hybrid: C-style functions and control flow,
 with selected Nix-inspired features** such as `let/in` and name-first bindings.
@@ -27,12 +28,57 @@ evaluation, dynamic typing and implicit module discovery are not part of the
 change. IR/bytecode remains **1.9**. Syntax replacement takes precedence over expanding the legacy
 Stage 1 grammar with enum/struct declarations.
 
-### Replacement-parser slices
+### First executable replacement subset
+
+[`examples/replacement/answer.l`](examples/replacement/answer.l) is executable:
+
+```sh
+make
+./build/l check examples/replacement/answer.l --manifest examples/replacement/package.json
+./build/l compile examples/replacement/answer.l --manifest examples/replacement/package.json -o build/answer.lbc
+./build/l run build/answer.lbc                   # Exit code 42
+```
+
+Source commands retain an **explicit manifest**; no package or module roots are
+implicitly discovered. The example declares `module app.answer;` because the
+manifest maps `app` to its directory and the file is `answer.l`. The acceptance
+program below is also tested in a correctly mapped `main.l` fixture.
+
+The path is source → existing C lexer/parser → owned AST → semantic analysis →
+existing LIR → verified **bytecode 1.9** → existing VM. This extends the bootstrap
+frontend rather than adding a second compiler, AST serialization protocol or
+runtime. It does **not** connect the L-written Stage 1 arenas to the backend or
+claim self-hosting.
+
+Executable features include modules, `pub`, `int`/`bool` signatures and parameters,
+initialized C locals, `const` parameters/locals, arithmetic/comparisons, boolean
+operators, direct calls, explicit returns and nested `let/in`. Existing name,
+type, call, visibility and entry-point checks apply before bytecode is written.
+
+- `let name[: Type] = expression; ... in body` opens a lexical scope. Bindings are
+  immutable unless prefixed by `var`; types are inferred when omitted.
+- Initializers execute exactly once, eagerly in written order, including unused
+  bindings. Each sees outer and earlier bindings, **not itself or later bindings**.
+  A shadowing initializer can therefore read the outer binding of the same name.
+- The body sees all bindings. Nothing declared by the `let` escapes its scope;
+  duplicate names within one `let` are errors. Empty `let in body` is allowed.
+- This first executable slice restricts `let` bindings and results to `int`/`bool`.
+  It rejects `let` in compile-time constant contexts. Short-circuit operators still
+  skip their right operand, but skipped/unreachable source is type-checked.
+- `let`, `in` and `var` are now reserved by the source compiler. Parentheses delimit
+  a `let` when an operator should apply outside its full body expression. Existing
+  256-level compiler nesting, per-function slot and VM resource limits remain.
+
+Name-first file constants, conditional expressions, named records, enum/alias/
+namespace replacement spellings remain **syntax-only** in Stage 1. Their existing
+legacy Stage 0 forms are not migrated or removed by this milestone.
+
+### Broader syntax-only replacement-parser slices
 
 ```text
 module app.main;
 
-pub int add(const int a, const int b) { return a + b; }
+pub int add(int a, int b) { return a + b; }
 int main() {
   int value = add(20, 22);
   return let bonus = 0; in value + bonus;
@@ -47,8 +93,9 @@ driver checks syntax without running input. Name-first top-level constants
 `switch`, `break`, `continue`, explicit `return` and initialized local declarations.
 C locals are mutable by default; `const` records readonly intent. Within `let`,
 plain bindings remain immutable, `var` marks mutability, and types may be omitted.
-The intended semantics remain eager/sequential, not Nix laziness, currying or
-recursive attribute scopes. The parser does not yet enforce semantic rules.
+The executable subset above enforces eager/sequential semantics, not Nix laziness,
+currying or recursive attribute scopes. This standalone parser does not enforce
+semantic rules.
 Parameters may use leading `const`, as in `const int value`, to record readonly
 intent for the parameter. This does not create a new type or overload signature;
 the parser does not enforce readonly writes or resolve signature identity.
@@ -194,8 +241,9 @@ drivers, compiled and executed by Stage 0. The implementation sources still use
 legacy bootstrap syntax. Legacy function files support definitions,
 `extern` declarations, `using` aliases, module constants, scalar/static-array
 storage and nested/reopened namespaces; struct/enum declarations remain unimplemented.
-There is **no semantic checker, code generator or self-hosted compiler** yet.
-These drivers do not check types, resolve names or evaluate the input.
+There is **no L-written semantic checker, code generator or self-hosted compiler**
+yet. These drivers do not check types, resolve names or evaluate the input; the
+executable replacement subset instead uses Stage 0's existing C pipeline.
 
 ```sh
 make stage1
@@ -238,14 +286,15 @@ their bodies; reopening and type aliases are recorded syntactically, not resolve
 Global initializers and static-array lengths are expression nodes, never evaluated;
 the parser does not allocate or initialize the input's storage.
 **100% coverage gate still measures Stage 0 C code**, not L-source coverage. These
-legacy slices do not change the Stage 0 source grammar. The replacement driver is
-syntax-only too; artifacts remain at **1.9**.
+legacy parser slices do not implement compilation. The replacement driver remains
+syntax-only too, even though Stage 0 now executes the bounded subset described
+above; artifacts remain at **1.9**.
 
 ## Supported subset
 
-This section describes the implemented Stage 0 subset in legacy bootstrap syntax,
-not the unimplemented replacement grammar. Stage 1's syntax-only subset is listed
-separately above.
+This section describes Stage 0's bootstrap subset, now extended with executable
+`let/in`. It is not the full replacement grammar. Stage 1's broader syntax-only
+subset is listed separately above.
 
 - ASCII identifiers, decimal literals, `//` and `/* … */` comments.
 - Mandatory `module a.b;`, one file per module, explicitly configured source roots.
@@ -272,6 +321,8 @@ separately above.
 - Explicitly imported `std.io` byte input, byte/string stdout and string stderr,
   backed by four fixed `pub extern` VM intrinsics.
 - Initialized local variables, `const`, lexical scopes and shadowing.
+- Eager/sequential `let/in` expressions with inferred/annotated `int`/`bool`
+  bindings, lexical shadowing and explicit mutable `var`.
 - Fixed local `int`/`bool`/`byte` arrays: `int values[10];`, indexing and element
   assignment with runtime bounds checks; lengths may be compile-time expressions.
 - Direct calls, forward function references, recursion and value parameters.
