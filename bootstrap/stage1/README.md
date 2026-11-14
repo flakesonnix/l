@@ -25,8 +25,8 @@ breaking source migration, not
 a permanent dual grammar. The remaining grammar, semantic checker and complete
 executable-source migration are not implemented in these L-written modules.
 The actual CLI now executes a first `int`/`bool`, C-function/local and eager
-`let/in` subset by extending the existing C frontend and reusing its semantic
-analyzer, LIR, bytecode backend and VM. See the
+`let/in` and conditional-expression subset by extending the existing C frontend
+and reusing its semantic analyzer, LIR, bytecode backend and VM. See the
 [executable contract](../../README.md#first-executable-replacement-subset).
 This does not turn `binding_main.l` into an executable compiler: it still checks
 syntax only and returns 0 rather than running the supplied program.

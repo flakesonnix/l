@@ -11,7 +11,8 @@ GitHub review order and merge instructions: [review guide](docs/REVIEWING.md).
 
 The compiler now executes a **first approved replacement-syntax subset** through
 the existing Stage 0 pipeline: C-style typed functions, locals and expressions,
-plus eager, scoped `let/in` with immutable bindings and explicit `var`.
+plus eager, scoped `let/in` with immutable bindings and explicit `var`, and typed
+`if … then … else …` conditional expressions.
 Legacy bootstrap implementation sources and examples still compile. The separate
 L-written Stage 1 frontend accepts a broader replacement grammar as syntax only.
 
@@ -52,8 +53,9 @@ claim self-hosting.
 
 Executable features include modules, `pub`, `int`/`bool` signatures and parameters,
 initialized C locals, `const` parameters/locals, arithmetic/comparisons, boolean
-operators, direct calls, explicit returns and nested `let/in`. Existing name,
-type, call, visibility and entry-point checks apply before bytecode is written.
+operators, direct calls, explicit returns, nested `let/in` and conditional
+expressions. Existing name, type, call, visibility and entry-point checks apply
+before bytecode is written.
 
 - `let name[: Type] = expression; ... in body` opens a lexical scope. Bindings are
   immutable unless prefixed by `var`; types are inferred when omitted.
@@ -65,13 +67,27 @@ type, call, visibility and entry-point checks apply before bytecode is written.
 - This first executable slice restricts `let` bindings and results to `int`/`bool`.
   It rejects `let` in compile-time constant contexts. Short-circuit operators still
   skip their right operand, but skipped/unreachable source is type-checked.
-- `let`, `in` and `var` are now reserved by the source compiler. Parentheses delimit
-  a `let` when an operator should apply outside its full body expression. Existing
+- `if condition then value else value` requires a bool condition and matching
+  int/bool alternative types. The condition executes once and only the selected
+  alternative executes; both are parsed and type-checked, even for a literal
+  condition. Branch-local `let` names do not escape to the other branch or beyond
+  the expression. Conditional expressions are runtime-only, not compile-time
+  constant expressions in this slice.
+- `let`, `in`, `var` and `then` are now reserved by the source compiler. Parentheses
+  delimit a `let` when an operator should apply outside its full body expression. Existing
   256-level compiler nesting, per-function slot and VM resource limits remain.
 
-Name-first file constants, conditional expressions, named records, enum/alias/
+Name-first file constants, named records, enum/alias/
 namespace replacement spellings remain **syntax-only** in Stage 1. Their existing
 legacy Stage 0 forms are not migrated or removed by this milestone.
+
+[`examples/replacement/choose.l`](examples/replacement/choose.l) exercises a
+conditional with a nested `let` and an unselected division-by-zero branch:
+
+```sh
+./build/l compile examples/replacement/choose.l --manifest examples/replacement/package.json -o build/choose.lbc
+./build/l run build/choose.lbc                   # Exit code 42, no trap
+```
 
 ### Broader syntax-only replacement-parser slices
 
@@ -109,9 +125,10 @@ int choose(bool ready) { return if ready then 42 else 0; }
 ```
 
 They can nest in conditions, either branch, calls and `let` initializers. The
-intended runtime semantics evaluate the condition once and only the selected
-branch; both branches must still parse. This driver does not check condition or
-branch types, select a branch, or execute either branch. Parentheses delimit a
+executable C frontend enforces bool conditions, matching int/bool results and
+selected-branch evaluation as described above. The standalone Stage 1 driver
+still does not check condition or branch types, select a branch, or execute
+either branch. Parentheses delimit a
 conditional when an operator should apply outside its full `else` expression.
 C statement `if (condition) statement else statement` is separate and may omit
 `else`. At statement start, `if` selects that C form; parenthesize a Nix conditional

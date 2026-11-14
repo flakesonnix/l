@@ -12,7 +12,8 @@ arrow-function proposal. Syntax-only bindings, C bodies, conditional expressions
 records, enums, structs, aliases, namespaces, C-style `const` parameters and
 static/extern declarations are implemented, but the full grammar and executable
 source migration are not complete. The CLI now executes the first `int`/`bool`
-function/local and eager `let/in` subset via the existing C pipeline. See
+function/local, eager `let/in` and selected-branch conditional subset via the
+existing C pipeline. See
 [source syntax status](../README.md#source-syntax-status). Static typing, eager
 left-to-right evaluation, explicit module semantics and IR/bytecode **1.9** remain
 unchanged. Source compilation extends the bootstrap grammar with that bounded
@@ -66,7 +67,8 @@ explicit resource-limit expectations.
 `tests/replacement.mjs` checks actual CLI semantics, deterministic bytecode 1.9,
 source/serialized execution agreement, scopes, diagnostics, visibility and
 transactional rejection. `tests/fuzz.c` adds independent full-width lexical-cell
-and expression models, plus repeated execution after traps and cleanup. These
+and expression models, including independent selected-branch state/trap models,
+plus repeated execution after traps and cleanup. These
 are compiler/VM tests, not evidence of L-source coverage or self-hosting.
 
 ## Nix workflow
@@ -140,6 +142,7 @@ bytes, including NUL and values above 127; they do not perform text conversion.
 | Syntax-only Stage 1 frontend | 1.9 | Provisional in-memory ASTs; no serialized AST format. |
 | Replacement function/binding parser | 1.9 | Syntax-only migration slice; Stage 0 source compilation remains legacy. |
 | First executable replacement subset | 1.9 | C frontend adds scoped `let/in` and reserves `let`, `in`, `var`; existing backend/VM reused. |
+| Executable conditional expressions | 1.9 | Bool conditions, matching int/bool results and selected-branch execution; `then` becomes reserved. |
 
 The loader accepts only the current exact version, including for programs that do
 not use the new feature. The C observer API and its callback contract are described

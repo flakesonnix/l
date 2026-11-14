@@ -142,7 +142,8 @@ declarations as syntax-only migration slices through #28; bootstrap implementati
 sources retain legacy syntax.
 
 The subsequent executable milestone extends the existing C frontend with bounded
-`int`/`bool` `let/in`, reusing its semantic analysis, LIR, verified bytecode 1.9
+`int`/`bool` `let/in` and typed selected-branch conditional expressions, reusing its
+semantic analysis, LIR, verified bytecode 1.9
 and VM. It does not make the L-written parsers executable compilers or migrate
 all replacement declarations. Source commands still require explicit manifests.
 Review this compiler change separately from the historical syntax-only PRs above.

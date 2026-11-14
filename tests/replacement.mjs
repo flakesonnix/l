@@ -108,6 +108,37 @@ program('int main(){return let unused=2147483647+1;x=1/0;in 42;}', 70, {}, /inte
 program('int main(){return let var x=2147483647;in x++;}', 70, {}, /integer overflow/);
 program('int main(){return let x=0;in let y=42;in y/x;}', 70, {}, /division by zero/);
 
+// Conditional results use real control flow: only the selected branch executes.
+program('int main(){return if true then 42 else 1/0;}');
+program('int main(){return if false then 1/0 else 42;}');
+program('int main(){return if true then if false then 0 else 42 else 1/0;}');
+program('int main(){return if false then 1/0 else if true then 42 else 0;}');
+program('int main(){return if if true then false else true then 0 else 42;}');
+program('int main(){return 1+if true then 41 else 0;}');
+program('int main(){return (if false then 0 else 20)+22;}');
+program('int main(){return if true then 40 else 0+2;}', 40);
+program('int main(){return if false then 0 else 40+2;}');
+program('int main(){return let x=if true then 40 else 0;in x+2;}');
+program('int main(){return if true then let x=40;in x+2 else let x=0;in x;}');
+program('int main(){int n=0;return if (n=n+1)==1 then n+41 else 0;}');
+program('int main(){int n=0;int value=if n++==0 then n++ else 1/0;return value+n+39;}');
+program('int main(){int n=0;int value=if n++!=0 then 1/0 else n++;return value+n+39;}');
+program('int main(){int x=0;return if let n=x++;in n==0 then x+41 else 0;}');
+program('bool choose(bool active){return if active then true else false;}int main(){if(choose(true))return 42;return 0;}');
+program('int f(int value){return value;}int f(bool value){if(value)return 42;return 0;}int main(){return f(if true then true else false);}');
+program('int f(int a,int b){return a*10+b;}int main(){int n=3;return f(if n++==3 then n else 0,n)+(-2);}');
+program('int main(){int n=0;(if true then n=42 else n=1);return n;}');
+program('int main(){bool active=if true then true else false;bool value=active&&(if false then false else true);if(value)return 42;return 0;}');
+program('int main(){int n=0;bool skip=false&&(if n++==0 then true else false);return n+42;}');
+program('int main(){int n=0;while(if n<2 then true else false){n++;}return n+40;}');
+program('int main(){int total=0;for(int i=0;if i<3 then true else false;i++){total=total+(if i==1 then 14 else 14);}return total;}');
+program('int main(){if(true){if(false)return 0;else return if true then 42 else 0;}return 0;}');
+program('int main(){return if true then -2147483648 else 2147483647;}', 0);
+program('int main(){return if false then -2147483648 else 2147483647;}', 255);
+program('int main(){return if true then 1/0 else 42;}', 70, {}, /division by zero/);
+program('int main(){return if false then 42 else 2147483647+1;}', 70, {}, /integer overflow/);
+program('int main(){return if 1/0==0 then 42 else 0;}', 70, {}, /division by zero/);
+
 const library = 'module app.math;int hidden(){return 40;}pub int add(const int a,int b){return let value=a+b;in value;}';
 program('import app.math as m;int main(){return let x=20;in m::add(x,22);}', 42, { 'math.l': library });
 program('import app.math::{add as sum};int main(){return let x=20;in sum(x,22);}', 42, { 'math.l': library });
@@ -172,10 +203,38 @@ for (const [body, message, marker] of [
   ['bool main(){return let in true;}', /entry point must have signature int main/],
   ['int f(){return let in 42;}', /missing entry point/],
   ['int main(){return 0;}int main(){return let in 42;}', /duplicate function signature/],
-  ['int main(){return if true then 42 else 0;}', /expected expression/],
+  ['int main(){return if true 42 else 0;}', /expected 'then' after conditional expression condition/],
   ['answer:int=42;int main(){return answer;}', /expected function name/],
   ['Point=record{x:int;};int main(){return 0;}', /expected function name/],
 ]) rejected(body, message, {}, marker);
+
+for (const [body, message, marker] of [
+  ['int main(){return if 1 then 42 else 0;}', /expected bool, got int/],
+  ['int main(){return if true then 42 else false;}', /expected int, got bool/, 'false'],
+  ['int main(){return if false then true else 42;}', /expected bool, got int/],
+  ['int main(){return if true then 42 else missing;}', /unknown local variable or constant/, 'missing'],
+  ['int main(){return if false then missing() else 42;}', /unknown function/],
+  ['int main(){const int n=0;return if true then 42 else n++;}', /cannot modify const binding/],
+  ['int main(){return if true then 42 else let n=0;in n=1;}', /cannot modify const binding/],
+  ['int f(int n){return n;}int main(){return if true then 42 else f(false);}', /no matching function overload/],
+  ['int main(){return if true then (let n=42;in n) else n;}', /unknown local variable or constant/],
+  ['int main(){int n=if true then (let x=1;in x) else 0;return x;}', /unknown local variable or constant/],
+  ['int main(){return if (let n=true;in n) then 42 else n;}', /unknown local variable or constant/],
+  ['int main(){return (if true then 1 else 0)=42;}', /assignment requires/],
+  ['int main(){return (if true then 1 else 0)++;}', /assignment requires/],
+  ['void f(){}int main(){(if true then f() else f());return 0;}', /conditional branches must have int or bool type/],
+  ['int main(){return if true then byte(1) else byte(2);}', /conditional branches must have int or bool type/],
+  ['int main(){return if true then "a" else "b";}', /conditional branches must have int or bool type/],
+  ['const int n=if true then 42 else 0;int main(){return n;}', /conditional is not a compile-time constant expression/],
+  ['int main(){int data[if true then 1 else 2];return 0;}', /conditional is not a compile-time constant expression/],
+  ['int main(){return if true then 42;}', /expected 'else' after conditional expression true branch/],
+  ['int main(){return if true then else 42;}', /expected expression/],
+  ['int main(){return if true then 42 else;}', /expected expression/],
+  ['int main(){if true then 42 else 0;return 0;}', /expected '\(' before condition/],
+  ['int main(){return if true then 42 else (1+);}', /expected expression/],
+  ['int main(){if(false){return if true then false else 1;}return 42;}', /expected bool, got int/],
+]) rejected(body, message, {}, marker);
+rejected('import app.math as m;int main(){return if true then 42 else m::hidden();}', /inaccessible symbol/, { 'math.l': library });
 
 // Keep the existing frontend and VM budgets, not Stage 1's separate syntax limits.
 const bindings = count => Array.from({ length: count }, (_, n) => `x${n}=${n};`).join('');
@@ -184,6 +243,10 @@ rejected(`int main(){return let ${bindings(1025)}in 42;}`, /too many local slots
 program(`int main(){return ${'let in '.repeat(253)}42;}`);
 rejected(`int main(){return ${'let in '.repeat(254)}42;}`, /nesting limit exceeded/);
 rejected(`int main(){return let x=1;in ${'1+'.repeat(300)}x;}`, /nesting limit exceeded/);
+program(`int main(){return ${'if true then '.repeat(253)}42${' else 0'.repeat(253)};}`);
+rejected(`int main(){return ${'if true then '.repeat(254)}42${' else 0'.repeat(254)};}`, /nesting limit exceeded/);
+program(`int main(){return let ${bindings(1023)}in if true then x1022 else 0;}`, 254);
+rejected(`int main(){return let ${bindings(1024)}in if true then 42 else 0;}`, /too many LIR slots/);
 
 const example = resolve(root, 'examples/replacement/answer.l');
 const manifest = resolve(root, 'examples/replacement/package.json');
@@ -191,5 +254,9 @@ command(0, ['check', example, '--manifest', manifest]);
 const exampleOutput = resolve(work, 'example.lbc');
 command(0, ['compile', example, '--manifest', manifest, '-o', exampleOutput]);
 command(42, ['run', exampleOutput]);
+const choose = resolve(root, 'examples/replacement/choose.l'), chooseOutput = resolve(work, 'choose.lbc');
+command(0, ['compile', choose, '--manifest', manifest, '-o', chooseOutput]);
+command(0, ['check', chooseOutput]);
+command(42, ['run', chooseOutput]);
 assert.match(command(65, ['check', example]).stderr, /requires an explicit --manifest/);
 console.log(`replacement execution: ${fixtures} fixtures, ${commands} CLI checks passed (bytecode 1.9)`);

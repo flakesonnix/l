@@ -330,6 +330,16 @@ static uint32_t intern_string(Semantic *s, Token token) {
 static Type analyze_expr(Semantic *s, Expr *e) {
     enter(s->ctx, e->token);
     switch (e->kind) {
+    case EX_CONDITIONAL: {
+        if (s->constant_expression) token_fail(s->ctx, e->token, "conditional is not a compile-time constant expression");
+        require(s, e->condition->token, analyze_expr(s, e->condition), TY_BOOL);
+        /* Both alternatives are checked, even when the condition is a literal. */
+        Type yes = analyze_expr(s, e->left), no = analyze_expr(s, e->right);
+        require(s, e->right->token, no, yes);
+        if (yes != TY_INT && yes != TY_BOOL)
+            token_fail(s->ctx, e->token, "conditional branches must have int or bool type");
+        e->type = yes; break;
+    }
     case EX_LET: {
         if (s->constant_expression) token_fail(s->ctx, e->token, "let is not a compile-time constant expression");
         Binding *saved = s->bindings;
