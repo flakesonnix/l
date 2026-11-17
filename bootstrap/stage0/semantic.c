@@ -712,6 +712,8 @@ void analyze(Context *ctx, Ast *ast) {
         Function scope = {.module = constant->module, .scope = constant->scope};
         Semantic s = {.ctx = ctx, .ast = ast, .fn = &scope};
         constant->type = resolve_type(&s, constant->type, constant->type_name, NULL);
+        if (constant->name_first && constant->type != TY_INT && constant->type != TY_BOOL)
+            token_fail(ctx, constant->name, "name-first constant type must be int or bool");
         if (constant->length && constant->type != TY_INT && constant->type != TY_BOOL && constant->type != TY_BYTE)
             token_fail(ctx, constant->name, "static array element type must be int, bool or byte");
         if (constant->type != TY_INT && constant->type != TY_BOOL && constant->type != TY_BYTE && constant->type != TY_STRING && !IS_ENUM(constant->type))

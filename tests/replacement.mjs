@@ -139,6 +139,39 @@ program('int main(){return if true then 1/0 else 42;}', 70, {}, /division by zer
 program('int main(){return if false then 42 else 2147483647+1;}', 70, {}, /integer overflow/);
 program('int main(){return if 1/0==0 then 42 else 0;}', 70, {}, /division by zero/);
 
+// File constants are checked/folded before lowering, never runtime initializers.
+const folded = program('pub answer:int=base+2;base:int=40;ready:bool=answer==42;int main(){return if ready then answer else 0;}');
+const foldedIR = spawnSync(compiler, ['inspect', folded.input, '--manifest', folded.manifest], { encoding: 'utf8', timeout: 30000 });
+assert.ifError(foldedIR.error); assert.equal(foldedIR.status, 0, foldedIR.stderr);
+assert.equal(foldedIR.stderr, ''); assert.doesNotMatch(foldedIR.stdout, /^global /m, 'constants must not allocate VM global storage');
+++commands;
+program('answer /*name*/ : /*type*/ int /*value*/ = 42;int main(){return answer;}');
+program('ready:bool=!false&&true;answer:int=6*7;int main(){if(ready)return answer;return 0;}');
+program('const int base=40;answer:int=base+2;int main(){return answer;}');
+program('answer:int=base+2;const int base=40;int main(){return answer;}');
+program('const bool legacy=ready;ready:bool=answer==42;answer:int=42;int main(){if(legacy)return answer;return 0;}');
+program('using Count=int;using Flag=bool;answer:Count=42;ready:Flag=true;int main(){if(ready)return answer;return 0;}');
+program('namespace n{pub answer:int=base+2;}base:int=40;int main(){return n::answer;}');
+program('namespace n{pub answer:int=base+2;}namespace n{base:int=40;}int main(){return n::answer;}');
+program('answer:int=42;int f(int answer){return answer;}int main(){int answer=40;return f(answer)+2;}');
+program('answer:int=42;int read(){return answer;}int main(){return let answer=read()-2;in answer+2;}');
+program('answer:int=42;static int value=answer;int main(){return value;}');
+program('int main(){return answer;}answer:int=42;');
+program('min:int=-2147483648;max:int=2147483647;int main(){return min+max+43;}');
+program('answer:int=-2147483648;int main(){return answer;}', 0);
+program('answer:int=2147483647;int main(){return answer;}', 255);
+program('safe:bool=false&&(1/0==0);int main(){if(safe)return 0;return 42;}');
+program('safe:bool=true||(2147483647+1==0);int main(){if(safe)return 42;return 0;}');
+program('width:int=2;int main(){int values[width];values[1]=42;return values[width-1];}');
+program('answer:int=6*7;int main(){switch(answer){case answer:return 42;default:return 0;}}');
+const constantLibrary = 'module app.values;hidden:int=40;pub answer:int=hidden+2;pub ready:bool=answer==42;pub using Count=int;';
+program('import app.values as v;int main(){return if v::ready then v::answer else 0;}', 42, { 'values.l': constantLibrary });
+program('import app.values::{answer as result,ready};int main(){if(ready)return result;return 0;}', 42, { 'values.l': constantLibrary });
+program('import app.values as v;answer:v::Count=v::answer;int main(){return answer;}', 42, { 'values.l': constantLibrary });
+rejected('import app.values as v;answer:int=v::hidden;int main(){return answer;}', /inaccessible symbol/, { 'values.l': constantLibrary });
+rejected('import app.values::{hidden};int main(){return 0;}', /inaccessible symbol/, { 'values.l': constantLibrary });
+rejected('import app.values as v;int main(){v::answer=0;return 0;}', /cannot modify module constant/, { 'values.l': constantLibrary });
+
 const library = 'module app.math;int hidden(){return 40;}pub int add(const int a,int b){return let value=a+b;in value;}';
 program('import app.math as m;int main(){return let x=20;in m::add(x,22);}', 42, { 'math.l': library });
 program('import app.math::{add as sum};int main(){return let x=20;in sum(x,22);}', 42, { 'math.l': library });
@@ -204,7 +237,7 @@ for (const [body, message, marker] of [
   ['int f(){return let in 42;}', /missing entry point/],
   ['int main(){return 0;}int main(){return let in 42;}', /duplicate function signature/],
   ['int main(){return if true 42 else 0;}', /expected 'then' after conditional expression condition/],
-  ['answer:int=42;int main(){return answer;}', /expected function name/],
+  ['answer=42;int main(){return answer;}', /expected function name/],
   ['Point=record{x:int;};int main(){return 0;}', /expected function name/],
 ]) rejected(body, message, {}, marker);
 
@@ -236,6 +269,58 @@ for (const [body, message, marker] of [
 ]) rejected(body, message, {}, marker);
 rejected('import app.math as m;int main(){return if true then 42 else m::hidden();}', /inaccessible symbol/, { 'math.l': library });
 
+for (const [body, message, marker] of [
+  ['answer:int=true;int main(){return answer;}', /expected int, got bool/],
+  ['ready:bool=1;int main(){return 0;}', /expected bool, got int/],
+  ['answer:int=missing;int main(){return answer;}', /unknown local variable or constant/, 'missing'],
+  ['answer:int=42;answer:int=0;int main(){return answer;}', /duplicate module constant/],
+  ['const int answer=42;answer:int=0;int main(){return answer;}', /duplicate module constant/],
+  ['answer:int=42;const int answer=0;int main(){return answer;}', /duplicate module constant/],
+  ['answer:int=42;static int answer=0;int main(){return answer;}', /duplicate module constant/],
+  ['answer:int=42;int answer(){return 0;}int main(){return 0;}', /conflicts with function declaration/],
+  ['answer:int=42;namespace answer{}int main(){return 0;}', /conflicts with namespace declaration/],
+  ['using answer=int;answer:int=42;int main(){return 0;}', /type alias conflicts with module constant/],
+  ['answer:int=42;int main(){answer=0;return answer;}', /cannot modify module constant/],
+  ['answer:int=42;int main(){return answer++;}', /cannot modify module constant/],
+  ['answer:int=42;int main(){return answer--;}', /cannot modify module constant/],
+  ['answer:int=42;int main(){return answer();}', /module constant is not callable/],
+  ['answer:int=answer;int main(){return answer;}', /constant dependency cycle detected/],
+  ['answer:int=base;base:int=answer;int main(){return answer;}', /app::main::answer -> app::main::base -> app::main::answer/],
+  ['answer:int=base;const int base=answer;int main(){return answer;}', /constant dependency cycle detected/],
+  ['answer:int=2147483648;int main(){return answer;}', /integer literal exceeds int range/],
+  ['answer:int=2147483647+1;int main(){return answer;}', /invalid constant expression: integer overflow/],
+  ['answer:int=1/0;int main(){return answer;}', /invalid constant expression: division by zero/],
+  ['answer:int=-2147483648/-1;int main(){return answer;}', /invalid constant expression: integer overflow/],
+  ['ready:bool=false&&unknown;int main(){return 0;}', /unknown local variable or constant/],
+  ['static int value=42;answer:int=value;int main(){return answer;}', /mutable static storage is not a constant expression/],
+  ['answer:int=f();int f(){return 42;}int main(){return answer;}', /function call is not a constant expression/],
+  ['answer:int=f();int f(){while(true){}return 0;}int main(){return 0;}', /function call is not a constant expression/],
+  ['answer:int=let x=42;in x;int main(){return answer;}', /let is not a compile-time constant expression/],
+  ['answer:int=if true then 42 else 0;int main(){return answer;}', /conditional is not a compile-time constant expression/],
+  ['answer:auto=42;int main(){return 0;}', /name-first constant type must be int or bool/],
+  ['answer:void=42;int main(){return 0;}', /name-first constant type must be int or bool/],
+  ['answer:byte=byte(42);int main(){return 0;}', /name-first constant type must be int or bool/],
+  ['answer:string="42";int main(){return 0;}', /name-first constant type must be int or bool/],
+  ['using Text=string;answer:Text="42";int main(){return 0;}', /name-first constant type must be int or bool/],
+  ['struct Box{int x;};answer:Box=Box{42};int main(){return 0;}', /name-first constant type must be int or bool/],
+  ['enum Kind{A};answer:Kind=Kind::A;int main(){return 0;}', /name-first constant type must be int or bool/],
+  ['answer:Missing=42;int main(){return 0;}', /unknown local variable or constant/],
+  ['answer:int;int main(){return 0;}', /module constants require a scalar initializer/],
+  ['answer:int=;int main(){return 0;}', /expected expression/],
+  ['answer:int=42 int main(){return 0;}', /expected ';' after module constant/],
+  ['answer:=42;int main(){return 0;}', /expected Stage 0 type/],
+  ['answer:int[2];int main(){return 0;}', /module constants require a scalar initializer/],
+  ['static answer:int=42;int main(){return 0;}', /expected static storage name/],
+  ['extern answer:int=42;int main(){return 0;}', /expected function name/],
+  ['pub const answer:int=42;int main(){return 0;}', /expected module constant name/],
+  ['int main(){answer:int=42;return answer;}', /expected ';' after expression/],
+  ['name::answer:int=42;int main(){return 0;}', /expected function name/],
+  ['answer', /expected function name/],
+  ['answer:', /expected Stage 0 type/],
+  ['answer:int=', /expected expression/],
+]) rejected(body, message, {}, marker);
+rejected('import app.values as v;answer:int=v::ready;int main(){return answer;}', /expected int, got bool/, { 'values.l': constantLibrary });
+
 // Keep the existing frontend and VM budgets, not Stage 1's separate syntax limits.
 const bindings = count => Array.from({ length: count }, (_, n) => `x${n}=${n};`).join('');
 program(`int main(){return let ${bindings(1024)}in x1023;}`, 255);
@@ -247,6 +332,16 @@ program(`int main(){return ${'if true then '.repeat(253)}42${' else 0'.repeat(25
 rejected(`int main(){return ${'if true then '.repeat(254)}42${' else 0'.repeat(254)};}`, /nesting limit exceeded/);
 program(`int main(){return let ${bindings(1023)}in if true then x1022 else 0;}`, 254);
 rejected(`int main(){return let ${bindings(1024)}in if true then 42 else 0;}`, /too many LIR slots/);
+const constants = count => Array.from({ length: count }, (_, n) => `c${n}:int=${n};`).join('');
+program(`${constants(1024)}int main(){return c1023;}`, 255);
+program(`${constants(1023)}const int tail=42;int main(){return tail;}`);
+rejected(`${constants(1025)}int main(){return 0;}`, /too many module constants/);
+rejected(`${constants(1024)}const int tail=0;int main(){return 0;}`, /too many module constants/);
+rejected(`import app.values;${constants(512)}int main(){return 0;}`, /too many module constants across modules/,
+  { 'values.l': `module app.values;${constants(513)}` });
+const constantChain = count => Array.from({ length: count }, (_, n) => `c${n}:int=${n + 1 < count ? `c${n + 1}` : '42'};`).join('');
+program(`${constantChain(128)}int main(){return c0;}`);
+rejected(`${constantChain(129)}int main(){return c0;}`, /nesting limit/);
 
 const example = resolve(root, 'examples/replacement/answer.l');
 const manifest = resolve(root, 'examples/replacement/package.json');
@@ -258,5 +353,9 @@ const choose = resolve(root, 'examples/replacement/choose.l'), chooseOutput = re
 command(0, ['compile', choose, '--manifest', manifest, '-o', chooseOutput]);
 command(0, ['check', chooseOutput]);
 command(42, ['run', chooseOutput]);
+const constantsExample = resolve(root, 'examples/replacement/constants.l'), constantsOutput = resolve(work, 'constants.lbc');
+command(0, ['compile', constantsExample, '--manifest', manifest, '-o', constantsOutput]);
+command(0, ['check', constantsOutput]);
+command(42, ['run', constantsOutput]);
 assert.match(command(65, ['check', example]).stderr, /requires an explicit --manifest/);
 console.log(`replacement execution: ${fixtures} fixtures, ${commands} CLI checks passed (bytecode 1.9)`);

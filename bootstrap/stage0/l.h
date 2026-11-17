@@ -124,7 +124,7 @@ struct Global {
     Token name, scope, type_name;
     Module *module;
     Type type;
-    bool exported, is_static;
+    bool exported, is_static, name_first; /* Migration spelling; not serialized. */
     Expr *value, *length;
     uint32_t array;
     int32_t integer;

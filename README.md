@@ -11,8 +11,8 @@ GitHub review order and merge instructions: [review guide](docs/REVIEWING.md).
 
 The compiler now executes a **first approved replacement-syntax subset** through
 the existing Stage 0 pipeline: C-style typed functions, locals and expressions,
-plus eager, scoped `let/in` with immutable bindings and explicit `var`, and typed
-`if … then … else …` conditional expressions.
+plus eager, scoped `let/in` with immutable bindings and explicit `var`, typed
+`if … then … else …` conditional expressions, and typed name-first file constants.
 Legacy bootstrap implementation sources and examples still compile. The separate
 L-written Stage 1 frontend accepts a broader replacement grammar as syntax only.
 
@@ -53,9 +53,9 @@ claim self-hosting.
 
 Executable features include modules, `pub`, `int`/`bool` signatures and parameters,
 initialized C locals, `const` parameters/locals, arithmetic/comparisons, boolean
-operators, direct calls, explicit returns, nested `let/in` and conditional
-expressions. Existing name, type, call, visibility and entry-point checks apply
-before bytecode is written.
+operators, direct calls, explicit returns, nested `let/in`, conditional
+expressions and `[pub] name: Type = expression;` file constants. Existing name,
+type, call, visibility and entry-point checks apply before bytecode is written.
 
 - `let name[: Type] = expression; ... in body` opens a lexical scope. Bindings are
   immutable unless prefixed by `var`; types are inferred when omitted.
@@ -73,13 +73,25 @@ before bytecode is written.
   condition. Branch-local `let` names do not escape to the other branch or beyond
   the expression. Conditional expressions are runtime-only, not compile-time
   constant expressions in this slice.
+- File constants require a written type resolving to `int` or `bool`; existing
+  transparent aliases to those types are accepted. Initializers use the existing
+  compile-time evaluator, with checked integer arithmetic and boolean
+  short-circuiting. Forward references are allowed, evaluated dependency cycles
+  are errors, and skipped operands still undergo semantic checking.
+- Constants are immutable, follow existing duplicate/import/`pub` rules, and fold
+  into the existing LIR without allocating VM global storage. They may supply
+  array lengths, switch labels and legacy static initializers. Function calls,
+  mutable-static reads, `let` and conditional expressions are not constant
+  initializers. The existing 1024-constant budget is shared across loaded modules
+  and both spellings; nesting limits also apply to dependency chains.
 - `let`, `in`, `var` and `then` are now reserved by the source compiler. Parentheses
   delimit a `let` when an operator should apply outside its full body expression. Existing
   256-level compiler nesting, per-function slot and VM resource limits remain.
 
-Name-first file constants, named records, enum/alias/
-namespace replacement spellings remain **syntax-only** in Stage 1. Their existing
-legacy Stage 0 forms are not migrated or removed by this milestone.
+Named records and enum/alias/namespace replacement spellings remain **syntax-only**
+in Stage 1. Legacy `const Type name = expression;` remains temporary bootstrap
+migration scaffolding. Name-first constants also work inside existing legacy
+namespace containers; this does not implement the replacement namespace spelling.
 
 [`examples/replacement/choose.l`](examples/replacement/choose.l) exercises a
 conditional with a nested `let` and an unselected division-by-zero branch:
@@ -87,6 +99,21 @@ conditional with a nested `let` and an unselected division-by-zero branch:
 ```sh
 ./build/l compile examples/replacement/choose.l --manifest examples/replacement/package.json -o build/choose.lbc
 ./build/l run build/choose.lbc                   # Exit code 42, no trap
+```
+
+[`examples/replacement/constants.l`](examples/replacement/constants.l) combines
+forward-referenced constants with runtime `let` and conditional expressions:
+
+```l
+pub answer: int = base + 2;
+base: int = 40;
+ready: bool = answer == 42;
+```
+
+```sh
+./build/l check examples/replacement/constants.l --manifest examples/replacement/package.json
+./build/l compile examples/replacement/constants.l --manifest examples/replacement/package.json -o build/constants.lbc
+./build/l run build/constants.lbc                # Exit code 42
 ```
 
 ### Broader syntax-only replacement-parser slices
@@ -310,8 +337,9 @@ above; artifacts remain at **1.9**.
 ## Supported subset
 
 This section describes Stage 0's bootstrap subset, now extended with executable
-`let/in`. It is not the full replacement grammar. Stage 1's broader syntax-only
-subset is listed separately above.
+`let/in`, conditional expressions and typed name-first constants. It is not the
+full replacement grammar. Stage 1's broader syntax-only subset is listed
+separately above.
 
 - ASCII identifiers, decimal literals, `//` and `/* … */` comments.
 - Mandatory `module a.b;`, one file per module, explicitly configured source roots.
@@ -818,8 +846,10 @@ namespace numbers {
 }
 ```
 
-Module constants require explicit `int`/`bool`/`byte`/`string` types (or transparent
-aliases to them) or enum types, and scalar initializers.
+Legacy `const Type name` constants require explicit `int`/`bool`/`byte`/`string`
+types (or transparent aliases to them) or enum types, and scalar initializers.
+The executable replacement spelling `[pub] name: Type = expression;` currently
+supports only types resolving to `int` or `bool`, with the same evaluator/rules.
 Their initializer syntax permits literals, constant references, and the supported
 unary/binary operators, byte/integer conversions, string length and string indexing.
 Function calls, assignments, postfix updates and ordinary array indexing are

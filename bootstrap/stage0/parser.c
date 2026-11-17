@@ -365,15 +365,23 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
             continue;
         }
         bool is_static = take(p, TK_STATIC);
-        if (is_static || take(p, TK_CONST)) {
+        bool name_first = !is_static && peek(p).kind == TK_NAME && p->tokens[p->at + 1].kind == ':';
+        if (name_first || is_static || take(p, TK_CONST)) {
             if (is_static) {
                 if (ast->static_count++ == L_MAX_GLOBALS) token_fail(p->ctx, token, "too many static globals (maximum 1024)");
             } else if (ast->constant_count++ == L_MAX_CONSTANTS) token_fail(p->ctx, token, "too many module constants (maximum 1024)");
             Global *constant = allocate(p->ctx, sizeof(*constant));
             constant->module = ast->entry; constant->scope = scope; constant->exported = exported;
             constant->is_static = is_static;
-            constant->type = parse_type(p, &constant->type_name);
-            constant->name = expect(p, TK_NAME, is_static ? "expected static storage name" : "expected module constant name");
+            constant->name_first = name_first;
+            if (name_first) {
+                constant->name = p->tokens[p->at];
+                p->at += 2; /* The unqualified name and ':' were checked by lookahead. */
+                constant->type = parse_type(p, &constant->type_name);
+            } else {
+                constant->type = parse_type(p, &constant->type_name);
+                constant->name = expect(p, TK_NAME, is_static ? "expected static storage name" : "expected module constant name");
+            }
             if (is_static && take(p, '[')) {
                 constant->length = expression(p, 1);
                 expect(p, ']', "expected ']' after static array length");

@@ -12,8 +12,8 @@ arrow-function proposal. Syntax-only bindings, C bodies, conditional expressions
 records, enums, structs, aliases, namespaces, C-style `const` parameters and
 static/extern declarations are implemented, but the full grammar and executable
 source migration are not complete. The CLI now executes the first `int`/`bool`
-function/local, eager `let/in` and selected-branch conditional subset via the
-existing C pipeline. See
+function/local, eager `let/in`, selected-branch conditional and typed name-first
+file-constant subset via the existing C pipeline and compile-time evaluator. See
 [source syntax status](../README.md#source-syntax-status). Static typing, eager
 left-to-right evaluation, explicit module semantics and IR/bytecode **1.9** remain
 unchanged. Source compilation extends the bootstrap grammar with that bounded
@@ -67,8 +67,12 @@ explicit resource-limit expectations.
 `tests/replacement.mjs` checks actual CLI semantics, deterministic bytecode 1.9,
 source/serialized execution agreement, scopes, diagnostics, visibility and
 transactional rejection. `tests/fuzz.c` adds independent full-width lexical-cell
-and expression models, including independent selected-branch state/trap models,
-plus repeated execution after traps and cleanup. These
+and expression models, including independent selected-branch state/trap and
+forward constant-DAG models, plus repeated execution after traps and cleanup.
+`tests/modules.mjs` checks name-first and legacy constants against the same
+independent BigInt oracle and tests mixed-spelling cross-package DAGs in both
+import/root orders. Rejected constants must preserve existing output, and cleanup
+must permit fresh compilation/execution. These
 are compiler/VM tests, not evidence of L-source coverage or self-hosting.
 
 ## Nix workflow
@@ -143,6 +147,7 @@ bytes, including NUL and values above 127; they do not perform text conversion.
 | Replacement function/binding parser | 1.9 | Syntax-only migration slice; Stage 0 source compilation remains legacy. |
 | First executable replacement subset | 1.9 | C frontend adds scoped `let/in` and reserves `let`, `in`, `var`; existing backend/VM reused. |
 | Executable conditional expressions | 1.9 | Bool conditions, matching int/bool results and selected-branch execution; `then` becomes reserved. |
+| Executable name-first constants | 1.9 | Written int/bool types (including transparent aliases), existing compile-time evaluation; no VM storage, keywords or module-format changes. |
 
 The loader accepts only the current exact version, including for programs that do
 not use the new feature. The C observer API and its callback contract are described
