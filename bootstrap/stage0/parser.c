@@ -307,11 +307,14 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
         }
         if (peek(p).kind == TK_MODULE || peek(p).kind == TK_IMPORT)
             token_fail(p->ctx, peek(p), "module and import declarations must precede other declarations");
-        if (take(p, TK_ENUM)) {
+        bool name_enum = peek(p).kind == TK_NAME && p->tokens[p->at + 1].kind == '=' &&
+            p->tokens[p->at + 2].kind == TK_ENUM;
+        if (name_enum || take(p, TK_ENUM)) {
             if (ast->enum_count++ == L_MAX_ENUMS) token_fail(p->ctx, token, "too many enums (maximum 256)");
             Enum *enumeration = allocate(p->ctx, sizeof(*enumeration));
             enumeration->module = ast->entry; enumeration->scope = scope; enumeration->exported = exported;
             enumeration->name = expect(p, TK_NAME, "expected enum name");
+            if (name_enum) p->at += 2; /* '=' and 'enum' were checked by lookahead. */
             expect(p, '{', "expected '{' after enum name");
             Global **members = &enumeration->members;
             if (!take(p, '}')) {
@@ -323,7 +326,8 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
                     member->scope = join_name(p->ctx, scope, enumeration->name, "::");
                     if (take(p, '=')) member->value = expression(p, 1);
                     *members = member; members = &member->next;
-                    if (!take(p, ',')) break;
+                    if (name_enum) expect(p, ';', "expected ';' after enum member");
+                    else if (!take(p, ',')) break;
                     if (peek(p).kind == '}') break;
                 } while (true);
                 expect(p, '}', "expected '}' after enum members");

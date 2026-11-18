@@ -207,6 +207,10 @@ present on the default branch, so manual dispatch is available.
 - Check executable namespace bindings against legacy scopes for nesting/reopening,
   relative/qualified lookup, member-specific visibility and shared cell identity.
   Reject namespace-level `pub`, runtime namespace values and hidden initialization.
+- Check executable name-first enums for required member semicolons, nonempty
+  nominal types, checked explicit/implicit values, equal-valued aliases, visibility,
+  duplicate cases and shared old/new budgets. Keep int/bool-only expression and
+  name-first constant restrictions intact.
 - The coverage gate measures **Stage 0 C only**, not L-source coverage. Arbitrary
   bytecode mutants and cyclic verifier graphs must never be executed.
 - Treat local command results and hosted GitHub status checks as separate evidence.
@@ -231,8 +235,10 @@ Enums use `Name = enum { Member; Member = expr; };`, with semicolon-terminated
 members. C-style `struct Name { Type field; };` is the approved second aggregate
 declaration spelling alongside records. Static scalar/array declarations and
 external functions keep their legacy spellings, including leading `const` on
-extern parameters. Enum-value checks, storage allocation/initialization, length
-evaluation and extern implementation resolution remain deferred.
+extern parameters. The executable C frontend checks name-first enum values and
+nominal identities through existing analysis. The L-written parser still defers
+enum-value checks, storage allocation/initialization, length evaluation and extern
+implementation resolution.
 Transparent aliases use approved `Name = alias Type;` spelling, preserving the
 existing scalar-alias meaning rather than introducing nominal/runtime types.
 The executable C frontend resolves scalar targets, cycles and visibility through
