@@ -204,6 +204,9 @@ present on the default branch, so manual dispatch is available.
 - Check executable aliases for transparent primitive identity, forward/imported
   targets, cycles, duplicate signatures and legacy interoperability. Verify
   bytecode erasure, shared budgets and contextual `alias` identifier compatibility.
+- Check executable namespace bindings against legacy scopes for nesting/reopening,
+  relative/qualified lookup, member-specific visibility and shared cell identity.
+  Reject namespace-level `pub`, runtime namespace values and hidden initialization.
 - The coverage gate measures **Stage 0 C only**, not L-source coverage. Arbitrary
   bytecode mutants and cyclic verifier graphs must never be executed.
 - Treat local command results and hosted GitHub status checks as separate evidence.
@@ -237,8 +240,9 @@ the existing analyzer. The L-written parser still records targets without expans
 or cycle/type checking.
 Namespaces use approved `Name = namespace { declarations };` bindings, retaining
 intended compile-time scopes, nesting/reopening and member-specific visibility.
-Namespace-level `pub` is rejected; logical scope merging, lookup, duplicate checks
-and visibility enforcement remain deferred.
+Namespace-level `pub` is rejected. The executable C frontend reuses logical scope
+merging, lookup, duplicate and visibility checks; the L-written parser still records
+syntax only and defers those checks.
 The first replacement parser records these forms without implementing their
 semantics or completing the source migration; the remaining grammar is unfinished.
 Existing executable examples and legacy parser contracts still use bootstrap syntax. Expanding that

@@ -13,8 +13,8 @@ records, enums, structs, aliases, namespaces, C-style `const` parameters and
 static/extern declarations are implemented, but the full grammar and executable
 source migration are not complete. The CLI now executes the first `int`/`bool`
 function/local, eager `let/in`, selected-branch conditional and typed name-first
-file-constant/transparent-alias subset via the existing C pipeline, scalar-alias
-resolver and compile-time evaluator. See
+file-constant/transparent-alias/namespace subset via the existing C pipeline,
+scope/type resolver and compile-time evaluator. See
 [source syntax status](../README.md#source-syntax-status). Static typing, eager
 left-to-right evaluation, explicit module semantics and IR/bytecode **1.9** remain
 unchanged. Source compilation extends the bootstrap grammar with that bounded
@@ -75,7 +75,9 @@ independent BigInt oracle and tests mixed-spelling cross-package DAGs in both
 import/root orders. Rejected constants must preserve existing output, and cleanup
 must permit fresh compilation/execution. Replacement aliases also have four-scalar
 cross-package/import-order DAGs, full-width execution/recovery models and bytecode
-erasure checks against legacy aliases and primitives. These
+erasure checks against legacy aliases and primitives. New namespace tests cover
+mixed-spelling reopening, relative lookup and shared cells with cross-package DAGs,
+full-width models and rejection/trap recovery. These
 are compiler/VM tests, not evidence of L-source coverage or self-hosting.
 
 ## Nix workflow
@@ -152,6 +154,7 @@ bytes, including NUL and values above 127; they do not perform text conversion.
 | Executable conditional expressions | 1.9 | Bool conditions, matching int/bool results and selected-branch execution; `then` becomes reserved. |
 | Executable name-first constants | 1.9 | Written int/bool types (including transparent aliases), existing compile-time evaluation; no VM storage, keywords or module-format changes. |
 | Executable name-first aliases | 1.9 | Existing transparent int/bool/byte/string resolution; contextual `alias`, no new reserved word, runtime type or artifact change. |
+| Executable name-first namespaces | 1.9 | Existing compile-time scopes, reopening and member visibility; mandatory trailing `;`, no runtime namespace value or initialization. |
 
 The loader accepts only the current exact version, including for programs that do
 not use the new feature. The C observer API and its callback contract are described

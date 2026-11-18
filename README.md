@@ -13,7 +13,7 @@ The compiler now executes a **first approved replacement-syntax subset** through
 the existing Stage 0 pipeline: C-style typed functions, locals and expressions,
 plus eager, scoped `let/in` with immutable bindings and explicit `var`, typed
 `if … then … else …` conditional expressions, typed name-first file constants,
-and name-first transparent scalar aliases.
+name-first transparent scalar aliases, and name-first namespaces.
 Legacy bootstrap implementation sources and examples still compile. The separate
 L-written Stage 1 frontend accepts a broader replacement grammar as syntax only.
 
@@ -56,7 +56,8 @@ Executable features include modules, `pub`, `int`/`bool` signatures and paramete
 initialized C locals, `const` parameters/locals, arithmetic/comparisons, boolean
 operators, direct calls, explicit returns, nested `let/in`, conditional
 expressions, `[pub] name: Type = expression;` file constants and
-`[pub] Name = alias Type;` transparent aliases. Existing name,
+`[pub] Name = alias Type;` transparent aliases and `Name = namespace { ... };`
+compile-time scopes. Existing name,
 type, call, visibility and entry-point checks apply before bytecode is written.
 
 - `let name[: Type] = expression; ... in body` opens a lexical scope. Bindings are
@@ -93,17 +94,25 @@ type, call, visibility and entry-point checks apply before bytecode is written.
   The 1024-alias budget is shared across loaded modules and both spellings.
 - `alias` is contextual after `Name =`, not a new reserved source keyword. Legacy
   `using Name = Type;` remains bootstrap migration scaffolding. Alias declarations
-  are module/namespace-level, not local; existing legacy namespace containers work
-  without enabling the replacement namespace spelling. Aliases to byte/string do
+  are module/namespace-level, not local; both namespace spellings work.
+  Aliases to byte/string do
   not expand the int/bool-only restriction on name-first constants.
+- Name-first namespace bindings reuse existing nested/reopened compile-time
+  scopes, relative/qualified lookup and member visibility. The closing `}` requires
+  `;`. `pub` on the namespace itself is rejected: export each member with its own
+  `pub`. Namespaces are not runtime values, records or initialization blocks.
+- Legacy `namespace Name { ... }` remains bootstrap migration scaffolding and
+  reopens the same scopes as the new spelling. Existing member/dependency rules,
+  256-level nesting and shared resource limits remain in force. Imports and module
+  headers still belong at file scope before declarations, never inside namespaces.
 - `let`, `in`, `var` and `then` are now reserved by the source compiler. Parentheses
   delimit a `let` when an operator should apply outside its full body expression. Existing
   256-level compiler nesting, per-function slot and VM resource limits remain.
 
-Named records and enum/namespace replacement spellings remain **syntax-only**
+Named records and the name-first enum spelling remain **syntax-only**
 in Stage 1. Legacy `const Type name = expression;` remains temporary bootstrap
-migration scaffolding. Name-first constants also work inside existing legacy
-namespace containers; this does not implement the replacement namespace spelling.
+migration scaffolding. Both namespace spellings share the same member semantics;
+the L-written replacement parser itself remains syntax-only.
 
 [`examples/replacement/choose.l`](examples/replacement/choose.l) exercises a
 conditional with a nested `let` and an unselected division-by-zero branch:
@@ -135,6 +144,15 @@ forward/chained aliases, typed constants, a readonly parameter and runtime expre
 ./build/l check examples/replacement/aliases.l --manifest examples/replacement/package.json
 ./build/l compile examples/replacement/aliases.l --manifest examples/replacement/package.json -o build/aliases.lbc
 ./build/l run build/aliases.lbc                  # Exit code 42
+```
+
+[`examples/replacement/namespaces.l`](examples/replacement/namespaces.l) reopens
+a name-first namespace containing an alias, forward constants and a function:
+
+```sh
+./build/l check examples/replacement/namespaces.l --manifest examples/replacement/package.json
+./build/l compile examples/replacement/namespaces.l --manifest examples/replacement/package.json -o build/namespaces.lbc
+./build/l run build/namespaces.lbc               # Exit code 42
 ```
 
 ### Broader syntax-only replacement-parser slices
@@ -243,10 +261,12 @@ math = namespace {
 int main() { return math::add(20, 22); }
 ```
 
-These remain compile-time scopes, not runtime records or recursive attribute
-sets. Nested/reopened namespaces retain separate syntax nodes in written order;
-scope merging, lookup and duplicate checking are deferred. Export members with
-their own `pub`; `pub` on a namespace is rejected and visibility is not inherited.
+These are compile-time scopes, not runtime records or recursive attribute sets.
+The executable C frontend merges reopened scopes and checks lookup, duplicates
+and visibility with its existing analyzer. The standalone L-written parser still
+only records nested/reopened syntax nodes in written order; it does not perform
+those semantic checks. Export members with their own `pub`; `pub` on a namespace
+is rejected and visibility is not inherited.
 
 Static storage and external functions keep their existing C-style spellings:
 
@@ -360,7 +380,7 @@ above; artifacts remain at **1.9**.
 
 This section describes Stage 0's bootstrap subset, now extended with executable
 `let/in`, conditional expressions, typed name-first constants and transparent
-name-first aliases. It is not the
+name-first aliases and namespaces. It is not the
 full replacement grammar. Stage 1's broader syntax-only subset is listed
 separately above.
 
