@@ -57,7 +57,7 @@
               runHook preInstallCheck
               "$out/bin/l" check "$out/share/l/examples/answer.l" --manifest "$out/share/l/examples/package.json"
               "$out/bin/l" check "$out/share/l/examples/io_demo.l" --manifest "$out/share/l/examples/package.json"
-              for example in answer choose constants aliases namespaces enums; do
+              for example in answer choose constants aliases namespaces enums records; do
                 "$out/bin/l" compile "$out/share/l/examples/replacement/$example.l" --manifest "$out/share/l/examples/replacement/package.json" -o "replacement-$example.lbc"
                 "$out/bin/l" check "replacement-$example.lbc"
                 status=0

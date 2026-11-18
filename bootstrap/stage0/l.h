@@ -77,7 +77,12 @@ typedef struct TypeAlias TypeAlias;
 typedef struct Struct Struct;
 typedef struct Field Field;
 typedef struct Enum Enum;
-struct ExprList { Expr *value; ExprList *next; };
+struct ExprList {
+    Expr *value;
+    ExprList *next;
+    Token name; /* Named initializer label; empty for call/positional arguments. */
+    uint32_t field; /* Resolved declaration index, without reordering evaluation. */
+};
 struct SwitchCase { Token token; int32_t value; bool is_default; Expr *expr; Stmt *body; SwitchCase *next; };
 typedef enum { EX_INT, EX_BOOL, EX_NAME, EX_UNARY, EX_BINARY, EX_ASSIGN, EX_CALL, EX_POSTFIX, EX_INDEX, EX_GLOBAL, EX_STRUCT, EX_FIELD, EX_CONVERT, EX_STRING, EX_LENGTH, EX_STRING_INDEX, EX_LET, EX_CONDITIONAL } ExprKind;
 struct Expr {
@@ -93,6 +98,7 @@ struct Expr {
     Global *global;
     Decl *bindings; /* EX_LET owns sequential declarations; right is its body. */
     Expr *condition; /* EX_CONDITIONAL: left/right are the selected alternatives. */
+    bool named; /* EX_STRUCT initializer spelling; not serialized. */
 };
 struct Decl { Token name, type_name; Type type; bool immutable; uint32_t slot; uint32_t array; Expr *value, *length; Decl *next; };
 typedef enum { IN_NONE, IN_READ_BYTE, IN_WRITE_BYTE, IN_WRITE_STRING, IN_WRITE_ERROR } Intrinsic;
@@ -144,7 +150,7 @@ struct Field { Token name, type_name; Type type; Field *next; };
 struct Struct {
     Token name, scope;
     Module *module;
-    bool exported;
+    bool exported, is_record; /* Declaration spelling; not serialized. */
     uint32_t symbol, field_count;
     Field *fields;
     Struct *next;

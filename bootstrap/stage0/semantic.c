@@ -372,12 +372,30 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         if (e->left->kind != EX_NAME) token_fail(s->ctx, e->token, "struct literal requires a named struct type");
         e->type = resolve_type(s, TY_NAMED, e->left->token, NULL);
         if (!IS_STRUCT(e->type)) token_fail(s->ctx, e->token, "struct literal requires a struct type");
-        Field *field = struct_type(s, e->type)->fields;
-        for (ExprList *arg = e->args; arg; arg = arg->next) {
-            if (!field) token_fail(s->ctx, e->token, "wrong number of struct initializer fields");
-            require(s, arg->value->token, analyze_expr(s, arg->value), field->type); field = field->next;
+        Struct *record = struct_type(s, e->type);
+        if (e->named || (record->is_record && !e->args)) {
+            bool initialized[L_MAX_FIELDS] = {false};
+            for (ExprList *arg = e->args; arg; arg = arg->next) {
+                Field *field = record->fields; uint32_t index = 0;
+                while (field && !token_equal(field->name, arg->name)) { field = field->next; ++index; }
+                if (!field) token_fail(s->ctx, arg->name, "unknown record initializer field");
+                if (initialized[index]) token_fail(s->ctx, arg->name, "duplicate record initializer field");
+                initialized[index] = true; arg->field = index;
+                require(s, arg->value->token, analyze_expr(s, arg->value), field->type);
+            }
+            uint32_t index = 0;
+            for (Field *field = record->fields; field; field = field->next, ++index)
+                if (!initialized[index]) fail(s->ctx, e->token.line, e->token.column,
+                    "missing record initializer field: %.*s", (int)field->name.length, field->name.text);
+        } else {
+            if (record->is_record) token_fail(s->ctx, e->token, "record literals require named ';'-terminated fields");
+            Field *field = record->fields;
+            for (ExprList *arg = e->args; arg; arg = arg->next) {
+                if (!field) token_fail(s->ctx, e->token, "wrong number of struct initializer fields");
+                require(s, arg->value->token, analyze_expr(s, arg->value), field->type); field = field->next;
+            }
+            if (field) token_fail(s->ctx, e->token, "wrong number of struct initializer fields");
         }
-        if (field) token_fail(s->ctx, e->token, "wrong number of struct initializer fields");
         break;
     }
     case EX_FIELD: {

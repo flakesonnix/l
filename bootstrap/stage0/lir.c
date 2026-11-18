@@ -160,7 +160,11 @@ static uint32_t lower_expr(Lower *l, Expr *e) {
     case EX_CALL: case EX_STRUCT: {
         /* Evaluate first: nested calls must not split an outer call's argument vector. */
         uint32_t values[L_MAX_SLOTS], count = 0;
-        for (ExprList *arg = e->args; arg; arg = arg->next) values[count++] = lower_expr(l, arg->value);
+        for (ExprList *arg = e->args; arg; arg = arg->next) {
+            uint32_t value = lower_expr(l, arg->value);
+            values[e->kind == EX_STRUCT && e->named ? arg->field : count] = value;
+            ++count;
+        }
         uint32_t start = l->fn->argument_count;
         if (count > L_MAX_ARGS - start) token_fail(l->ctx, e->token, "too many LIR call arguments");
         reserve(l->ctx, (void **)&l->fn->arguments, &l->fn->argument_capacity, start + count, sizeof(uint32_t));

@@ -211,6 +211,10 @@ present on the default branch, so manual dispatch is available.
   nominal types, checked explicit/implicit values, equal-valued aliases, visibility,
   duplicate cases and shared old/new budgets. Keep int/bool-only expression and
   name-first constant restrictions intact.
+- Check named records for nominal identity, complete/exact field sets, scalar types,
+  by-value copies and readonly writes. Initializers must execute in written order,
+  including nested calls and unused fields; map registers afterward, never reorder
+  the AST. Preserve legacy positional assignments and require named new-record literals.
 - The coverage gate measures **Stage 0 C only**, not L-source coverage. Arbitrary
   bytecode mutants and cyclic verifier graphs must never be executed.
 - Treat local command results and hosted GitHub status checks as separate evidence.
@@ -230,7 +234,9 @@ Mandatory-else `if condition then value else value` expressions are approved too
 with intended bool conditions, matching result types and selected-branch evaluation.
 Records use approved `Name = record { field: Type; };` declarations and
 `Name { field = value; }` literals, retaining intended nominal/by-value semantics
-and written-order value evaluation. These remain syntax-only parser slices.
+and written-order value evaluation. The executable C frontend checks named fields
+and maps evaluated registers through existing struct construction; the L-written
+parser itself remains syntax-only.
 Enums use `Name = enum { Member; Member = expr; };`, with semicolon-terminated
 members. C-style `struct Name { Type field; };` is the approved second aggregate
 declaration spelling alongside records. Static scalar/array declarations and

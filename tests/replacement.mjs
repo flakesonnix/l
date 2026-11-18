@@ -238,7 +238,7 @@ for (const [body, message, marker] of [
   ['int main(){return 0;}int main(){return let in 42;}', /duplicate function signature/],
   ['int main(){return if true 42 else 0;}', /expected 'then' after conditional expression condition/],
   ['answer=42;int main(){return answer;}', /expected function name/],
-  ['Point=record{x:int;};int main(){return 0;}', /expected function name/],
+  ['Point=class{x:int;};int main(){return 0;}', /expected function name/],
 ]) rejected(body, message, {}, marker);
 
 for (const [body, message, marker] of [
@@ -555,6 +555,110 @@ assert.deepEqual(readFileSync(resolve(enumNew.directory, 'answer.lbc')), readFil
   'new and legacy enums must produce identical position-preserving bytecode and nominal metadata');
 assert.equal(readFileSync(resolve(enumNew.directory, 'answer.lbc')).readUInt32LE(24), 1);
 
+// Named fields are checked without sorting their evaluation order.
+program('pub Pair=record{x:int;ready:bool;};int main(){Pair p=Pair{ready=true;x=42;};return if p.ready then p.x else 0;}');
+program('Pair /*name*/ = /*keyword*/ record /*fields*/ {x /*field*/ : /*type*/ int;};int main(){return Pair{x=42;}.x;}');
+program('int main(){Pair p=Pair{x=42;};return p.x;}Pair=record{x:int;};');
+program('record=record{x:int;};int main(){record value=record{x=42;};return value.x;}');
+program('int record(int n){return n;}int main(){int record=40;return record+2;}');
+program('Pair=record{x:Count;ready:Flag;};Count=alias int;Flag=alias bool;int main(){Pair p=Pair{x=42;ready=true;};return if p.ready then p.x else 0;}');
+program('Kind=enum{On;};Packet=record{kind:Kind;octet:byte;text:string;};int main(){Packet p=Packet{text="*";kind=Kind::On;octet=byte(42);};return if p.kind==Kind::On&&p.text.length==1 then int(p.octet) else 0;}');
+program('Pair=record{x:int;};Pair change(Pair p){p.x=0;return p;}int main(){Pair original=Pair{x=42;};Pair copy=change(original);return if copy.x==0 then original.x else 0;}');
+program('Pair=record{x:int;};int main(){Pair a=Pair{x=42;};Pair b=a;b.x++;return if b.x==43 then a.x else 0;}');
+program('Pair=record{x:int;};Pair id(const Pair p){return p;}int main(){return id(Pair{x=42;}).x;}');
+program('Pair=record{x:int;};int main(){const int x=42;Pair p=Pair{x=x;};return p.x;}');
+program('Pair=record{x:int;};int main(){int x=40;{Pair p=Pair{x=x+2;};if(p.x!=42)return 0;}return x+2;}');
+program('Pair=record{x:int;ready:bool;};int main(){Pair p=Pair{ready=(let value=true;in value);x=(if true then 42 else 0);};return if p.ready then p.x else 0;}');
+program('Pair=record{x:int;};int main(){Pair p=Pair{x=Pair{x=42;}.x;};return p.x;}');
+program('Pair=record{x:int;y:int;};int main(){int n=0;Pair p=Pair{y=n++;x=n++;};return if n==2&&p.y==0&&p.x==1 then 42 else 0;}');
+program('Pair=record{x:int;y:int;};int main(){int n=40;Pair p=Pair{y=(n=42);x=n;};return if p.x==42&&p.y==42&&n==42 then 42 else 0;}');
+program('Pair=record{x:int;ready:bool;};static int calls=0;int next(){calls++;return 42;}int main(){Pair p=Pair{ready=calls==0;x=next();};return if p.ready&&calls==1 then p.x else 0;}');
+program('Pair=record{x:int;y:int;};int pair(Pair a,Pair b){return a.x+a.y+b.x+b.y;}int main(){int n=9;return pair(Pair{y=n++;x=n++;},Pair{x=n++;y=n++;});}');
+program('Pair=record{x:int;};int pair(int a,int b){return a+b;}int main(){return pair(Pair{x=20;}.x,Pair{x=22;}.x);}');
+program('Pair=record{x:int;y:int;};int main(){int n=0;Pair p=Pair{y=(n=40);x=(n=n+2);};return if p.y==40 then p.x else 0;}');
+program('Pair=record{x:int;ready:bool;};int main(){int n=0;Pair p=Pair{ready=false&&((n=1)==1);x=42;};return if !p.ready&&n==0 then p.x else 0;}');
+program('n=namespace{pub Pair=record{x:int;};};namespace n{pub Pair get(){return Pair{x=42;};}}int main(){return n::get().x;}');
+program('struct Pair{int x;bool ready;};int main(){Pair p=Pair{ready=true;x=42;};return if p.ready then p.x else 0;}');
+program('struct Pair{int x;};int main(){int n=0;Pair p=Pair{n=42};return if n==42 then p.x else 0;}');
+program('struct Pair{int x;int y;};int main(){int x=0;Pair p=Pair{x=20,x=22};return p.x+p.y;}');
+program('struct Pair{int x;};int main(){int n=0;Pair p=Pair{(n=42),};return if n==42 then p.x else 0;}');
+program('Pair=record{x:int;};struct Other{int x;};int f(Pair p){return 20;}int f(Other p){return 22;}int main(){return f(Pair{x=0;})+f(Other{0});}');
+program('Pair=record{x:int;octet:byte;};int main(){Pair p=Pair{octet=byte(256);x=1/0;};return p.x;}', 70, {}, /byte conversion out of range/);
+program('Pair=record{x:int;octet:byte;};int main(){Pair p=Pair{x=1/0;octet=byte(256);};return p.x;}', 70, {}, /division by zero/);
+program('Pair=record{x:int;y:int;};int main(){return Pair{x=42;y=1/0;}.x;}', 70, {}, /division by zero/);
+const recordLibrary = 'module app.records;Hidden=record{x:int;};pub Pair=record{x:int;ready:bool;};'
+  + 'pub Pair make(){return Pair{ready=true;x=42;};}pub Pair id(const Pair p){return p;}';
+for (const [imports, type, make, id] of [
+  ['import app.records;', 'app::records::Pair', 'app::records::make', 'app::records::id'],
+  ['import app.records as r;', 'r::Pair', 'r::make', 'r::id'],
+  ['import app.records::{Pair as P,make,id};', 'P', 'make', 'id'],
+]) program(`${imports}int main(){${type} p=${id}(${type}{x=${make}().x;ready=true;});return p.x;}`, 42, { 'records.l': recordLibrary });
+for (const [body, message, marker] of [
+  ['Pair=record{};int main(){return 0;}', /at least one scalar field/],
+  ['Pair=record{x:int;x:bool;};int main(){return 0;}', /duplicate struct field/],
+  ['Pair=record{x:auto;};int main(){return 0;}', /struct fields must be scalar/],
+  ['Pair=record{x:void;};int main(){return 0;}', /struct fields must be scalar/],
+  ['Inner=record{x:int;};Outer=record{inner:Inner;};int main(){return 0;}', /struct fields must be scalar/],
+  ['Pair=record{x:Missing;};int main(){return 0;}', /unknown local variable or constant/, 'Missing'],
+  ['Pair=record{x:int;};struct Pair{int x;};int main(){return 0;}', /duplicate struct declaration/],
+  ['Pair=record{x:int;};Pair=alias int;int main(){return 0;}', /type alias conflicts with struct/],
+  ['Pair=record{x:int;};Pair:int=0;int main(){return 0;}', /struct conflicts with module constant/],
+  ['Pair=record{x:int;};Pair=namespace{};int main(){return 0;}', /struct conflicts with namespace/],
+  ['Pair=record{x:int;};Pair=enum{A;};int main(){return 0;}', /enum conflicts with struct/],
+  ['Pair=record{x:int;};int Pair(){return 0;}int main(){return 0;}', /struct conflicts with function/],
+  ['Pair=record{x:int;};int main(){Pair p=Pair{};return 0;}', /missing record initializer field: x/],
+  ['Pair=record{x:int;y:int;};int main(){Pair p=Pair{x=42;};return 0;}', /missing record initializer field: y/],
+  ['Pair=record{x:int;};int main(){Pair p=Pair{unknown=42;};return 0;}', /unknown record initializer field/, 'unknown'],
+  ['Pair=record{x:int;};int main(){Pair p=Pair{x=1;x=2;};return 0;}', /duplicate record initializer field/],
+  ['Pair=record{x:int;};int main(){Pair p=Pair{x=true;};return 0;}', /expected int, got bool/],
+  ['Pair=record{x:int;};int main(){Pair p=Pair{42};return 0;}', /record literals require named/],
+  ['Pair=record{x:int;};int main(){Pair p=Pair{x=42};return 0;}', /record literals require named/],
+  ['Pair=record{x:int;y:int;};int main(){Pair p=Pair{x=1,y=2;};return 0;}', /cannot mix positional and named/],
+  ['Pair=record{x:int;y:int;};int main(){Pair p=Pair{x=1;2};return 0;}', /expected record initializer field name/],
+  ['Pair=record{x:int;y:int;};int main(){Pair p=Pair{x=1;y 2;};return 0;}', /expected '=' after record initializer field name/],
+  ['Pair=record{x:int;y:int;};int main(){Pair p=Pair{x=1;y=2};return 0;}', /expected ';' after record initializer field/],
+  ['Pair=record{x:int;};int main(){Pair p=Pair{42;};return 0;}', /after struct literal/],
+  ['Pair=record{x:int;};int main(){Pair p=Pair{n::x=42;};return 0;}', /after struct literal/],
+  ['Pair=record{x:int;};int main(){Pair p=Pair{(x)=42;};return 0;}', /after struct literal/],
+  ['Pair=record{x:int;};int main(){Pair p=Pair{x=42;;};return 0;}', /expected record initializer field name/],
+  ['Pair=record{x:int;};int main(){Pair p=Pair{x=x;};return 0;}', /unknown local variable or constant/],
+  ['Pair=record{x:int;y:int;};int main(){Pair p=Pair{y=x;x=42;};return 0;}', /unknown local variable or constant/],
+  ['Pair=record{x:int;};int main(){return if true then 42 else Pair{x=missing;}.x;}', /unknown local variable or constant/],
+  ['Pair=record{x:int;y:int;};int main(){Pair p=Pair{x=(let hidden=1;in hidden);y=hidden;};return 0;}', /unknown local variable or constant/],
+  ['A=record{x:int;};B=record{x:int;};int main(){A a=B{x=42;};return 0;}', /expected struct, got struct/],
+  ['Pair=record{x:int;};int main(){const Pair p=Pair{x=42;};p.x=0;return 0;}', /cannot modify const binding/],
+  ['Pair=record{x:int;};void change(const Pair p){p.x++;}int main(){return 0;}', /cannot modify const binding/],
+  ['Pair=record{x:int;};int main(){Pair p=Pair{x=42;};return p;}', /expected int, got struct/],
+  ['Pair=record{x:int;};Pair main(){return Pair{x=42;};}', /entry point must have signature/],
+  ['Pair=record{x:int;};int main(){Pair p[1];return 0;}', /array element type/],
+  ['Pair=record{x:int;};Count=alias Pair;int main(){return 0;}', /type alias target must be int or bool or byte or string/],
+  ['Pair=record{x:int;};answer:Pair=Pair{x=42;};int main(){return 0;}', /name-first constant type must be int or bool/],
+  ['Pair=record{x:int;};const int answer=Pair{x=42;}.x;int main(){return 0;}', /struct literal is not a constant expression/],
+  ['Pair=record{x:int;};int main(){return let p=Pair{x=42;};in 0;}', /let binding type must be int or bool/],
+  ['Pair=record{x:int;};Pair get(){return if true then Pair{x=42;} else Pair{x=0;};}int main(){return 0;}', /conditional branches must have int or bool type/],
+  ['Pair=record{x:int;};pub Pair get(){return Pair{x=42;};}int main(){return 0;}', /public signature exposes a private struct type/],
+  ['Pair=record{x:int[2];};int main(){return 0;}', /after scalar struct field/],
+  ['Pair=record{x:int=42;};int main(){return 0;}', /after scalar struct field/],
+  ['Pair=record{int x;};int main(){return 0;}', /expected record field name/],
+  ['Pair=record{x int;};int main(){return 0;}', /expected ':' after record field name/],
+  ['Pair=record{x:;};int main(){return 0;}', /expected Stage 0 type/],
+  ['Pair=record{x:int;}int main(){return 0;}', /expected ';' after struct declaration/],
+  ['Pair=record', /expected '{' after struct name/],
+  ['Pair=record{', /expected record field name/],
+  ['Pair=record{x:', /expected Stage 0 type/],
+]) rejected(body, message, {}, marker);
+for (const [body, message] of [
+  ['import app.records as r;int main(){r::Hidden p=r::Hidden{x=42;};return 0;}', /inaccessible symbol/],
+  ['import app.records::{Hidden};int main(){return 0;}', /inaccessible symbol/],
+]) rejected(body, message, { 'records.l': recordLibrary });
+const recordSource = 'pub Pair=record{x:int;ready:bool;};\nint main(){Pair p=Pair{\n x=42;\n ready=true;\n};return if p.ready then p.x else 0;}';
+const recordNew = program(recordSource);
+const recordOld = program(recordSource.replace('Pair=record{x:int;ready:bool;}', 'struct Pair{int x;bool ready;}')
+  .replace('\n x=42;', '\n   42,').replace('\n ready=true;', '\n       true,'));
+assert.deepEqual(readFileSync(resolve(recordNew.directory, 'answer.lbc')), readFileSync(resolve(recordOld.directory, 'answer.lbc')),
+  'declaration-order named records must reuse position-preserving legacy struct bytecode/metadata');
+assert.equal(readFileSync(resolve(recordNew.directory, 'answer.lbc')).readUInt32LE(20), 1);
+
 // Keep the existing frontend and VM budgets, not Stage 1's separate syntax limits.
 const bindings = count => Array.from({ length: count }, (_, n) => `x${n}=${n};`).join('');
 program(`int main(){return let ${bindings(1024)}in x1023;}`, 255);
@@ -599,6 +703,16 @@ rejected(`import app.kinds;${enums(256)}int main(){return 0;}`, /too many enums 
 const members = count => Array.from({ length: count }, (_, n) => `M${n};`).join('');
 program(`Kind=enum{${members(1024)}};int main(){return if Kind::M1023==Kind::M1023 then 42 else 0;}`);
 rejected(`Kind=enum{${members(1025)}};int main(){return 0;}`, /too many enum members/);
+const recordFields = count => Array.from({ length: count }, (_, n) => `f${n}:int;`).join('');
+const recordValues = count => Array.from({ length: count }, (_, n) => `f${count - n - 1}=${count - n - 1};`).join('');
+program(`Wide=record{${recordFields(64)}};int main(){Wide p=Wide{${recordValues(64)}};return p.f42;}`);
+rejected(`Wide=record{${recordFields(65)}};int main(){return 0;}`, /too many struct fields/);
+const records = count => Array.from({ length: count }, (_, n) => `R${n}=record{x:int;};`).join('');
+program(`${records(256)}int main(){return R255{x=42;}.x;}`);
+program(`${records(255)}struct Last{int x;};int main(){return Last{42}.x;}`);
+rejected(`${records(257)}int main(){return 0;}`, /too many structs/);
+rejected(`import app.records;${records(256)}int main(){return 0;}`, /too many structs across modules/,
+  { 'records.l': 'module app.records;struct Extra{int x;};' });
 
 const example = resolve(root, 'examples/replacement/answer.l');
 const manifest = resolve(root, 'examples/replacement/package.json');
@@ -626,5 +740,9 @@ const enumExample = resolve(root, 'examples/replacement/enums.l'), enumOutput = 
 command(0, ['compile', enumExample, '--manifest', manifest, '-o', enumOutput]);
 command(0, ['check', enumOutput]);
 command(42, ['run', enumOutput]);
+const recordExample = resolve(root, 'examples/replacement/records.l'), recordOutput = resolve(work, 'records.lbc');
+command(0, ['compile', recordExample, '--manifest', manifest, '-o', recordOutput]);
+command(0, ['check', recordOutput]);
+command(42, ['run', recordOutput]);
 assert.match(command(65, ['check', example]).stderr, /requires an explicit --manifest/);
 console.log(`replacement execution: ${fixtures} fixtures, ${commands} CLI checks passed (bytecode 1.9)`);

@@ -14,7 +14,7 @@ the existing Stage 0 pipeline: C-style typed functions, locals and expressions,
 plus eager, scoped `let/in` with immutable bindings and explicit `var`, typed
 `if … then … else …` conditional expressions, typed name-first file constants,
 name-first transparent scalar aliases, name-first namespaces, and name-first
-nominal enums.
+nominal enums and records with named-field literals.
 Legacy bootstrap implementation sources and examples still compile. The separate
 L-written Stage 1 frontend accepts a broader replacement grammar as syntax only.
 
@@ -58,7 +58,8 @@ initialized C locals, `const` parameters/locals, arithmetic/comparisons, boolean
 operators, direct calls, explicit returns, nested `let/in`, conditional
 expressions, `[pub] name: Type = expression;` file constants and
 `[pub] Name = alias Type;` transparent aliases and `Name = namespace { ... };`
-compile-time scopes, plus `[pub] Name = enum { Member; ... };` nominal enums. Existing name,
+compile-time scopes, `[pub] Name = enum { Member; ... };` nominal enums, and
+`[pub] Name = record { field: Type; ... };` value records with named literals. Existing name,
 type, call, visibility and entry-point checks apply before bytecode is written.
 
 - `let name[: Type] = expression; ... in body` opens a lexical scope. Bindings are
@@ -117,12 +118,33 @@ type, call, visibility and entry-point checks apply before bytecode is written.
   syntax remains migration scaffolding. Primitive aliases cannot target enums,
   and name-first constants plus executable `let`/conditional results remain
   int/bool-only in this slice.
+- Records reuse existing nominal value-struct semantics. Nonempty field lists
+  require written scalar types resolving to int/bool/byte/string or enums, with
+  the existing 256-type/64-field limits shared with C-style structs. Nested
+  aggregate fields, field arrays/defaults, aggregate globals and primitive aliases
+  to records remain unsupported.
+- `Type { field = expression; ... }` supplies each declared field exactly once.
+  Unknown, duplicate, missing or mistyped fields are compilation errors. Values
+  execute exactly once in **written order**, regardless of declaration order;
+  labels do not bind variables or create recursive attribute scopes. Unused fields
+  still execute. Nested calls retain their existing argument evaluation order.
+- Record values copy through locals, parameters and returns; updates affect the
+  receiving copy, and existing `const` protection covers field writes. Named
+  literals also work with approved C-style struct declarations. New record
+  declarations require named literals; comma-separated positional literals remain
+  bootstrap scaffolding for C-style structs, including positional assignments.
+  Semicolons distinguish named fields from those legacy expressions.
+- `record` is contextual after `Name =`, not newly reserved. These internal AST
+  spelling flags/field indexes are not serialized: named values use the same
+  existing `struct.make` LIR, nominal metadata and VM as C-style structs. Record
+  literals remain runtime-only; int/bool-only `let`/conditional results and
+  name-first constant restrictions are unchanged.
 - `let`, `in`, `var` and `then` are now reserved by the source compiler. Parentheses
   delimit a `let` when an operator should apply outside its full body expression. Existing
   256-level compiler nesting, per-function slot and VM resource limits remain.
 
-Named records remain **syntax-only** in Stage 1.
-Legacy `const Type name = expression;` remains temporary bootstrap
+The standalone L-written Stage 1 drivers remain **syntax-only**, even for these
+executable C-frontend forms. Legacy `const Type name = expression;` remains temporary bootstrap
 migration scaffolding. Both namespace spellings share the same member semantics;
 the L-written replacement parser itself remains syntax-only.
 
@@ -174,6 +196,15 @@ enum with equal-valued members, a readonly enum parameter and nominal switch dis
 ./build/l check examples/replacement/enums.l --manifest examples/replacement/package.json
 ./build/l compile examples/replacement/enums.l --manifest examples/replacement/package.json -o build/enums.lbc
 ./build/l run build/enums.lbc                    # Exit code 42
+```
+
+[`examples/replacement/records.l`](examples/replacement/records.l) evaluates
+reversed mixed-type fields in written order, then checks by-value copy behavior:
+
+```sh
+./build/l check examples/replacement/records.l --manifest examples/replacement/package.json
+./build/l compile examples/replacement/records.l --manifest examples/replacement/package.json -o build/records.lbc
+./build/l run build/records.lbc                  # Exit code 42
 ```
 
 ### Broader syntax-only replacement-parser slices
@@ -232,12 +263,12 @@ int main() {
 }
 ```
 
-The intended semantics remain nominal, copied-by-value records with values
-evaluated in written field order, not anonymous structural attribute sets. The
-parser records declarations, field names/types and initializer order without
-checking or executing them. Missing/unknown/duplicate fields and invalid field
-types are semantic work for later. Positional values and anonymous literals are
-not replacement syntax.
+The executable C frontend now enforces nominal, copied-by-value records and
+written initializer order, not anonymous structural attribute sets. It checks
+field names, completeness, duplicates and types before lowering through the
+existing value-struct path. The standalone L-written parser still records syntax
+without those checks or execution. Positional values and anonymous literals are
+not replacement record syntax.
 
 Enums use name-first declarations with `;`-terminated members; structs use a
 C-style keyword-first form as a second aggregate spelling alongside records:
@@ -403,7 +434,7 @@ above; artifacts remain at **1.9**.
 
 This section describes Stage 0's bootstrap subset, now extended with executable
 `let/in`, conditional expressions, typed name-first constants and transparent
-name-first aliases, namespaces and nominal enums. It is not the
+name-first aliases, namespaces, nominal enums and named-field records. It is not the
 full replacement grammar. Stage 1's broader syntax-only subset is listed
 separately above.
 
