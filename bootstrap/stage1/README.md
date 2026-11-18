@@ -25,11 +25,14 @@ breaking source migration, not
 a permanent dual grammar. The remaining grammar, semantic checker and complete
 executable-source migration are not implemented in these L-written modules.
 The actual CLI now executes a first `int`/`bool`, C-function/local and eager
-`let/in`, conditional-expression and typed name-first file-constant subset by
+`let/in`, conditional-expression, typed name-first file-constant and transparent
+name-first scalar-alias subset by
 extending the existing C frontend and reusing its semantic analyzer, constant
 evaluator, LIR, bytecode backend and VM. File constants require a written type
 resolving to int/bool; legacy `const Type name` remains bootstrap migration
-scaffolding. The L-written parsers below still only record syntax. See the
+scaffolding. Name-first aliases reuse existing int/bool/byte/string resolution,
+while legacy `using` remains migration scaffolding; `alias` is contextual in the
+C parser, not newly reserved. The L-written parsers below still only record syntax. See the
 [executable contract](../../README.md#first-executable-replacement-subset).
 This does not turn `binding_main.l` into an executable compiler: it still checks
 syntax only and returns 0 rather than running the supplied program.

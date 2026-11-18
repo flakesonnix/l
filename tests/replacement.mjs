@@ -321,6 +321,82 @@ for (const [body, message, marker] of [
 ]) rejected(body, message, {}, marker);
 rejected('import app.values as v;answer:int=v::ready;int main(){return answer;}', /expected int, got bool/, { 'values.l': constantLibrary });
 
+// Replacement aliases reuse transparent scalar resolution, not nominal/runtime types.
+program('pub Count=alias Value;Value=alias int;Flag=alias bool;answer:Count=42;ready:Flag=true;Count id(const Count n){return n;}int main(){return if ready then (let n:Count=id(answer);in n) else 0;}');
+program('Count /*name*/ = /*keyword*/ alias /*target*/ int;int main(){Count n=42;return n;}');
+program('Count=alias Legacy;using Legacy=int;int main(){Count n=42;return n;}');
+program('using Legacy=Count;Count=alias int;Legacy main(){return 42;}');
+program('namespace n{pub Count=alias Base;}namespace n{using Base=int;}int main(){n::Count n=42;return n;}');
+program('alias=alias int;int main(){alias value=42;return value;}');
+program('using alias=int;Count=alias alias;int main(){Count alias=42;return alias;}');
+program('int alias(int n){return n;}int main(){int alias=40;return alias+2;}');
+program('namespace alias{pub Count=alias int;}int main(){alias::Count value=42;return value;}');
+program('Count=alias int;int main(){Count n=0;for(Count i=0;i<3;i++)n=n+14;return n;}');
+program('Count=alias int;Flag=alias bool;int main(){Count values[2];Flag ready[2];values[1]=42;ready[1]=true;return if ready[1] then values[1] else 0;}');
+program('Count=alias int;answer:Count=42;static Count cell=answer;Count get(){return cell++;}int main(){return get();}');
+program('Octet=alias byte;Text=alias string;const Text text="*";static Octet cell=text[0];Octet id(Octet n){return n;}int main(){return int(id(cell));}');
+program('Count=alias int;struct Pair{Count value;};Pair id(Pair p){return p;}int main(){return id(Pair{42}).value;}');
+const aliasLibrary = 'module app.types;Internal=alias int;pub Count=alias Internal;pub Flag=alias bool;pub answer:Count=42;';
+for (const [imports, type, value] of [
+  ['import app.types;', 'app::types::Count', 'app::types::answer'],
+  ['import app.types as t;', 't::Count', 't::answer'],
+  ['import app.types::{Count as C,answer};', 'C', 'answer'],
+]) program(`${imports}Result=alias ${type};Result id(Result n){return n;}int main(){return id(${value});}`, 42, { 'types.l': aliasLibrary });
+for (const [body, message, marker] of [
+  ['Count=alias void;int main(){return 0;}', /type alias target must be int or bool or byte or string/],
+  ['Count=alias auto;int main(){return 0;}', /type alias target must be int or bool or byte or string/],
+  ['struct Pair{int x;};Count=alias Pair;int main(){return 0;}', /type alias target must be int or bool or byte or string/],
+  ['enum Kind{A};Count=alias Kind;int main(){return 0;}', /type alias target must be int or bool or byte or string/],
+  ['Count=alias Missing;int main(){return 0;}', /unknown local variable or constant/, 'Missing'],
+  ['Count=alias int;Count=alias int;int main(){return 0;}', /duplicate type alias declaration/],
+  ['using Count=int;Count=alias int;int main(){return 0;}', /duplicate type alias declaration/],
+  ['Count=alias int;using Count=int;int main(){return 0;}', /duplicate type alias declaration/],
+  ['Count=alias int;Count:int=42;int main(){return 0;}', /type alias conflicts with module constant/],
+  ['Count=alias int;static int Count=42;int main(){return 0;}', /type alias conflicts with module constant/],
+  ['Count=alias int;int Count(){return 0;}int main(){return 0;}', /type alias conflicts with function/],
+  ['Count=alias int;namespace Count{}int main(){return 0;}', /type alias conflicts with namespace/],
+  ['Count=alias int;struct Count{int x;};int main(){return 0;}', /type alias conflicts with struct/],
+  ['Count=alias int;int f(Count n){return n;}int f(int n){return n;}int main(){return 0;}', /duplicate function signature/],
+  ['Count=alias int;int main(){return Count;}', /type alias is not a value/],
+  ['Count=alias int;int main(){return Count(42);}', /type alias is not callable/],
+  ['Count=alias int;int main(){Count n=true;return n;}', /expected int, got bool/],
+  ['Flag=alias bool;Flag main(){return true;}', /entry point must have signature/],
+  ['Count=alias int;int main(){int Count=0;Count n=42;return n;}', /local binding/],
+  ['Count=alias int;int main(){const Count n=0;n=42;return n;}', /cannot modify const binding/],
+  ['Count=alias int;answer:Count=42;int main(){answer++;return 0;}', /cannot modify module constant/],
+  ['Text=alias string;answer:Text="42";int main(){return 0;}', /name-first constant type must be int or bool/],
+  ['int f(){return 0;}Count=alias f;int main(){return 0;}', /declaration is not a type alias/],
+  ['value:int=42;Count=alias value;int main(){return 0;}', /declaration is not a type alias/],
+  ['Count=alias Count;int main(){return 0;}', /app::main::Count -> app::main::Count/],
+  ['Count=alias Other;using Other=Count;int main(){return 0;}', /app::main::Count -> app::main::Other -> app::main::Count/],
+  ['Count=alias int[2];int main(){return 0;}', /expected ';' after type alias/],
+  ['Count=alias int();int main(){return 0;}', /expected ';' after type alias/],
+  ['Count=alias const int;int main(){return 0;}', /expected Stage 0 type/],
+  ['Count=alias int int main(){return 0;}', /expected ';' after type alias/],
+  ['Count=alias;int main(){return 0;}', /expected Stage 0 type/],
+  ['Count=alias', /expected Stage 0 type/],
+  ['Count=', /expected function name/],
+  ['Count=other int;int main(){return 0;}', /expected function name/],
+  ['Count=aliases int;int main(){return 0;}', /expected function name/],
+  ['Count="alias" int;int main(){return 0;}', /expected function name/],
+  ['n::Count=alias int;int main(){return 0;}', /expected function name/],
+  ['static Count=alias int;int main(){return 0;}', /expected static storage name/],
+  ['int main(){Count=alias int;return 0;}', /expected ';' after expression/],
+]) rejected(body, message, {}, marker);
+for (const [body, message] of [
+  ['import app.types as t;Count=alias t::Internal;int main(){return 0;}', /inaccessible symbol/],
+  ['import app.types::{Internal};int main(){return 0;}', /inaccessible symbol/],
+  ['import app.types as t;t=alias int;int main(){return 0;}', /module alias conflicts/],
+]) rejected(body, message, { 'types.l': aliasLibrary });
+const erasedAliasSource = 'Int=alias int;Bool=alias bool;Byte=alias byte;String=alias string;\n'
+  + 'Int id(Int n){return n;}int main(){Bool b=true;Byte x=byte(42);String s="*";return if b then id(int(x))+s.length-1 else 0;}';
+const aliasErased = program(erasedAliasSource);
+const aliasLegacy = program(erasedAliasSource.replace(/(\w+)=alias (\w+);/g, 'using $1=$2;'));
+const aliasPrimitive = program(erasedAliasSource.replace(/\w+=alias \w+;/g, text => ' '.repeat(text.length))
+  .replace(/\bInt\b/g, 'int').replace(/\bBool\b/g, 'bool').replace(/\bByte\b/g, 'byte').replace(/\bString\b/g, 'string'));
+for (const f of [aliasLegacy, aliasPrimitive]) assert.deepEqual(readFileSync(resolve(f.directory, 'answer.lbc')),
+  readFileSync(resolve(aliasErased.directory, 'answer.lbc')), 'aliases must erase to identical bytecode, not runtime types');
+
 // Keep the existing frontend and VM budgets, not Stage 1's separate syntax limits.
 const bindings = count => Array.from({ length: count }, (_, n) => `x${n}=${n};`).join('');
 program(`int main(){return let ${bindings(1024)}in x1023;}`, 255);
@@ -342,6 +418,16 @@ rejected(`import app.values;${constants(512)}int main(){return 0;}`, /too many m
 const constantChain = count => Array.from({ length: count }, (_, n) => `c${n}:int=${n + 1 < count ? `c${n + 1}` : '42'};`).join('');
 program(`${constantChain(128)}int main(){return c0;}`);
 rejected(`${constantChain(129)}int main(){return c0;}`, /nesting limit/);
+const aliases = count => Array.from({ length: count }, (_, n) => `A${n}=alias int;`).join('');
+program(`${aliases(1024)}A1023 main(){return 42;}`);
+program(`${aliases(1023)}using Last=int;Last main(){return 42;}`);
+rejected(`${aliases(1025)}int main(){return 0;}`, /too many type aliases/);
+rejected(`${aliases(1024)}using Last=int;int main(){return 0;}`, /too many type aliases/);
+rejected(`import app.types;${aliases(512)}int main(){return 0;}`, /too many type aliases across modules/,
+  { 'types.l': `module app.types;${aliases(512)}using Last=int;` });
+const aliasChain = count => Array.from({ length: count }, (_, n) => `A${n}=alias ${n + 1 < count ? `A${n + 1}` : 'int'};`).join('');
+program(`${aliasChain(256)}A0 main(){return 42;}`);
+rejected(`${aliasChain(257)}int main(){return 0;}`, /nesting limit/);
 
 const example = resolve(root, 'examples/replacement/answer.l');
 const manifest = resolve(root, 'examples/replacement/package.json');
@@ -357,5 +443,9 @@ const constantsExample = resolve(root, 'examples/replacement/constants.l'), cons
 command(0, ['compile', constantsExample, '--manifest', manifest, '-o', constantsOutput]);
 command(0, ['check', constantsOutput]);
 command(42, ['run', constantsOutput]);
+const aliasExample = resolve(root, 'examples/replacement/aliases.l'), aliasOutput = resolve(work, 'aliases.lbc');
+command(0, ['compile', aliasExample, '--manifest', manifest, '-o', aliasOutput]);
+command(0, ['check', aliasOutput]);
+command(42, ['run', aliasOutput]);
 assert.match(command(65, ['check', example]).stderr, /requires an explicit --manifest/);
 console.log(`replacement execution: ${fixtures} fixtures, ${commands} CLI checks passed (bytecode 1.9)`);

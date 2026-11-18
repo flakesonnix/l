@@ -1232,6 +1232,47 @@ try {
     program(project, 42, settings);
   }
 
+  // Replacement aliases retain all four primitive identities across package/import DAGs.
+  state = 0x414c4e46;
+  for (let test = 0; test < 32; ++test) {
+    const project = {}, nodes = [], entryImports = [];
+    let main = 'int main(){';
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.t${n}`, kind = n % 4;
+      const type = ['int', 'bool', 'byte', 'string'][kind];
+      let imports = '', target = type;
+      for (let p = 0; p < n; ++p) if (p === n - 1 || p % 4 === kind || random(3) === 0) {
+        const parent = nodes[p].name, form = (test + p) % 3;
+        let reference;
+        if (!form) { imports += `import ${parent};`; reference = `${parent.replaceAll('.', '::')}::kinds::Value`; }
+        else if (form === 1) { imports += `import ${parent} as p${p};`; reference = `p${p}::kinds::Value`; }
+        else { imports += `import ${parent}::{kinds::Value as T${p}};`; reference = `T${p}`; }
+        if (p % 4 === kind) target = reference;
+      }
+      nodes.push({ name });
+      const number = BigInt(random(256));
+      const literal = kind === 0 ? String(number - 128n) : kind === 1 ? String(test % 2 === 0)
+        : kind === 2 ? `byte(${number})` : '"a\\0\\xff"';
+      const next = kind === 0 ? String(number - 127n) : kind === 1 ? String(test % 2 !== 0)
+        : kind === 2 ? `byte(${(number + 1n) % 256n})` : '""';
+      project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${imports}`
+        + `namespace kinds{pub Value=alias Storage;${n % 2 ? 'using Storage=' : 'Storage=alias '}${target};}`
+        + `pub const kinds::Value seed=${literal};pub static kinds::Value cell=seed;`
+        + 'pub kinds::Value identity(const kinds::Value value){return value;}';
+      entryImports.push(`import ${name}::{kinds::Value as T${n},identity as f${n},seed as s${n},cell as c${n}};`);
+      main += `T${n} v${n}=f${n}(s${n});if(v${n}!=${literal})return 1;c${n}=${next};if(c${n}!=${next})return 1;`;
+    }
+    for (const reverse of [false, true]) {
+      const imports = reverse ? [...entryImports].reverse() : entryImports;
+      project['app/main.l'] = `module app.main;${imports.join('')}${main}return 42;}`;
+      const settings = config(); if (reverse) settings.module_roots.reverse();
+      const f = program(project, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
+      assert.equal(bytes.readUInt32LE(16), 8, 'aliases must not duplicate shared primitive storage');
+      assert.equal(bytes.readUInt32LE(20), 0, 'aliases must not allocate struct identities');
+      assert.equal(bytes.readUInt32LE(24), 0, 'aliases must not allocate enum identities');
+    }
+  }
+
   // Module constants share normal namespace, import and visibility rules.
   const constantFiles = main => ({ 'app/main.l': `module app.main;${main}`,
     'std/values.l': 'module std.values;const int seed=40;pub const int answer=seed+2;pub const bool ready=answer==42;' });
@@ -1936,7 +1977,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 struct DAGs, 32 alias DAGs, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

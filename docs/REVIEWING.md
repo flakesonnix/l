@@ -201,6 +201,9 @@ present on the default branch, so manual dispatch is available.
   forward dependencies, cycles, readonly/import rules and shared resource limits.
   No VM storage or runtime module initialization may be added. The L-written
   parser remains syntax-only; keep its status distinct from the executable C path.
+- Check executable aliases for transparent primitive identity, forward/imported
+  targets, cycles, duplicate signatures and legacy interoperability. Verify
+  bytecode erasure, shared budgets and contextual `alias` identifier compatibility.
 - The coverage gate measures **Stage 0 C only**, not L-source coverage. Arbitrary
   bytecode mutants and cyclic verifier graphs must never be executed.
 - Treat local command results and hosted GitHub status checks as separate evidence.
@@ -229,7 +232,9 @@ extern parameters. Enum-value checks, storage allocation/initialization, length
 evaluation and extern implementation resolution remain deferred.
 Transparent aliases use approved `Name = alias Type;` spelling, preserving the
 existing scalar-alias meaning rather than introducing nominal/runtime types.
-Targets are recorded without expansion or cycle/type checking at this stage.
+The executable C frontend resolves scalar targets, cycles and visibility through
+the existing analyzer. The L-written parser still records targets without expansion
+or cycle/type checking.
 Namespaces use approved `Name = namespace { declarations };` bindings, retaining
 intended compile-time scopes, nesting/reopening and member-specific visibility.
 Namespace-level `pub` is rejected; logical scope merging, lookup, duplicate checks

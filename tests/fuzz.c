@@ -26,6 +26,7 @@ static size_t let_programs;
 static size_t conditional_programs;
 static size_t constant_programs;
 static size_t constant_rejections;
+static size_t alias_programs, alias_rejections;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -668,6 +669,66 @@ static void constant_recovery(void) {
             memset(ctx, 0, sizeof(*ctx)); ctx->filename = "constant-recovery";
             constant_success(ctx);
             cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
+/* Four independent scalar models use forward aliases through both migration spellings. */
+static void alias_cases(void) {
+    static const char *const names[] = {"I", "F", "O", "T"};
+    static const char *const types[] = {"int", "bool", "byte", "string"};
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        int32_t value = test % 2 ? expression_value()
+            : (int32_t)((int64_t)random_number(65536) * 65536 + random_number(65536) + INT32_MIN);
+        bool flag = random_number(2) != 0;
+        unsigned octet = random_number(256);
+        source_length = 0;
+        for (unsigned n = 0; n < 8; ++n) {
+            for (unsigned kind = 0; kind < 4; ++kind) {
+                if ((test + n + kind) % 2) append("%s%u=alias ", names[kind], n);
+                else append("using %s%u=", names[kind], n);
+                if (n < 7) append("%s%u;", names[kind], n + 1);
+                else append("%s;", types[kind]);
+            }
+        }
+        append("answer:I0=(%d);ready:F0=%s;const O0 octet=byte(%u);const T0 text=\"a\\0\\xff\";"
+               "I0 pass(const I0 n){return n;}int main(){I0 value=pass(answer);F0 active=ready;"
+               "O0 bytes[1];bytes[0]=octet;T0 copy=text;"
+               "if(value!=(%d)||active!=%s||int(bytes[0])!=%u||copy.length!=3||int(copy[1])!=0||int(copy[2])!=255)1/0;"
+               "return let value:I0=value;in value;}", value, flag ? "true" : "false", octet,
+               value, flag ? "true" : "false", octet);
+        ++alias_programs;
+        semantic_case(value, 0);
+    }
+}
+static void alias_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) {
+        (void)compile(ctx, text);
+        failed("invalid replacement alias was accepted");
+    }
+    if (ctx->status != 65) failed("alias rejection returned an unexpected status");
+    ++alias_rejections;
+}
+static void alias_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned alias context rejected valid source");
+    Program *p = compile(ctx, "Count=alias Value;Value=alias int;answer:Count=42;Count main(){return answer;}");
+    if (p->global_count || p->struct_count || p->enum_count) failed("scalar aliases allocated runtime storage/types");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void alias_recovery(void) {
+    static const char *const invalid[] = {
+        "Count=alias;int main(){return 0;}",
+        "Count=alias void;int main(){return 0;}",
+        "Count=alias Other;Other=alias Count;int main(){return 0;}",
+        "Count=alias int;using Count=int;int main(){return 0;}"
+    };
+    Context *ctx = context("alias-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            alias_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("alias rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "alias-recovery";
+            alias_success(ctx); cleanup(ctx);
         }
     }
     dispose(ctx);
@@ -1568,6 +1629,12 @@ int main(void) {
         "answer:int=base+2;base:int=40;ready:bool=answer==42;"
         "int main(){return if ready then answer/(base-40) else 0;}"
         "int recover(){return let answer=base;in answer+2;}");
+    alias_cases();
+    alias_recovery();
+    scoped_lifecycle(
+        "Count=alias int;Flag=alias bool;answer:Count=42;ready:Flag=true;"
+        "int main(){return if ready then answer/(answer-42) else 0;}"
+        "Count recover(){return let answer:Count=42;in answer;}");
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
@@ -1587,5 +1654,7 @@ int main(void) {
     printf("fuzz: %zu conditional programs matched selected-branch scope models; cleanup and retries passed\n", conditional_programs);
     printf("fuzz: %zu constant programs matched full-width forward DAG models; source/bytecode cleanup and retries passed\n", constant_programs);
     printf("fuzz: %zu constant rejection/cleanup/recompile cycles passed\n", constant_rejections);
+    printf("fuzz: %zu alias programs matched full-width four-scalar models; source/bytecode cleanup and retries passed\n", alias_programs);
+    printf("fuzz: %zu alias rejection/cleanup/recompile cycles passed\n", alias_rejections);
     return 0;
 }

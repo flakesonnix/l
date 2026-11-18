@@ -12,7 +12,8 @@ GitHub review order and merge instructions: [review guide](docs/REVIEWING.md).
 The compiler now executes a **first approved replacement-syntax subset** through
 the existing Stage 0 pipeline: C-style typed functions, locals and expressions,
 plus eager, scoped `let/in` with immutable bindings and explicit `var`, typed
-`if … then … else …` conditional expressions, and typed name-first file constants.
+`if … then … else …` conditional expressions, typed name-first file constants,
+and name-first transparent scalar aliases.
 Legacy bootstrap implementation sources and examples still compile. The separate
 L-written Stage 1 frontend accepts a broader replacement grammar as syntax only.
 
@@ -54,7 +55,8 @@ claim self-hosting.
 Executable features include modules, `pub`, `int`/`bool` signatures and parameters,
 initialized C locals, `const` parameters/locals, arithmetic/comparisons, boolean
 operators, direct calls, explicit returns, nested `let/in`, conditional
-expressions and `[pub] name: Type = expression;` file constants. Existing name,
+expressions, `[pub] name: Type = expression;` file constants and
+`[pub] Name = alias Type;` transparent aliases. Existing name,
 type, call, visibility and entry-point checks apply before bytecode is written.
 
 - `let name[: Type] = expression; ... in body` opens a lexical scope. Bindings are
@@ -84,11 +86,21 @@ type, call, visibility and entry-point checks apply before bytecode is written.
   mutable-static reads, `let` and conditional expressions are not constant
   initializers. The existing 1024-constant budget is shared across loaded modules
   and both spellings; nesting limits also apply to dependency chains.
+- Name-first aliases reuse existing scalar-alias resolution: targets must resolve
+  to `int`, `bool`, `byte` or `string`, including forward/chained/imported aliases.
+  They introduce no nominal identity, runtime value or VM storage. Existing
+  duplicate, visibility, cycle, overload and readonly rules remain authoritative.
+  The 1024-alias budget is shared across loaded modules and both spellings.
+- `alias` is contextual after `Name =`, not a new reserved source keyword. Legacy
+  `using Name = Type;` remains bootstrap migration scaffolding. Alias declarations
+  are module/namespace-level, not local; existing legacy namespace containers work
+  without enabling the replacement namespace spelling. Aliases to byte/string do
+  not expand the int/bool-only restriction on name-first constants.
 - `let`, `in`, `var` and `then` are now reserved by the source compiler. Parentheses
   delimit a `let` when an operator should apply outside its full body expression. Existing
   256-level compiler nesting, per-function slot and VM resource limits remain.
 
-Named records and enum/alias/namespace replacement spellings remain **syntax-only**
+Named records and enum/namespace replacement spellings remain **syntax-only**
 in Stage 1. Legacy `const Type name = expression;` remains temporary bootstrap
 migration scaffolding. Name-first constants also work inside existing legacy
 namespace containers; this does not implement the replacement namespace spelling.
@@ -114,6 +126,15 @@ ready: bool = answer == 42;
 ./build/l check examples/replacement/constants.l --manifest examples/replacement/package.json
 ./build/l compile examples/replacement/constants.l --manifest examples/replacement/package.json -o build/constants.lbc
 ./build/l run build/constants.lbc                # Exit code 42
+```
+
+[`examples/replacement/aliases.l`](examples/replacement/aliases.l) combines
+forward/chained aliases, typed constants, a readonly parameter and runtime expressions:
+
+```sh
+./build/l check examples/replacement/aliases.l --manifest examples/replacement/package.json
+./build/l compile examples/replacement/aliases.l --manifest examples/replacement/package.json -o build/aliases.lbc
+./build/l run build/aliases.lbc                  # Exit code 42
 ```
 
 ### Broader syntax-only replacement-parser slices
@@ -207,8 +228,9 @@ pub Count = alias int;
 Count increment(Count value) { return value + 1; }
 ```
 
-Aliases are intended to retain the existing scalar-alias semantics, not create
-nominal types or runtime values. The parser records written targets but does not
+The executable C frontend now resolves these aliases with the existing scalar
+analyzer as described above; they create no nominal types or runtime values.
+The standalone L-written parser still only records written targets: it does not
 resolve/expand them, validate target types, check visibility or detect cycles.
 
 Namespaces use name-first bindings too:
@@ -337,7 +359,8 @@ above; artifacts remain at **1.9**.
 ## Supported subset
 
 This section describes Stage 0's bootstrap subset, now extended with executable
-`let/in`, conditional expressions and typed name-first constants. It is not the
+`let/in`, conditional expressions, typed name-first constants and transparent
+name-first aliases. It is not the
 full replacement grammar. Stage 1's broader syntax-only subset is listed
 separately above.
 
