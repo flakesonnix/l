@@ -27,6 +27,7 @@ static size_t conditional_programs;
 static size_t constant_programs;
 static size_t constant_rejections;
 static size_t alias_programs, alias_rejections;
+static size_t namespace_programs, namespace_rejections;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -729,6 +730,59 @@ static void alias_recovery(void) {
             if (ctx->allocated || ctx->allocations) failed("alias rejection could not be cleaned up");
             memset(ctx, 0, sizeof(*ctx)); ctx->filename = "alias-recovery";
             alias_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
+/* Host-side shared cells model relative lookup through nested/reopened namespaces. */
+static void namespace_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        int32_t initial = test % 2 ? expression_value()
+            : (int32_t)((int64_t)random_number(65536) * 65536 + random_number(65536) + INT32_MIN);
+        int32_t delta = (int32_t)random_number(201) - 100;
+        int64_t result = (int64_t)initial + delta;
+        if (result < INT32_MIN || result > INT32_MAX) delta = -delta;
+        int32_t expected = (int32_t)((int64_t)initial + delta);
+        source_length = 0;
+        append("bias:int=900;int step(int n){return 1/0;}"
+               "outer=namespace{Count=alias int;bias:int=(%d);static Count cell=(%d);"
+               "left=namespace{Count read(){return cell;}};};"
+               "namespace outer{right=namespace{Count run(){return step(bias);}};"
+               "Count step(Count amount){cell=cell+amount;return left::read();}}"
+               "int main(){int first=outer::right::run();int second=outer::left::read();"
+               "if(first!=second||outer::cell!=(%d)||bias!=900)1/0;return second;}", delta, initial, expected);
+        ++namespace_programs;
+        semantic_case(expected, 0);
+    }
+}
+static void namespace_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) {
+        (void)compile(ctx, text);
+        failed("invalid replacement namespace was accepted");
+    }
+    if (ctx->status != 65) failed("namespace rejection returned an unexpected status");
+    ++namespace_rejections;
+}
+static void namespace_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned namespace context rejected valid source");
+    Program *p = compile(ctx, "n=namespace{answer:int=42;};namespace n{int get(){return answer;}}int main(){return n::get();}");
+    if (p->global_count || p->struct_count || p->enum_count) failed("namespace allocated runtime storage/types");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void namespace_recovery(void) {
+    static const char *const invalid[] = {
+        "n=namespace{}int main(){return 0;}",
+        "pub n=namespace{};int main(){return 0;}",
+        "n=namespace{value:int=1;};namespace n{const int value=2;}int main(){return 0;}",
+        "n=namespace{int get(){return missing();}};int main(){return 0;}"
+    };
+    Context *ctx = context("namespace-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            namespace_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("namespace rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "namespace-recovery";
+            namespace_success(ctx); cleanup(ctx);
         }
     }
     dispose(ctx);
@@ -1635,6 +1689,12 @@ int main(void) {
         "Count=alias int;Flag=alias bool;answer:Count=42;ready:Flag=true;"
         "int main(){return if ready then answer/(answer-42) else 0;}"
         "Count recover(){return let answer:Count=42;in answer;}");
+    namespace_cases();
+    namespace_recovery();
+    scoped_lifecycle(
+        "n=namespace{Count=alias int;answer:Count=42;};"
+        "int main(){return n::answer/(n::answer-42);}"
+        "n::Count recover(){return let value:n::Count=n::answer;in value;}");
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
@@ -1656,5 +1716,7 @@ int main(void) {
     printf("fuzz: %zu constant rejection/cleanup/recompile cycles passed\n", constant_rejections);
     printf("fuzz: %zu alias programs matched full-width four-scalar models; source/bytecode cleanup and retries passed\n", alias_programs);
     printf("fuzz: %zu alias rejection/cleanup/recompile cycles passed\n", alias_rejections);
+    printf("fuzz: %zu namespace programs matched full-width shared-cell and relative-lookup models\n", namespace_programs);
+    printf("fuzz: %zu namespace rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", namespace_rejections);
     return 0;
 }

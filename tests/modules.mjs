@@ -435,6 +435,53 @@ try {
     project['app/main.l'] = `module app.main;import app.n7;int main(){if(app::n7::value()==${values[7]})return 42;return 1;}`;
     program(project);
   }
+  // New/legacy reopened namespaces share cells and relative lookup across package DAGs.
+  state = 0x4e535044;
+  for (let test = 0; test < 32; ++test) {
+    const project = {}, nodes = [], imports = [];
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.n${n}`, parents = [], initial = BigInt(random(101)), delta = BigInt(random(101) - 50);
+      let header = '', body = 'Count current=(cell+input+bias)%1009;cell=current;';
+      for (let p = 0; p < n; ++p) if (p === n - 1 || random(3) === 0) {
+        const parent = nodes[p].name, form = (test + p) % 3;
+        parents.push(p);
+        if (!form) { header += `import ${parent};`; body += `current=${parent.replaceAll('.', '::')}::work::inner::run(current);`; }
+        else if (form === 1) { header += `import ${parent} as p${p};`; body += `current=p${p}::work::inner::run(current);`; }
+        else { header += `import ${parent}::{work::inner::run as f${p}};`; body += `current=f${p}(current);`; }
+      }
+      const declarations = `pub Count=alias int;bias:int=${delta};pub static Count cell=${initial};`;
+      const functions = `inner=namespace{pub Count run(Count input){${body}return current;}};`;
+      project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${header}`
+        + (n % 2 ? `namespace work{${declarations}}work=namespace{${functions}};`
+          : `work=namespace{${declarations}};namespace work{${functions}}`);
+      nodes.push({ name, parents, initial, delta });
+      imports.push(`import ${name} as m${n};`);
+    }
+    const cells = nodes.map(node => node.initial);
+    function simulate(n, value) {
+      let current = (cells[n] + value + nodes[n].delta) % 1009n;
+      cells[n] = current;
+      for (const parent of nodes[n].parents) current = simulate(parent, current);
+      return current;
+    }
+    const a = simulate(7, 17n), b = simulate(6, -23n);
+    const comparisons = cells.map((cell, n) => `if(m${n}::work::cell!=${cell})return 1;`).join('');
+    imports.push('import app.n7::{work::inner::run as top};');
+    for (const reverse of [false, true]) {
+      const order = reverse ? [...imports].reverse() : imports;
+      project['app/main.l'] = `module app.main;${order.join('')}int main(){int a=top(17);int b=m6::work::inner::run(-23);`
+        + `if(a!=${a}||b!=${b})return 1;${comparisons}return 42;}`;
+      const settings = config(); if (reverse) settings.module_roots.reverse();
+      const f = program(project, 42, settings);
+      assert.equal(readFileSync(resolve(f.directory, 'program.lbc')).readUInt32LE(16), 8, 'reopened namespaces must not duplicate shared storage');
+    }
+  }
+  for (const reverse of [false, true]) {
+    const imports = ['import std.math;', 'import std.math.child;']; if (reverse) imports.reverse();
+    program({ 'app/main.l': `module app.main;${imports.join('')}int main(){return std::math::child::answer();}`,
+      'std/math.l': 'module std.math;child=namespace{pub int answer(){return 1;}};',
+      'std/math/child.l': 'module std.math.child;pub int answer(){return 42;}' });
+  }
   const maximum = {};
   for (let n = 0; n < 255; ++n) maximum[`app/n${n}.l`] = `module app.n${n};${n ? `import app.n${n - 1};` : ''}pub int value(){return ${n ? `app::n${n - 1}::value()` : '42'};}`;
   maximum['app/main.l'] = 'module app.main;import app.n254;int main(){return app::n254::value();}';
@@ -1977,7 +2024,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 reopened replacement namespace DAGs in two import orders, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

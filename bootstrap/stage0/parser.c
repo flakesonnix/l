@@ -290,14 +290,18 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
     while (peek(p).kind != TK_EOF && peek(p).kind != '}') {
         Token token = peek(p);
         bool exported = take(p, TK_PUB);
-        if (take(p, TK_NAMESPACE)) {
+        bool name_namespace = peek(p).kind == TK_NAME && p->tokens[p->at + 1].kind == '=' &&
+            p->tokens[p->at + 2].kind == TK_NAMESPACE;
+        if (name_namespace || take(p, TK_NAMESPACE)) {
             if (exported) token_fail(p->ctx, token, "namespaces do not change declaration visibility");
             Token name = expect(p, TK_NAME, "expected namespace name");
+            if (name_namespace) p->at += 2; /* '=' and 'namespace' were checked by lookahead. */
             name = join_name(p->ctx, scope, name, "::");
             Namespace *ns = allocate(p->ctx, sizeof(*ns)); ns->name = name;
             ns->next = ast->entry->namespaces; ast->entry->namespaces = ns;
             expect(p, '{', "expected '{' after namespace name");
             enter(p->ctx, token); declarations(p, ast, name, true); leave(p->ctx);
+            if (name_namespace) expect(p, ';', "expected ';' after namespace binding");
             while (*tail) tail = &(*tail)->next;
             continue;
         }

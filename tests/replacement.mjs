@@ -397,6 +397,81 @@ const aliasPrimitive = program(erasedAliasSource.replace(/\w+=alias \w+;/g, text
 for (const f of [aliasLegacy, aliasPrimitive]) assert.deepEqual(readFileSync(resolve(f.directory, 'answer.lbc')),
   readFileSync(resolve(aliasErased.directory, 'answer.lbc')), 'aliases must erase to identical bytecode, not runtime types');
 
+// Namespace bindings are existing compile-time scopes, never runtime values/initializers.
+program('math=namespace{pub Count=alias int;pub answer:Count=base+2;base:int=40;};math=namespace{pub Count get(){return answer;}};int main(){return math::get();}');
+program('math /*name*/ = /*keyword*/ namespace /*body*/ {pub int get(){return 42;}};int main(){return math::get();}');
+program('empty=namespace{};empty=namespace{};int main(){return 42;}');
+program('namespace math{int get(){return answer;}}math=namespace{answer:int=42;};int main(){return math::get();}');
+program('math=namespace{int get(){return answer;}};namespace math{const int answer=42;}int main(){return math::get();}');
+program('outer=namespace{namespace inner{int get(){return 42;}}};int main(){return outer::inner::get();}');
+program('namespace outer{inner=namespace{int get(){return 42;}};}int main(){return outer::inner::get();}');
+program('outer=namespace{left=namespace{int get(){return 42;}};right=namespace{int get(){return left::get();}};};int main(){return outer::right::get();}');
+program('int get(){return 1;}n=namespace{int get(){return 42;}int run(){return get();}};int main(){return n::run();}');
+program('n=namespace{int pick(int n){return n*2;}};n=namespace{int pick(bool n){return if n then pick(21) else 0;}};int main(){return n::pick(true);}');
+program('n=namespace{static int cell=40;int next(){return cell++;}};int main(){return n::next()+n::next()-39;}');
+program('n=namespace{size:int=2;static int data[size];};n=namespace{int get(){data[1]=42;return data[0]+data[1];}};int main(){return n::get();}');
+program('n=namespace{pub struct Pair{int x;};pub enum Kind{Answer=42};};int main(){n::Pair p=n::Pair{42};n::Kind k=n::Kind::Answer;return if k==n::Kind::Answer then p.x else 0;}');
+program('alias=namespace{Count=alias int;Count get(){return 42;}};int main(){return alias::get();}');
+program('n=namespace{int main(){return 42;}};int main(){return n::main();}');
+program('int first(){return n::answer;}n=namespace{answer:int=42;int get(){return answer;}};int last(){return n::get();}int main(){return first()+last()-42;}');
+program('n=namespace{int get(){return 1/0;}};int main(){return if true then 42 else n::get();}');
+program('n=namespace{minimum:int=-2147483648;int get(){return minimum/-1;}};int main(){return n::get();}', 70, {}, /integer overflow/);
+const namespaceLibrary = 'module app.scopes;math=namespace{Internal=alias int;pub Count=alias Internal;'
+  + 'base:int=40;pub answer:Count=base+2;pub Count get(){return answer;}int hidden(){return answer;}'
+  + 'inner=namespace{pub int get(){return answer;}};};';
+for (const [imports, name, type] of [
+  ['import app.scopes;', 'app::scopes::math::get', 'app::scopes::math::Count'],
+  ['import app.scopes as s;', 's::math::inner::get', 's::math::Count'],
+  ['import app.scopes::{math::get as get,math::Count as Count};', 'get', 'Count'],
+]) program(`${imports}${type} run(){return ${name}();}int main(){return run();}`, 42, { 'scopes.l': namespaceLibrary });
+for (const [body, message, marker] of [
+  ['pub math=namespace{};int main(){return 0;}', /namespaces do not change declaration visibility/, 'pub'],
+  ['math=namespace{}int main(){return 0;}', /expected ';' after namespace binding/],
+  ['math=namespace{', /expected '}' after namespace/],
+  ['math=namespace', /expected '{' after namespace name/],
+  ['math=namespace;', /expected '{' after namespace name/],
+  ['math=namespace{};;int main(){return 0;}', /expected Stage 0 type/],
+  ['math=namespace{import app.scopes;};int main(){return 0;}', /must precede/],
+  ['math=namespace{module app.other;};int main(){return 0;}', /must precede/],
+  ['math=namespace{pub nested=namespace{};};int main(){return 0;}', /do not change declaration visibility/],
+  ['n=namespace{int main(){return 42;}};', /missing entry point/],
+  ['n=namespace{};int main(){return n;}', /declaration is not a scalar constant/],
+  ['n=namespace{};int main(){return n();}', /unknown function or qualified declaration/],
+  ['n=namespace{};int main(){n value=0;return 0;}', /declaration is not a type alias/],
+  ['n=namespace{};value:int=n;int main(){return 0;}', /declaration is not a scalar constant/],
+  ['n=namespace{};n:int=42;int main(){return 0;}', /conflicts with namespace declaration/],
+  ['n=namespace{};n=alias int;int main(){return 0;}', /conflicts with namespace declaration/],
+  ['n=namespace{};int n(){return 0;}int main(){return 0;}', /conflicts with namespace declaration/],
+  ['n=namespace{};struct n{int x;};int main(){return 0;}', /conflicts with namespace declaration/],
+  ['n=namespace{};enum n{A};int main(){return 0;}', /conflicts with namespace declaration/],
+  ['n=namespace{answer:int=42;};namespace n{const int answer=0;}int main(){return 0;}', /duplicate module constant/],
+  ['n=namespace{Count=alias int;};n=namespace{using Count=int;};int main(){return 0;}', /duplicate type alias declaration/],
+  ['n=namespace{int get(){return 0;}};namespace n{int get(){return 0;}}int main(){return 0;}', /duplicate function signature/],
+  ['n=namespace{};int get(){return 42;}int main(){return n::get();}', /unknown function or qualified/],
+  ['n=namespace{int get(){return 42;}};int main(){return let n=0;in n::get();}', /local binding is not callable or a namespace/],
+  ['n=namespace{int get(){return 42;}};int main(){return get();}', /unknown function/],
+  ['n=namespace{int get(){return true;}};int main(){return 0;}', /expected int, got bool/],
+  ['n=namespace{answer:int=get();int get(){while(true){}return 0;}};int main(){return 0;}', /function call is not a constant expression/],
+  ['int main(){n=namespace{};return 0;}', /expected expression/],
+  ['static n=namespace{};int main(){return 0;}', /expected static storage name/],
+  ['outer::n=namespace{};int main(){return 0;}', /expected function name/],
+]) rejected(body, message, {}, marker);
+for (const [body, message] of [
+  ['import app.scopes as s;int main(){return s::math::hidden();}', /inaccessible symbol/],
+  ['import app.scopes::{math::hidden};int main(){return 0;}', /inaccessible symbol/],
+  ['import app.scopes as s;int main(){return s::math::base;}', /inaccessible symbol/],
+  ['import app.scopes as s;Count=alias s::math::Internal;int main(){return 0;}', /inaccessible symbol/],
+  ['import app.scopes as s;s=namespace{};int main(){return 0;}', /module alias conflicts/],
+  ['import app.scopes;int main(){return math::get();}', /no unqualified fallback/],
+]) rejected(body, message, { 'scopes.l': namespaceLibrary });
+const namespaceSource = 'n=namespace{pub Count=alias int;answer:Count=42;int get(){return answer;}};\n'
+  + 'n=namespace{inner=namespace{int get(){return n::get();}};};\nint main(){return n::inner::get();}';
+const namespaceNew = program(namespaceSource);
+const namespaceOld = program(namespaceSource.replace(/(\w+)=namespace\{/g, 'namespace $1{').replaceAll('};', '} '));
+assert.deepEqual(readFileSync(resolve(namespaceNew.directory, 'answer.lbc')), readFileSync(resolve(namespaceOld.directory, 'answer.lbc')),
+  'new and legacy namespace scopes must compile to identical position-preserving bytecode');
+for (const offset of [16, 20, 24]) assert.equal(readFileSync(resolve(namespaceNew.directory, 'answer.lbc')).readUInt32LE(offset), 0);
+
 // Keep the existing frontend and VM budgets, not Stage 1's separate syntax limits.
 const bindings = count => Array.from({ length: count }, (_, n) => `x${n}=${n};`).join('');
 program(`int main(){return let ${bindings(1024)}in x1023;}`, 255);
@@ -428,6 +503,10 @@ rejected(`import app.types;${aliases(512)}int main(){return 0;}`, /too many type
 const aliasChain = count => Array.from({ length: count }, (_, n) => `A${n}=alias ${n + 1 < count ? `A${n + 1}` : 'int'};`).join('');
 program(`${aliasChain(256)}A0 main(){return 42;}`);
 rejected(`${aliasChain(257)}int main(){return 0;}`, /nesting limit/);
+program(`${'n=namespace{'.repeat(256)}${'};'.repeat(256)}int main(){return 42;}`);
+rejected(`${'n=namespace{'.repeat(257)}${'};'.repeat(257)}int main(){return 0;}`, /nesting limit/);
+program(`n=namespace{${constants(1024)}};int main(){return n::c42;}`);
+rejected(`n=namespace{${constants(1024)}};namespace n{const int tail=0;}int main(){return 0;}`, /too many module constants/);
 
 const example = resolve(root, 'examples/replacement/answer.l');
 const manifest = resolve(root, 'examples/replacement/package.json');
@@ -447,5 +526,9 @@ const aliasExample = resolve(root, 'examples/replacement/aliases.l'), aliasOutpu
 command(0, ['compile', aliasExample, '--manifest', manifest, '-o', aliasOutput]);
 command(0, ['check', aliasOutput]);
 command(42, ['run', aliasOutput]);
+const namespaceExample = resolve(root, 'examples/replacement/namespaces.l'), namespaceOutput = resolve(work, 'namespaces.lbc');
+command(0, ['compile', namespaceExample, '--manifest', manifest, '-o', namespaceOutput]);
+command(0, ['check', namespaceOutput]);
+command(42, ['run', namespaceOutput]);
 assert.match(command(65, ['check', example]).stderr, /requires an explicit --manifest/);
 console.log(`replacement execution: ${fixtures} fixtures, ${commands} CLI checks passed (bytecode 1.9)`);
