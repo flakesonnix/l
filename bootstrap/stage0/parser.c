@@ -142,9 +142,25 @@ static Expr *primary(Parser *p) {
             ExprList **tail = &value->args;
             if (!take(p, '}')) {
                 do {
+                    Token name = peek(p);
+                    bool label = name.kind == TK_NAME && p->tokens[p->at + 1].kind == '=';
                     ExprList *arg = allocate(p->ctx, sizeof(*arg));
-                    arg->value = expression(p, 1); *tail = arg; tail = &arg->next;
-                    if (!take(p, ',')) break;
+                    if (value->named) {
+                        arg->name = expect(p, TK_NAME, "expected record initializer field name");
+                        expect(p, '=', "expected '=' after record initializer field name");
+                        arg->value = expression(p, 1);
+                        expect(p, ';', "expected ';' after record initializer field");
+                    } else {
+                        arg->value = expression(p, 1);
+                        /* ';' distinguishes named fields from legacy positional assignments. */
+                        if (take(p, ';')) {
+                            if (!label) token_fail(p->ctx, name, "expected '}' after struct literal");
+                            if (value->args) token_fail(p->ctx, name, "cannot mix positional and named record initializer fields");
+                            value->named = true; arg->name = name; arg->value = arg->value->right;
+                        }
+                    }
+                    *tail = arg; tail = &arg->next;
+                    if (!value->named && !take(p, ',')) break;
                     if (peek(p).kind == '}') break;
                 } while (true);
                 expect(p, '}', "expected '}' after struct literal");
@@ -338,18 +354,29 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
             *enums = enumeration;
             continue;
         }
-        if (take(p, TK_STRUCT)) {
+        bool name_record = peek(p).kind == TK_NAME && p->tokens[p->at + 1].kind == '=' &&
+            p->tokens[p->at + 2].kind == TK_NAME &&
+            token_equal(p->tokens[p->at + 2], (Token){.text = "record", .length = 6});
+        if (name_record || take(p, TK_STRUCT)) {
             if (ast->struct_count++ == L_MAX_STRUCTS) token_fail(p->ctx, token, "too many structs (maximum 256)");
             Struct *record = allocate(p->ctx, sizeof(*record));
             record->module = ast->entry; record->scope = scope; record->exported = exported;
+            record->is_record = name_record;
             record->name = expect(p, TK_NAME, "expected struct name");
+            if (name_record) p->at += 2; /* '=' and contextual 'record' were checked by lookahead. */
             expect(p, '{', "expected '{' after struct name");
             Field **fields = &record->fields;
             while (!take(p, '}')) {
                 if (record->field_count++ == L_MAX_FIELDS) token_fail(p->ctx, peek(p), "too many struct fields (maximum 64)");
                 Field *field = allocate(p->ctx, sizeof(*field));
-                field->type = parse_type(p, &field->type_name);
-                field->name = expect(p, TK_NAME, "expected struct field name");
+                if (name_record) {
+                    field->name = expect(p, TK_NAME, "expected record field name");
+                    expect(p, ':', "expected ':' after record field name");
+                    field->type = parse_type(p, &field->type_name);
+                } else {
+                    field->type = parse_type(p, &field->type_name);
+                    field->name = expect(p, TK_NAME, "expected struct field name");
+                }
                 expect(p, ';', "expected ';' after scalar struct field");
                 *fields = field; fields = &field->next;
             }

@@ -29,6 +29,7 @@ static size_t constant_rejections;
 static size_t alias_programs, alias_rejections;
 static size_t namespace_programs, namespace_rejections;
 static size_t replacement_enum_programs, enum_rejections;
+static size_t record_programs, record_rejections;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -838,6 +839,76 @@ static void enum_recovery(void) {
             if (ctx->allocated || ctx->allocations) failed("enum rejection could not be cleaned up");
             memset(ctx, 0, sizeof(*ctx)); ctx->filename = "enum-recovery";
             enum_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
+/* Model written initializer order separately from declaration indexes and value copies. */
+static void record_cases(void) {
+    static const char *const fields[] = {"left", "right", "active", "octet", "text", "kind"};
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        int32_t value = test % 2 ? expression_value()
+            : (int32_t)((int64_t)random_number(65536) * 65536 + random_number(65536) + INT32_MIN);
+        unsigned order[] = {0, 1, 2, 3, 4, 5}, start = random_number(101), counter = start;
+        unsigned right = 0, octet = 0; bool active = false, short_text = false, cold = false;
+        for (unsigned n = 6; n > 1; --n) {
+            unsigned at = random_number(n), saved = order[n - 1]; order[n - 1] = order[at]; order[at] = saved;
+        }
+        source_length = 0;
+        append("Kind=enum{Cold=-2147483648;Hot=2147483647;};"
+               "Packet=record{left:int;right:int;active:bool;octet:byte;text:string;kind:Kind;};"
+               "static int counter=%u;int take(int value){counter++;return value;}int index(){return counter++;}"
+               "bool flag(){return counter++%%2==0;}byte octet(){return byte(counter++%%256);}"
+               "string text(){if(counter++%%2==0)return \"*\";return \"a\\0\\xff\";}"
+               "Kind kind(){if(counter++%%2==0)return Kind::Cold;return Kind::Hot;}"
+               "Packet change(Packet p){p.left=0;return p;}int main(){Packet original=Packet{", start);
+        for (unsigned n = 0; n < 6; ++n) {
+            unsigned field = order[n], before = counter++;
+            append("%s=", fields[field]);
+            switch (field) {
+            case 0: append("take((%d));", value); break;
+            case 1: append("index();"); right = before; break;
+            case 2: append("flag();"); active = before % 2 == 0; break;
+            case 3: append("octet();"); octet = before % 256; break;
+            case 4: append("text();"); short_text = before % 2 == 0; break;
+            default: append("kind();"); cold = before % 2 == 0; break;
+            }
+        }
+        append("};Packet copy=change(original);if(original.left!=(%d)||original.right!=%u||original.active!=%s||"
+               "int(original.octet)!=%u||original.text!=%s||original.kind!=Kind::%s||counter!=%u||copy.left!=0)1/0;return original.left;}",
+               value, right, active ? "true" : "false", octet, short_text ? "\"*\"" : "\"a\\0\\xff\"", cold ? "Cold" : "Hot", counter);
+        ++record_programs;
+        semantic_case(value, 0);
+    }
+}
+static void record_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) {
+        (void)compile(ctx, text);
+        failed("invalid named record initializer was accepted");
+    }
+    if (ctx->status != 65) failed("record rejection returned an unexpected status");
+    ++record_rejections;
+}
+static void record_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned record context rejected valid source");
+    Program *p = compile(ctx, "Pair=record{x:int;ready:bool;};int main(){Pair p=Pair{ready=true;x=42;};return if p.ready then p.x else 0;}");
+    if (p->struct_count != 1 || p->enum_count || p->global_count) failed("record has incorrect runtime metadata");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void record_recovery(void) {
+    static const char *const invalid[] = {
+        "Pair=record{x:int;};int main(){Pair p=Pair{unknown=1;};return 0;}",
+        "Pair=record{x:int;};int main(){Pair p=Pair{x=1;x=2;};return 0;}",
+        "Pair=record{x:int;};int main(){Pair p=Pair{};return 0;}",
+        "Pair=record{x:int;};int main(){Pair p=Pair{x=true;};return 0;}"
+    };
+    Context *ctx = context("record-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            record_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("record rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "record-recovery";
+            record_success(ctx); cleanup(ctx);
         }
     }
     dispose(ctx);
@@ -1756,6 +1827,11 @@ int main(void) {
         "Kind=enum{Start=42;Dirty=0;};static Kind cell=Kind::Start;"
         "int main(){cell=Kind::Dirty;return 1/0;}"
         "int recover(){return if cell==Kind::Start then 42 else 0;}");
+    record_cases();
+    record_recovery();
+    scoped_lifecycle(
+        "Pair=record{x:int;};int main(){Pair p=Pair{x=42;};return p.x/(p.x-42);}"
+        "int recover(){Pair p=Pair{x=42;};Pair q=p;q.x=0;return p.x;}");
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
@@ -1781,5 +1857,7 @@ int main(void) {
     printf("fuzz: %zu namespace rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", namespace_rejections);
     printf("fuzz: %zu replacement enum programs matched full-width nominal value/dispatch models\n", replacement_enum_programs);
     printf("fuzz: %zu enum rejection/cleanup/recompile cycles passed; source/bytecode nominal-cell trap recovery passed\n", enum_rejections);
+    printf("fuzz: %zu record programs matched full-width written-order, six-field and value-copy models\n", record_programs);
+    printf("fuzz: %zu record rejection/cleanup/recompile cycles passed; source/bytecode allocation trap recovery passed\n", record_rejections);
     return 0;
 }

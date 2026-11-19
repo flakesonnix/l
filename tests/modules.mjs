@@ -1025,6 +1025,63 @@ try {
     }
   }
 
+  // Named record permutations keep source evaluation order and copies across package DAGs.
+  state = 0x52454344;
+  for (let test = 0; test < 32; ++test) {
+    const fields = ['x', 'y', 'ready', 'octet', 'text', 'kind'], nodes = [];
+    const project = { 'std/records.l': 'module std.records;pub Kind=enum{Cold=-2147483648;Hot=2147483647;};'
+      + 'pub Packet=record{x:int;y:int;ready:bool;octet:byte;text:string;kind:Kind;};pub static int ticks=0;'
+      + 'pub int tick(){return ticks++;}pub string text(){if(tick()%2==0)return "*";return "a\\0\\xff";}'
+      + 'pub Kind kind(){if(tick()%2==0)return Kind::Cold;return Kind::Hot;}' };
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.p${n}`, delta = BigInt(random(41) - 20), parents = [], order = [...fields];
+      for (let k = order.length; k > 1; --k) { const at = random(k); [order[k - 1], order[at]] = [order[at], order[k - 1]]; }
+      const values = { x: `(input.x+t::tick()+(${delta}))%1009`, y: `(input.y-t::tick()+(${delta}))%1009`,
+        ready: 't::tick()%2==0', octet: 'byte(t::tick()%256)', text: 't::text()', kind: 't::kind()' };
+      let imports = 'import std.records as t;', body = `t::Packet current=t::Packet{${order.map(field => `${field}=${values[field]};`).join('')}};`;
+      for (let p = 0; p < n; ++p) if (p === n - 1 || random(3) === 0) {
+        const parent = nodes[p].name, form = (test + p) % 3;
+        parents.push(p);
+        if (!form) { imports += `import ${parent};`; body += `current=${parent.replaceAll('.', '::')}::work::run(current);`; }
+        else if (form === 1) { imports += `import ${parent} as m${p};`; body += `current=m${p}::work::run(current);`; }
+        else { imports += `import ${parent}::{work::run as f${p}};`; body += `current=f${p}(current);`; }
+      }
+      nodes.push({ name, delta, order, parents });
+      project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${imports}work=namespace{pub t::Packet run(const t::Packet input){${body}return current;}};`;
+    }
+    let ticks = 0;
+    function simulate(n, input) {
+      let current = { ...input };
+      for (const field of nodes[n].order) {
+        const before = ticks++;
+        if (field === 'x') current.x = (input.x + BigInt(before) + nodes[n].delta) % 1009n;
+        else if (field === 'y') current.y = (input.y - BigInt(before) + nodes[n].delta) % 1009n;
+        else if (field === 'octet') current.octet = before % 256;
+        else if (field === 'kind') current.kind = before % 2;
+        else current[field] = before % 2 === 0;
+      }
+      for (const parent of nodes[n].parents) current = simulate(parent, current);
+      return current;
+    }
+    const original = { x: 17n, y: -23n, ready: true, octet: 42, text: true, kind: 0 };
+    const a = simulate(7, original), b = simulate(6, original);
+    const check = (name, p) => `if(${name}.x!=${p.x}||${name}.y!=${p.y}||${name}.ready!=${p.ready}||int(${name}.octet)!=${p.octet}`
+      + `||${name}.text!=${p.text ? '"*"' : '"a\\0\\xff"'}||${name}.kind!=t::Kind::${p.kind ? 'Hot' : 'Cold'})return 1;`;
+    for (const reverse of [false, true]) {
+      const imports = ['import std.records as t;', 'import app.p7 as top;', 'import app.p6 as next;'];
+      if (reverse) imports.reverse();
+      project['app/main.l'] = `module app.main;${imports.join('')}int main(){const t::Packet original=t::Packet{`
+        + 'kind=t::Kind::Cold;text="*";octet=byte(42);ready=true;y=-23;x=17;};'
+        + `t::Packet a=top::work::run(original);t::Packet b=next::work::run(original);${check('original', original)}${check('a', a)}${check('b', b)}`
+        + `if(t::ticks!=${ticks})return 1;return 42;}`;
+      const settings = config(); if (reverse) settings.module_roots.reverse();
+      const f = program(project, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
+      assert.equal(bytes.readUInt32LE(16), 1, 'only the explicit shared tick cell may allocate storage');
+      assert.equal(bytes.readUInt32LE(20), 1, 'imported record identity must not be duplicated');
+      assert.equal(bytes.readUInt32LE(24), 1, 'imported enum field identity must not be duplicated');
+    }
+  }
+
   // Nominal value structs copy through locals, argument vectors and return registers.
   const structProgram = body => program({ 'app/main.l': `module app.main;${body}` });
   const structFiles = main => ({ 'app/main.l': `module app.main;${main}`,
@@ -2068,7 +2125,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 reopened replacement namespace DAGs in two import orders, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 mixed-spelling nominal enum DAGs in two import orders, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 reopened replacement namespace DAGs in two import orders, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 mixed-spelling nominal enum DAGs in two import orders, 32 named record order/copy DAGs in two import orders, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }
