@@ -981,6 +981,50 @@ try {
     assert.equal(readFileSync(resolve(f.directory, 'program.lbc')).readUInt32LE(24), 2, 'shared enum identity must not be duplicated');
   }
 
+  // Distinct new/legacy enum identities share state through bounded package DAGs.
+  state = 0x454e4557;
+  for (let test = 0; test < 32; ++test) {
+    const project = {}, nodes = [], imports = [];
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.k${n}`, initial = random(4), yes = random(4), no = random(4), parents = [];
+      const weights = Array.from({ length: 4 }, () => BigInt(random(10001) - 5000));
+      let header = '', body = `tokens::Kind old=cell;if(turn)cell=tokens::Kind::M${yes};else cell=tokens::Kind::M${no};int total=0;switch(old){`;
+      for (let m = 0; m < 4; ++m) body += `case tokens::Kind::M${m}:total=${weights[m]};break;`;
+      body += 'default:return 1/0;}';
+      for (let p = 0; p < n; ++p) if (p === n - 1 || random(3) === 0) {
+        const parent = nodes[p].name, form = (test + p) % 3;
+        parents.push(p);
+        if (!form) { header += `import ${parent};`; body += `total=total+${parent.replaceAll('.', '::')}::run(!turn);`; }
+        else if (form === 1) { header += `import ${parent} as p${p};`; body += `total=total+p${p}::run(!turn);`; }
+        else { header += `import ${parent}::{run as f${p}};`; body += `total=total+f${p}(!turn);`; }
+      }
+      const members = 'M0=-2147483648;M1;M2=42;M3=2147483647;';
+      const declaration = n % 2 ? `pub enum Kind{${members.replaceAll(';', ',')}};` : `pub Kind=enum{${members}};`;
+      project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${header}tokens=namespace{${declaration}};`
+        + `pub static tokens::Kind cell=tokens::Kind::M${initial};pub int run(bool turn){${body}return total;}`;
+      nodes.push({ initial, yes, no, parents, weights, name });
+      imports.push(`import ${name} as m${n};`);
+    }
+    const cells = nodes.map(node => node.initial);
+    function simulate(n, turn) {
+      let total = nodes[n].weights[cells[n]];
+      cells[n] = turn ? nodes[n].yes : nodes[n].no;
+      for (const parent of nodes[n].parents) total += simulate(parent, !turn);
+      return total;
+    }
+    const a = simulate(7, true), b = simulate(6, false);
+    const checks = cells.map((cell, n) => `if(m${n}::cell!=m${n}::tokens::Kind::M${cell})return 1;`).join('');
+    for (const reverse of [false, true]) {
+      const order = reverse ? [...imports].reverse() : imports;
+      project['app/main.l'] = `module app.main;${order.join('')}int main(){int a=m7::run(true);int b=m6::run(false);`
+        + `if(a!=${a}||b!=${b})return 1;${checks}return 42;}`;
+      const settings = config(); if (reverse) settings.module_roots.reverse();
+      const f = program(project, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
+      assert.equal(bytes.readUInt32LE(16), 8, 'imported enum cells must not be duplicated');
+      assert.equal(bytes.readUInt32LE(24), 8, 'identical member values must not merge distinct nominal enums');
+    }
+  }
+
   // Nominal value structs copy through locals, argument vectors and return registers.
   const structProgram = body => program({ 'app/main.l': `module app.main;${body}` });
   const structFiles = main => ({ 'app/main.l': `module app.main;${main}`,
@@ -2024,7 +2068,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 reopened replacement namespace DAGs in two import orders, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 reopened replacement namespace DAGs in two import orders, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 mixed-spelling nominal enum DAGs in two import orders, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

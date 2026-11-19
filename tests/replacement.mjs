@@ -472,6 +472,89 @@ assert.deepEqual(readFileSync(resolve(namespaceNew.directory, 'answer.lbc')), re
   'new and legacy namespace scopes must compile to identical position-preserving bytecode');
 for (const offset of [16, 20, 24]) assert.equal(readFileSync(resolve(namespaceNew.directory, 'answer.lbc')).readUInt32LE(offset), 0);
 
+// Name-first enums reuse nominal types, checked values and existing switch/storage paths.
+program('pub Color=enum{Off;On=42;Same=42;};Color id(const Color c){return c;}int main(){Color c=id(Color::On);switch(c){case Color::Same:return 42;default:return 0;}}');
+program('Kind /*name*/ = /*keyword*/ enum /*members*/ {Zero;Answer=6*7;};int main(){return if Kind::Zero!=Kind::Answer then 42 else 0;}');
+program('Kind=enum{First=base;Next;Alias=base;};base:int=41;int main(){switch(Kind::Next){case Kind::Alias:return 0;case Kind::Next:return 42;default:return 1;}}');
+program('Kind=enum{Low=-2147483648;Next;High=2147483647;};ready:bool=Kind::Low!=Kind::Next;int main(){if(ready&&Kind::High!=Kind::Next)return 42;return 0;}');
+program('Kind=enum{Answer=42;};const Kind first=Kind::Answer;static Kind cell=first;Kind pass(Kind c){Kind old=cell;cell=c;return old;}int main(){return if pass(first)==Kind::Answer then 42 else 0;}');
+program('n=namespace{pub Kind=enum{Off;On;};};namespace n{pub Kind get(){return Kind::On;}}int main(){return if n::get()==n::Kind::On then 42 else 0;}');
+program('enum Old{Answer=42};New=enum{Answer=42;};int score(Old k){return 20;}int score(New k){return 22;}int main(){return score(Old::Answer)+score(New::Answer);}');
+program('Kind=enum{Off;On;};struct Box{Kind kind;int value;};Box change(Box b){b.kind=Kind::On;return b;}int main(){Box original=Box{Kind::Off,42};Box copy=change(original);return if original.kind==Kind::Off&&copy.kind==Kind::On then copy.value else 0;}');
+program('Kind=enum{Zero;One;Two;};int main(){Kind k=Kind::One;int total=0;switch(k){case Kind::Zero:total=1;case Kind::One:total=total+40;case Kind::Two:total=total+2;}return total;}');
+program('Kind=enum{Kind=42;};Kind id(Kind k){return k;}int main(){return if id(Kind::Kind)==Kind::Kind then 42 else 0;}');
+const enumLibrary = 'module app.kinds;tokens=namespace{pub Kind=enum{Off;On=42;Alias=42;};};'
+  + 'Secret=enum{Hidden;};pub const tokens::Kind first=tokens::Kind::On;pub tokens::Kind id(const tokens::Kind k){return k;}';
+for (const [imports, type, value, call] of [
+  ['import app.kinds;', 'app::kinds::tokens::Kind', 'app::kinds::tokens::Kind::On', 'app::kinds::id'],
+  ['import app.kinds as k;', 'k::tokens::Kind', 'k::tokens::Kind::Alias', 'k::id'],
+  ['import app.kinds::{tokens::Kind as K,tokens::Kind::On as on,id};', 'K', 'on', 'id'],
+]) program(`${imports}int main(){${type} selected=${call}(${value});return if selected==${value} then 42 else 0;}`, 42, { 'kinds.l': enumLibrary });
+for (const [body, message, marker] of [
+  ['Kind=enum{};int main(){return 0;}', /enum must have at least one member/],
+  ['Kind=enum{A};int main(){return 0;}', /expected ';' after enum member/],
+  ['Kind=enum{A,B;};int main(){return 0;}', /expected ';' after enum member/],
+  ['Kind=enum{A;;};int main(){return 0;}', /expected enum member name/],
+  ['Kind=enum{pub A;};int main(){return 0;}', /expected enum member name/],
+  ['Kind=enum{A;}', /expected ';' after enum declaration/],
+  ['Kind=enum', /expected '{' after enum name/],
+  ['Kind=enum{', /expected enum member name/],
+  ['Kind=enum{A=', /expected expression/],
+  ['Kind=enum{A;', /expected enum member name/],
+  ['Kind=enum{A=missing;};int main(){return 0;}', /unknown local variable or constant/, 'missing'],
+  ['Kind=enum{A;A;};int main(){return 0;}', /duplicate enum member name/],
+  ['Kind=enum{A;};enum Kind{B};int main(){return 0;}', /duplicate enum declaration/],
+  ['enum Kind{A};Kind=enum{B;};int main(){return 0;}', /duplicate enum declaration/],
+  ['n=namespace{Kind=enum{A;};};namespace n{enum Kind{B};}int main(){return 0;}', /duplicate enum declaration/],
+  ['Kind=enum{A;};Kind:int=42;int main(){return 0;}', /enum conflicts with module constant/],
+  ['Kind=enum{A;};Kind=alias int;int main(){return 0;}', /enum conflicts with type alias/],
+  ['Kind=enum{A;};struct Kind{int x;};int main(){return 0;}', /enum conflicts with struct/],
+  ['Kind=enum{A;};Kind=namespace{};int main(){return 0;}', /enum conflicts with namespace/],
+  ['Kind=enum{A;};int Kind(){return 0;}int main(){return 0;}', /enum conflicts with function/],
+  ['Kind=enum{A=2147483647;Next;};int main(){return 0;}', /integer overflow/],
+  ['Kind=enum{A=2147483647+1;};int main(){return 0;}', /integer overflow/],
+  ['Kind=enum{A=-2147483648-1;};int main(){return 0;}', /integer overflow/],
+  ['Kind=enum{A=1/0;};int main(){return 0;}', /division by zero/],
+  ['Kind=enum{A=true;};int main(){return 0;}', /expected int, got bool/],
+  ['Kind=enum{A=byte(0);};int main(){return 0;}', /expected int, got byte/],
+  ['Kind=enum{A=Kind::B;B=0;};int main(){return 0;}', /expected int, got enum/],
+  ['static int cell=0;Kind=enum{A=cell;};int main(){return 0;}', /mutable static storage is not a constant expression/],
+  ['Kind=enum{A=f();};int f(){while(true){}return 0;}int main(){return 0;}', /function call is not a constant expression/],
+  ['Kind=enum{A=let x=1;in x;};int main(){return 0;}', /let is not a compile-time constant expression/],
+  ['Kind=enum{A=if true then 1 else 0;};int main(){return 0;}', /conditional is not a compile-time constant expression/],
+  ['Kind=enum{A;};Count=alias Kind;int main(){return 0;}', /type alias target must be int or bool or byte or string/],
+  ['Kind=enum{A;};answer:Kind=Kind::A;int main(){return 0;}', /name-first constant type must be int or bool/],
+  ['Kind=enum{A;};int main(){Kind k=0;return 0;}', /expected enum, got int/],
+  ['Kind=enum{A;};int main(){int n=Kind::A;return n;}', /expected int, got enum/],
+  ['A=enum{X;};B=enum{X;};int main(){return if A::X==B::X then 42 else 0;}', /matching scalar types/],
+  ['A=enum{X;};B=enum{X;};int main(){A a=B::X;return 0;}', /expected enum, got enum/],
+  ['Kind=enum{A;};Kind main(){return Kind::A;}', /entry point must have signature/],
+  ['Kind=enum{A;};int main(){Kind a[1];return 0;}', /array element type/],
+  ['Kind=enum{A;};int main(){Kind k=Kind::A;k++;return 0;}', /expected int, got enum/],
+  ['Kind=enum{A;};int main(){const Kind k=Kind::A;k=Kind::A;return 0;}', /cannot modify const binding/],
+  ['Kind=enum{A;};int main(){Kind::A=Kind::A;return 0;}', /cannot modify module constant/],
+  ['Kind=enum{A;};int main(){return Kind;}', /enum type is not a value/],
+  ['Kind=enum{A;};int main(){return Kind();}', /enum type is not callable/],
+  ['Kind=enum{A;};int main(){switch(Kind::A){case 0:return 42;default:return 0;}}', /expected enum, got int/],
+  ['Kind=enum{A;Alias=0;};int main(){switch(Kind::A){case Kind::A:return 42;case Kind::Alias:return 0;}}', /duplicate case value/],
+  ['Kind=enum{A;};pub Kind id(Kind k){return k;}int main(){return 0;}', /public interface exposes a private enum type/],
+  ['static Kind=enum{A;};int main(){return 0;}', /expected static storage name/],
+  ['int main(){Kind=enum{A;};return 0;}', /expected expression/],
+  ['n::Kind=enum{A;};int main(){return 0;}', /expected function name/],
+]) rejected(body, message, {}, marker);
+for (const [body, message] of [
+  ['import app.kinds as k;int main(){k::Secret value=k::Secret::Hidden;return 0;}', /inaccessible symbol/],
+  ['import app.kinds::{Secret::Hidden};int main(){return 0;}', /inaccessible symbol/],
+  ['import app.kinds as k;k=enum{A;};int main(){return 0;}', /module alias conflicts/],
+]) rejected(body, message, { 'kinds.l': enumLibrary });
+const enumSource = 'pub Kind=enum{Zero;Answer=42;Alias=42;Low=-2147483648;High=2147483647;};\n'
+  + 'int main(){Kind k=Kind::Answer;switch(k){case Kind::Alias:return 42;default:return 0;}}';
+const enumNew = program(enumSource), enumOld = program(enumSource.replace(/Kind=enum\{([^}]*)\}/,
+  (_, members) => `enum Kind{${members.replaceAll(';', ',')}}`));
+assert.deepEqual(readFileSync(resolve(enumNew.directory, 'answer.lbc')), readFileSync(resolve(enumOld.directory, 'answer.lbc')),
+  'new and legacy enums must produce identical position-preserving bytecode and nominal metadata');
+assert.equal(readFileSync(resolve(enumNew.directory, 'answer.lbc')).readUInt32LE(24), 1);
+
 // Keep the existing frontend and VM budgets, not Stage 1's separate syntax limits.
 const bindings = count => Array.from({ length: count }, (_, n) => `x${n}=${n};`).join('');
 program(`int main(){return let ${bindings(1024)}in x1023;}`, 255);
@@ -507,6 +590,15 @@ program(`${'n=namespace{'.repeat(256)}${'};'.repeat(256)}int main(){return 42;}`
 rejected(`${'n=namespace{'.repeat(257)}${'};'.repeat(257)}int main(){return 0;}`, /nesting limit/);
 program(`n=namespace{${constants(1024)}};int main(){return n::c42;}`);
 rejected(`n=namespace{${constants(1024)}};namespace n{const int tail=0;}int main(){return 0;}`, /too many module constants/);
+const enums = count => Array.from({ length: count }, (_, n) => `E${n}=enum{A;};`).join('');
+program(`${enums(256)}int main(){return if E255::A==E255::A then 42 else 0;}`);
+program(`${enums(255)}enum Last{A};int main(){return if Last::A==Last::A then 42 else 0;}`);
+rejected(`${enums(257)}int main(){return 0;}`, /too many enums/);
+rejected(`import app.kinds;${enums(256)}int main(){return 0;}`, /too many enums across modules/,
+  { 'kinds.l': 'module app.kinds;enum Extra{A};' });
+const members = count => Array.from({ length: count }, (_, n) => `M${n};`).join('');
+program(`Kind=enum{${members(1024)}};int main(){return if Kind::M1023==Kind::M1023 then 42 else 0;}`);
+rejected(`Kind=enum{${members(1025)}};int main(){return 0;}`, /too many enum members/);
 
 const example = resolve(root, 'examples/replacement/answer.l');
 const manifest = resolve(root, 'examples/replacement/package.json');
@@ -530,5 +622,9 @@ const namespaceExample = resolve(root, 'examples/replacement/namespaces.l'), nam
 command(0, ['compile', namespaceExample, '--manifest', manifest, '-o', namespaceOutput]);
 command(0, ['check', namespaceOutput]);
 command(42, ['run', namespaceOutput]);
+const enumExample = resolve(root, 'examples/replacement/enums.l'), enumOutput = resolve(work, 'enums.lbc');
+command(0, ['compile', enumExample, '--manifest', manifest, '-o', enumOutput]);
+command(0, ['check', enumOutput]);
+command(42, ['run', enumOutput]);
 assert.match(command(65, ['check', example]).stderr, /requires an explicit --manifest/);
 console.log(`replacement execution: ${fixtures} fixtures, ${commands} CLI checks passed (bytecode 1.9)`);

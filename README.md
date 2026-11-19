@@ -13,7 +13,8 @@ The compiler now executes a **first approved replacement-syntax subset** through
 the existing Stage 0 pipeline: C-style typed functions, locals and expressions,
 plus eager, scoped `let/in` with immutable bindings and explicit `var`, typed
 `if … then … else …` conditional expressions, typed name-first file constants,
-name-first transparent scalar aliases, and name-first namespaces.
+name-first transparent scalar aliases, name-first namespaces, and name-first
+nominal enums.
 Legacy bootstrap implementation sources and examples still compile. The separate
 L-written Stage 1 frontend accepts a broader replacement grammar as syntax only.
 
@@ -57,7 +58,7 @@ initialized C locals, `const` parameters/locals, arithmetic/comparisons, boolean
 operators, direct calls, explicit returns, nested `let/in`, conditional
 expressions, `[pub] name: Type = expression;` file constants and
 `[pub] Name = alias Type;` transparent aliases and `Name = namespace { ... };`
-compile-time scopes. Existing name,
+compile-time scopes, plus `[pub] Name = enum { Member; ... };` nominal enums. Existing name,
 type, call, visibility and entry-point checks apply before bytecode is written.
 
 - `let name[: Type] = expression; ... in body` opens a lexical scope. Bindings are
@@ -105,12 +106,23 @@ type, call, visibility and entry-point checks apply before bytecode is written.
   reopens the same scopes as the new spelling. Existing member/dependency rules,
   256-level nesting and shared resource limits remain in force. Imports and module
   headers still belong at file scope before declarations, never inside namespaces.
+- Name-first enum members are names, optionally `= expression`, **each requiring
+  `;`**; the closing `}` also requires `;`. Existing enum analysis rejects empty
+  or duplicate-name lists, checks explicit/implicit int32 values and overflow,
+  and preserves nominal type identity. Distinct names may share a value, but
+  equal-valued switch cases remain duplicates.
+- Enum values retain existing constant/static storage, copied struct fields,
+  parameter/return, same-enum comparison and switch behavior. New and legacy
+  `enum Name { Member, ... };` declarations share budgets and type rules; legacy
+  syntax remains migration scaffolding. Primitive aliases cannot target enums,
+  and name-first constants plus executable `let`/conditional results remain
+  int/bool-only in this slice.
 - `let`, `in`, `var` and `then` are now reserved by the source compiler. Parentheses
   delimit a `let` when an operator should apply outside its full body expression. Existing
   256-level compiler nesting, per-function slot and VM resource limits remain.
 
-Named records and the name-first enum spelling remain **syntax-only**
-in Stage 1. Legacy `const Type name = expression;` remains temporary bootstrap
+Named records remain **syntax-only** in Stage 1.
+Legacy `const Type name = expression;` remains temporary bootstrap
 migration scaffolding. Both namespace spellings share the same member semantics;
 the L-written replacement parser itself remains syntax-only.
 
@@ -153,6 +165,15 @@ a name-first namespace containing an alias, forward constants and a function:
 ./build/l check examples/replacement/namespaces.l --manifest examples/replacement/package.json
 ./build/l compile examples/replacement/namespaces.l --manifest examples/replacement/package.json -o build/namespaces.lbc
 ./build/l run build/namespaces.lbc               # Exit code 42
+```
+
+[`examples/replacement/enums.l`](examples/replacement/enums.l) uses a name-first
+enum with equal-valued members, a readonly enum parameter and nominal switch dispatch:
+
+```sh
+./build/l check examples/replacement/enums.l --manifest examples/replacement/package.json
+./build/l compile examples/replacement/enums.l --manifest examples/replacement/package.json -o build/enums.lbc
+./build/l run build/enums.lbc                    # Exit code 42
 ```
 
 ### Broader syntax-only replacement-parser slices
@@ -229,9 +250,11 @@ int main() { return 0; }
 ```
 
 Enum members are `Name`, optionally followed by `= expr`, each terminated by
-`;`; empty member lists parse and the closing `}` requires `;`. Member values
-are full expression nodes recorded in written order, never evaluated, and no
-member value, uniqueness or range check runs yet. Structs declare scalar fields
+`;`; the closing `}` requires `;`. The executable C frontend checks and evaluates
+members with the existing nominal-enum analyzer; empty enums are rejected there.
+The standalone L-written parser still accepts empty lists syntactically and
+records expression nodes without member value, uniqueness or range checks.
+Structs declare scalar fields
 as `Type name;` with the type written first; field arrays, initializers and
 inline aggregate declarations are not field syntax, and the closing `}` requires `;`.
 Struct nodes share the aggregate budget with records and differ only in a
@@ -380,7 +403,7 @@ above; artifacts remain at **1.9**.
 
 This section describes Stage 0's bootstrap subset, now extended with executable
 `let/in`, conditional expressions, typed name-first constants and transparent
-name-first aliases and namespaces. It is not the
+name-first aliases, namespaces and nominal enums. It is not the
 full replacement grammar. Stage 1's broader syntax-only subset is listed
 separately above.
 

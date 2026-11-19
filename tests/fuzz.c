@@ -28,6 +28,7 @@ static size_t constant_programs;
 static size_t constant_rejections;
 static size_t alias_programs, alias_rejections;
 static size_t namespace_programs, namespace_rejections;
+static size_t replacement_enum_programs, enum_rejections;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -783,6 +784,60 @@ static void namespace_recovery(void) {
             if (ctx->allocated || ctx->allocations) failed("namespace rejection could not be cleaned up");
             memset(ctx, 0, sizeof(*ctx)); ctx->filename = "namespace-recovery";
             namespace_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
+/* Model full-width enum values and dispatch independently, preserving nominal cells/copies. */
+static void replacement_enum_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        int32_t base = (int32_t)random_number(2001) - 1000;
+        int32_t values[] = {base, base + 1, base, INT32_MIN, INT32_MIN + 1, INT32_MAX, 0, 1, -97};
+        unsigned initial = random_number(9), next = random_number(9);
+        source_length = 0;
+        append("Kind=enum{M0=base;M1;M2=base;M3=-2147483648;M4;M5=2147483647;M6=0;M7;M8=-97;};"
+               "base:int=%d;const Kind seed=Kind::M%u;static Kind cell=seed;struct Box{Kind kind;};"
+               "Kind swap(Kind value){Kind old=cell;cell=value;return old;}int score(Kind value){switch(value){", base, initial);
+        for (unsigned n = 0; n < 9; ++n) {
+            bool duplicate = false;
+            for (unsigned p = 0; p < n; ++p) if (values[p] == values[n]) duplicate = true;
+            if (!duplicate) append("case Kind::M%u:return (%d);", n, values[n]);
+        }
+        append("default:return 1/0;}}int main(){Kind old=swap(Kind::M%u);Box original=Box{old};Box copy=original;"
+               "copy.kind=cell;if(original.kind!=Kind::M%u||copy.kind!=Kind::M%u||old!=seed)1/0;return score(copy.kind);}",
+               next, initial, next);
+        ++replacement_enum_programs;
+        semantic_case(values[next], 0);
+    }
+}
+static void enum_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) {
+        (void)compile(ctx, text);
+        failed("invalid replacement enum was accepted");
+    }
+    if (ctx->status != 65) failed("enum rejection returned an unexpected status");
+    ++enum_rejections;
+}
+static void enum_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned enum context rejected valid source");
+    Program *p = compile(ctx, "Kind=enum{A=42;};int main(){switch(Kind::A){case Kind::A:return 42;default:return 0;}}");
+    if (p->enum_count != 1 || p->global_count || p->struct_count) failed("replacement enum has incorrect runtime metadata");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void enum_recovery(void) {
+    static const char *const invalid[] = {
+        "Kind=enum{};int main(){return 0;}",
+        "Kind=enum{A;A;};int main(){return 0;}",
+        "Kind=enum{A=2147483647;Next;};int main(){return 0;}",
+        "Kind=enum{A};int main(){return 0;}"
+    };
+    Context *ctx = context("enum-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            enum_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("enum rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "enum-recovery";
+            enum_success(ctx); cleanup(ctx);
         }
     }
     dispose(ctx);
@@ -1695,6 +1750,12 @@ int main(void) {
         "n=namespace{Count=alias int;answer:Count=42;};"
         "int main(){return n::answer/(n::answer-42);}"
         "n::Count recover(){return let value:n::Count=n::answer;in value;}");
+    replacement_enum_cases();
+    enum_recovery();
+    scoped_lifecycle(
+        "Kind=enum{Start=42;Dirty=0;};static Kind cell=Kind::Start;"
+        "int main(){cell=Kind::Dirty;return 1/0;}"
+        "int recover(){return if cell==Kind::Start then 42 else 0;}");
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
@@ -1718,5 +1779,7 @@ int main(void) {
     printf("fuzz: %zu alias rejection/cleanup/recompile cycles passed\n", alias_rejections);
     printf("fuzz: %zu namespace programs matched full-width shared-cell and relative-lookup models\n", namespace_programs);
     printf("fuzz: %zu namespace rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", namespace_rejections);
+    printf("fuzz: %zu replacement enum programs matched full-width nominal value/dispatch models\n", replacement_enum_programs);
+    printf("fuzz: %zu enum rejection/cleanup/recompile cycles passed; source/bytecode nominal-cell trap recovery passed\n", enum_rejections);
     return 0;
 }
