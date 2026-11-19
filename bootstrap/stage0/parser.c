@@ -351,12 +351,16 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
             *records = record;
             continue;
         }
-        if (take(p, TK_USING)) {
+        bool name_alias = peek(p).kind == TK_NAME && p->tokens[p->at + 1].kind == '=' &&
+            p->tokens[p->at + 2].kind == TK_NAME &&
+            token_equal(p->tokens[p->at + 2], (Token){.text = "alias", .length = 5});
+        if (name_alias || take(p, TK_USING)) {
             if (ast->alias_count++ == L_MAX_ALIASES) token_fail(p->ctx, token, "too many type aliases (maximum 1024)");
             TypeAlias *alias = allocate(p->ctx, sizeof(*alias));
             alias->module = ast->entry; alias->scope = scope; alias->exported = exported;
             alias->name = expect(p, TK_NAME, "expected type alias name");
             expect(p, '=', "expected '=' after type alias name");
+            if (name_alias) ++p->at; /* Contextual 'alias' was checked by lookahead. */
             alias->type = parse_type(p, &alias->target_name);
             expect(p, ';', "expected ';' after type alias");
             TypeAlias **aliases = &ast->aliases;
