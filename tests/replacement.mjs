@@ -216,11 +216,11 @@ for (const [body, message, marker] of [
   ['int main(){bool x=false&&(let n=missing;in true);return 0;}', /unknown local variable or constant/],
   ['int main(){return 0;let x=1;in x=2;}', /cannot modify const binding/],
   ['int main(){return let x=1;in (let y=2;in y)=3;}', /assignment requires/],
-  ['int main(){return let x:void=1;in 42;}', /let binding type must be int or bool/],
-  ['void f(){}int main(){return let x=f();in 42;}', /let binding type must be int or bool/],
-  ['void f(){}int main(){let in f();return 42;}', /let body must have int or bool type/],
-  ['int main(){return let x:byte=byte(1);in 42;}', /let binding type must be int or bool/],
-  ['int main(){return let in "text";}', /let body must have int or bool type/],
+  ['int main(){return let x:void=1;in 42;}', /let binding type must be scalar/],
+  ['void f(){}int main(){return let x=f();in 42;}', /let binding type must be scalar/],
+  ['void f(){}int main(){let in f();return 42;}', /let body must have scalar type/],
+  ['int main(){return let x:byte=byte(1);in x;}', /expected int, got byte/],
+  ['int main(){return let in "text";}', /expected int, got string/],
   ['const int value=let x=1;in x;int main(){return value;}', /not a compile-time constant expression/],
   ['int main(){int data[let x=1;in x];return 0;}', /not a compile-time constant expression/],
   ['int main(){return let x=1 in x;}', /expected ';' after let binding initializer/],
@@ -255,9 +255,9 @@ for (const [body, message, marker] of [
   ['int main(){return if (let n=true;in n) then 42 else n;}', /unknown local variable or constant/],
   ['int main(){return (if true then 1 else 0)=42;}', /assignment requires/],
   ['int main(){return (if true then 1 else 0)++;}', /assignment requires/],
-  ['void f(){}int main(){(if true then f() else f());return 0;}', /conditional branches must have int or bool type/],
-  ['int main(){return if true then byte(1) else byte(2);}', /conditional branches must have int or bool type/],
-  ['int main(){return if true then "a" else "b";}', /conditional branches must have int or bool type/],
+  ['void f(){}int main(){(if true then f() else f());return 0;}', /conditional branches must have scalar type/],
+  ['int main(){return if true then byte(1) else byte(2);}', /expected int, got byte/],
+  ['int main(){return if true then "a" else "b";}', /expected int, got string/],
   ['const int n=if true then 42 else 0;int main(){return n;}', /conditional is not a compile-time constant expression/],
   ['int main(){int data[if true then 1 else 2];return 0;}', /conditional is not a compile-time constant expression/],
   ['int main(){return if true then 42;}', /expected 'else' after conditional expression true branch/],
@@ -634,8 +634,8 @@ for (const [body, message, marker] of [
   ['Pair=record{x:int;};Count=alias Pair;int main(){return 0;}', /type alias target must be int or bool or byte or string/],
   ['Pair=record{x:int;};answer:Pair=Pair{x=42;};int main(){return 0;}', /name-first constant type must be int or bool/],
   ['Pair=record{x:int;};const int answer=Pair{x=42;}.x;int main(){return 0;}', /struct literal is not a constant expression/],
-  ['Pair=record{x:int;};int main(){return let p=Pair{x=42;};in 0;}', /let binding type must be int or bool/],
-  ['Pair=record{x:int;};Pair get(){return if true then Pair{x=42;} else Pair{x=0;};}int main(){return 0;}', /conditional branches must have int or bool type/],
+  ['Pair=record{x:int;};int main(){return let p=Pair{x=42;};in 0;}', /let binding type must be scalar/],
+  ['Pair=record{x:int;};Pair get(){return if true then Pair{x=42;} else Pair{x=0;};}int main(){return 0;}', /conditional branches must have scalar type/],
   ['Pair=record{x:int;};pub Pair get(){return Pair{x=42;};}int main(){return 0;}', /public signature exposes a private struct type/],
   ['Pair=record{x:int[2];};int main(){return 0;}', /after scalar struct field/],
   ['Pair=record{x:int=42;};int main(){return 0;}', /after scalar struct field/],
@@ -659,6 +659,82 @@ assert.deepEqual(readFileSync(resolve(recordNew.directory, 'answer.lbc')), readF
   'declaration-order named records must reuse position-preserving legacy struct bytecode/metadata');
 assert.equal(readFileSync(resolve(recordNew.directory, 'answer.lbc')).readUInt32LE(20), 1);
 
+// All existing scalar types use the same eager lexical cells and selected-branch LIR.
+program('int main(){return int(let value=byte(42);in value);}');
+program('byte get(){return let in byte(42);}int main(){return int(get());}');
+program('int main(){return (let text="*";in text).length+41;}');
+program('string get(){return let in "a\\0\\xff";}int main(){return if get().length==3&&int(get()[2])==255 then 42 else 0;}');
+program('Kind=enum{Min=-2147483648;Max=2147483647;};Kind get(){return let value:Kind=Kind::Max;in value;}int main(){return if get()==Kind::Max then 42 else 0;}');
+program('Octet=alias byte;Text=alias string;int main(){return let var x:Octet=byte(40);var s:Text="old";in int(x=byte(int(x)+2))+(s="*").length-1;}');
+program('Kind=enum{A;B;};int main(){return let var k:Kind=Kind::A;in if (k=Kind::B)==Kind::B then 42 else 0;}');
+program('int main(){byte x=byte(40);return int(let x=byte(int(x)+1);in let x=byte(int(x)+1);in x);}');
+program('int main(){string s="*";string copy=let s=s;in let s=s;in s;s="changed";return if copy=="*" then 42 else 0;}');
+program('Kind=enum{A;B;};int main(){Kind k=Kind::B;return if (let k=k;in let k=k;in k)==Kind::B then 42 else 0;}');
+program('int main(){return int(if true then byte(42) else byte(256));}');
+program('int main(){return int(if false then byte(256) else byte(42));}');
+program('int main(){return (if true then "*" else "").length+41;}');
+program('string trap(){return let bad=1/0;in "";}int main(){return (if false then trap() else "*").length+41;}');
+program('Kind=enum{A;B;};Kind trap(){return let bad=1/0;in Kind::A;}int main(){return if (if true then Kind::B else trap())==Kind::B then 42 else 0;}');
+program('int main(){int n=0;byte b=if n++==0 then byte(n++) else byte(256);return if n==2&&b==byte(1) then 42 else 0;}');
+program('int main(){int n=0;string s=if n++!=0 then "bad" else (let tick=n++;in "*");return if n==2&&s=="*" then 42 else 0;}');
+program('Kind=enum{A;B;};int main(){int n=0;Kind k=if n++==0 then (let tick=n++;in Kind::B) else Kind::A;return if n==2&&k==Kind::B then 42 else 0;}');
+program('int score(byte x){return int(x);}int score(string x){return x.length+41;}Kind=enum{Answer;};int score(Kind x){return 42;}int main(){return score(let x=byte(42);in x)+score(if true then "*" else "")+score(let x=Kind::Answer;in x)-84;}');
+program('int pair(byte a,byte b){return int(a)*10+int(b);}int main(){int n=3;return pair((let value=byte(n++);in value),(if true then byte(n++) else byte(256)))+8;}');
+program('string id(string s){return s;}int main(){return int(id(let s=if true then "*" else "";in s)[0]);}');
+program('Kind=enum{A;B;};Kind id(Kind k){return k;}int main(){switch(id(let k=if true then Kind::B else Kind::A;in k)){case Kind::B:return 42;default:return 0;}}');
+program('Packet=record{octet:byte;text:string;};int main(){int n=40;Packet p=Packet{text=(let tick=n++;in "*");octet=(if true then byte(n+1) else byte(256));};return if p.text=="*" then int(p.octet) else 0;}');
+program('int main(){return let unused=byte(256);later=1/0;in 42;}', 70, {}, /byte conversion out of range/);
+program('int main(){return let unused=""[0];later=byte(256);in 42;}', 70, {}, /string index out of bounds/);
+program('Kind=enum{A;};int main(){return let unused=(if true then (let bad=1/0;in Kind::A) else Kind::A);in 42;}', 70, {}, /division by zero/);
+program('int main(){int n=0;return let unused=(let tick=n++;in "*");again=(let tick=n++;in byte(42));in n+40;}');
+program('int main(){string s="outside";string inner=let var s="inside";in s="*";return if s=="outside"&&inner=="*" then 42 else 0;}');
+program('int main(){return if false&&((let unused=byte(256);in "*")=="*") then 0 else 42;}');
+program('int main(){byte data[1];data[0]=let value=if true then byte(42) else byte(256);in value;return int(data[0]);}');
+program('string trap(){return let bad=""[0];in "";}int main(){return (if true then trap() else "*").length;}', 70, {}, /string index out of bounds/);
+program('Kind=enum{A;};Kind trap(){return let bad=1/0;in Kind::A;}int main(){return if (if false then Kind::A else trap())==Kind::A then 42 else 0;}', 70, {}, /division by zero/);
+const scalarLibrary = 'module app.scalars;pub Octet=alias byte;pub Text=alias string;pub Kind=enum{Off;On;};'
+  + 'pub Octet octet(){return let value:Octet=byte(42);in value;}'
+  + 'pub Text text(bool b){return if b then "*" else "";}'
+  + 'pub Kind kind(){return let value=if true then Kind::On else Kind::Off;in value;}';
+for (const imports of ['import app.scalars as s;', 'import app.scalars::{Octet,Text,Kind,octet,text,kind};']) {
+  const prefix = imports.includes(' as ') ? 's::' : '';
+  program(`${imports}int main(){return let value:${prefix}Octet=${prefix}octet();text:${prefix}Text=${prefix}text(true);kind:${prefix}Kind=${prefix}kind();in if text=="*"&&kind==${prefix}Kind::On then int(value) else 0;}`, 42,
+    { 'scalars.l': scalarLibrary });
+}
+for (const [body, message] of [
+  ['int main(){return let x:byte=42;in 0;}', /expected byte, got int/],
+  ['int main(){return let x:string=byte(42);in 0;}', /expected string, got byte/],
+  ['Kind=enum{A;};int main(){return let x:Kind=0;in 0;}', /expected enum, got int/],
+  ['A=enum{X;};B=enum{X;};int main(){return let x:A=B::X;in 0;}', /expected enum, got enum/],
+  ['A=enum{X;};B=enum{X;};A get(){return if true then A::X else B::X;}int main(){return 0;}', /expected enum, got enum/],
+  ['int main(){byte b=if true then byte(42) else 42;return 0;}', /expected byte, got int/],
+  ['int main(){string s=if true then "*" else byte(42);return 0;}', /expected string, got byte/],
+  ['int main(){return if byte(1) then 42 else 0;}', /expected bool, got byte/],
+  ['int main(){return if "*" then 42 else 0;}', /expected bool, got string/],
+  ['Kind=enum{A;};int main(){return if Kind::A then 42 else 0;}', /expected bool, got enum/],
+  ['int main(){return let x=byte(1);in int(x=byte(42));}', /cannot modify const binding/],
+  ['int main(){return let x="*";in (x="").length;}', /cannot modify const binding/],
+  ['Kind=enum{A;B;};int main(){return let x=Kind::A;in if (x=Kind::B)==Kind::B then 42 else 0;}', /cannot modify const binding/],
+  ['int main(){return let var x=byte(1);in int(x++);}', /expected int, got byte/],
+  ['int main(){return let var x="*";in x++;}', /expected int, got string/],
+  ['Kind=enum{A;};int main(){return let var x=Kind::A;in x++;}', /expected int, got enum/],
+  ['int main(){string s=let text="*";in text;return text.length;}', /unknown local variable or constant/],
+  ['int main(){string s=if true then (let text="*";in text) else text;return 0;}', /unknown local variable or constant/],
+  ['int main(){byte b=if true then byte(42) else missing;return 0;}', /unknown local variable or constant/],
+  ['int main(){string s=if true then "*" else (let text="";in text="*");return 0;}', /cannot modify const binding/],
+  ['Pair=record{x:int;};Pair get(){return let in Pair{x=42;};}int main(){return 0;}', /let body must have scalar type/],
+  ['Pair=record{x:int;};int main(){return let p:Pair=Pair{x=42;};in 0;}', /let binding type must be scalar/],
+  ['int main(){byte a[1];return let value=a;in 0;}', /array used without an index/],
+  ['int main(){byte a[1];return int(let in a);}', /array used without an index/],
+  ['int main(){byte a[1];return int(if true then a else a);}', /array used without an index/],
+  ['const byte b=let x=byte(42);in x;int main(){return 0;}', /let is not a compile-time constant expression/],
+  ['const string s=if true then "*" else "";int main(){return 0;}', /conditional is not a compile-time constant expression/],
+  ['Kind=enum{A;};static Kind k=let x=Kind::A;in x;int main(){return 0;}', /let is not a compile-time constant expression/],
+  ['static byte b=if true then byte(42) else byte(0);int main(){return 0;}', /conditional is not a compile-time constant expression/],
+  ['int main(){byte b=byte(42);switch(b){case (let x=byte(42);in x):return 42;default:return 0;}}', /let is not a compile-time constant expression/],
+  ['Kind=enum{A;};int main(){switch(Kind::A){case (if true then Kind::A else Kind::A):return 42;default:return 0;}}', /conditional is not a compile-time constant expression/],
+]) rejected(body, message);
+
 // Keep the existing frontend and VM budgets, not Stage 1's separate syntax limits.
 const bindings = count => Array.from({ length: count }, (_, n) => `x${n}=${n};`).join('');
 program(`int main(){return let ${bindings(1024)}in x1023;}`, 255);
@@ -670,6 +746,17 @@ program(`int main(){return ${'if true then '.repeat(253)}42${' else 0'.repeat(25
 rejected(`int main(){return ${'if true then '.repeat(254)}42${' else 0'.repeat(254)};}`, /nesting limit exceeded/);
 program(`int main(){return let ${bindings(1023)}in if true then x1022 else 0;}`, 254);
 rejected(`int main(){return let ${bindings(1024)}in if true then 42 else 0;}`, /too many LIR slots/);
+for (const [type, value, result, declarations] of [
+  ['byte', 'byte(42)', 'int(get())', ''],
+  ['string', '"*"', 'get().length+41', ''],
+  ['Kind', 'Kind::B', 'if get()==Kind::B then 42 else 0', 'Kind=enum{A;B;};'],
+]) {
+  const scalarBindings = count => Array.from({ length: count }, (_, n) => `x${n}:${type}=${value};`).join('');
+  program(`${declarations}${type} get(){return let ${scalarBindings(1024)}in x1023;}int main(){return ${result};}`);
+  rejected(`${declarations}${type} get(){return let ${scalarBindings(1025)}in ${value};}int main(){return 0;}`, /too many local slots/);
+  program(`${declarations}${type} get(){return let ${scalarBindings(1023)}in if true then x1022 else ${value};}int main(){return ${result};}`);
+  rejected(`${declarations}${type} get(){return let ${scalarBindings(1024)}in if true then ${value} else ${value};}int main(){return 0;}`, /too many LIR slots/);
+}
 const constants = count => Array.from({ length: count }, (_, n) => `c${n}:int=${n};`).join('');
 program(`${constants(1024)}int main(){return c1023;}`, 255);
 program(`${constants(1023)}const int tail=42;int main(){return tail;}`);
@@ -744,5 +831,9 @@ const recordExample = resolve(root, 'examples/replacement/records.l'), recordOut
 command(0, ['compile', recordExample, '--manifest', manifest, '-o', recordOutput]);
 command(0, ['check', recordOutput]);
 command(42, ['run', recordOutput]);
+const scalarExample = resolve(root, 'examples/replacement/scalars.l'), scalarOutput = resolve(work, 'scalars.lbc');
+command(0, ['compile', scalarExample, '--manifest', manifest, '-o', scalarOutput]);
+command(0, ['check', scalarOutput]);
+command(42, ['run', scalarOutput]);
 assert.match(command(65, ['check', example]).stderr, /requires an explicit --manifest/);
 console.log(`replacement execution: ${fixtures} fixtures, ${commands} CLI checks passed (bytecode 1.9)`);

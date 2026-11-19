@@ -36,8 +36,9 @@ C parser, not newly reserved. Namespace bindings reuse existing reopening,
 lookup and member-specific visibility; legacy containers remain supported.
 Name-first enums reuse checked int32 values, nominal identities and existing
 storage/dispatch rules; executable empty enums are rejected. Legacy comma-separated
-enums remain supported, and int/bool-only replacement expression/constant limits
-are not expanded by the enum slice.
+enums remain supported. Runtime `let`/conditional values now support int/bool/byte/
+string and nominal enums using the existing typed slots/registers; name-first
+constants remain int/bool-only. Both expression forms remain runtime-only.
 Named records reuse nominal value structs, scalar field checking and copied
 parameters/returns. The C analyzer checks named fields without reordering their
 evaluation, and lowering maps the resulting registers to existing struct fields.

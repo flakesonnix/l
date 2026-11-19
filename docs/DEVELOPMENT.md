@@ -11,7 +11,7 @@ and control flow with selected Nix-inspired features, superseding the earlier
 arrow-function proposal. Syntax-only bindings, C bodies, conditional expressions,
 records, enums, structs, aliases, namespaces, C-style `const` parameters and
 static/extern declarations are implemented, but the full grammar and executable
-source migration are not complete. The CLI now executes the first `int`/`bool`
+source migration are not complete. The CLI now executes the first scalar
 function/local, eager `let/in`, selected-branch conditional and typed name-first
 file-constant/transparent-alias/namespace/nominal-enum/named-record subset via the existing C pipeline,
 scope/type resolver and compile-time evaluator. See
@@ -84,6 +84,11 @@ model written-order effects, six-field permutations and copies across calls/impo
 including nested call vectors, distinct runtime traps and cleanup/recompilation.
 The compiler must validate labels without sorting the initializer expressions. These
 are compiler/VM tests, not evidence of L-source coverage or self-hosting.
+Scalar-expression models independently track byte values, string content IDs,
+full-width enum payloads, eager lexical-cell effects and selected-branch state.
+Cross-package scalar DAGs check alias erasure, shared nominal enum identity and
+import/root ordering. Aggregate/void results and compile-time expression use remain
+rejected; runtime scalar support does not relax constant initializer rules.
 
 ## Nix workflow
 
@@ -162,6 +167,7 @@ bytes, including NUL and values above 127; they do not perform text conversion.
 | Executable name-first namespaces | 1.9 | Existing compile-time scopes, reopening and member visibility; mandatory trailing `;`, no runtime namespace value or initialization. |
 | Executable name-first enums | 1.9 | Existing nominal-enum semantics, checked int32 values and shared limits; each member requires `;`, legacy comma-separated enums retained. |
 | Executable named-field records | 1.9 | Existing nominal value-struct metadata/VM; validate field names and map written-order results to declaration indexes, no new runtime representation. |
+| Scalar `let`/conditional expressions | 1.9 | Extend runtime values to byte/string/nominal enums and primitive aliases; exact types, existing slots/branches/VM, no aggregate or compile-time expression expansion. |
 
 The loader accepts only the current exact version, including for programs that do
 not use the new feature. The C observer API and its callback contract are described
