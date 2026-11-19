@@ -197,6 +197,10 @@ present on the default branch, so manual dispatch is available.
   100% coverage gates in the Nix/CI slices.
 - Check Stage 1 arena ownership, first-error rollback, exact shared budgets,
   source/bytecode model agreement and the boundary between syntax and semantics.
+- Check executable name-first constants against legacy folding, int/bool typing,
+  forward dependencies, cycles, readonly/import rules and shared resource limits.
+  No VM storage or runtime module initialization may be added. The L-written
+  parser remains syntax-only; keep its status distinct from the executable C path.
 - The coverage gate measures **Stage 0 C only**, not L-source coverage. Arbitrary
   bytecode mutants and cyclic verifier graphs must never be executed.
 - Treat local command results and hosted GitHub status checks as separate evidence.

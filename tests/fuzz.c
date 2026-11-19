@@ -24,6 +24,8 @@ static size_t global_array_programs, global_array_lifecycles;
 static size_t io_array_programs, io_array_executions;
 static size_t let_programs;
 static size_t conditional_programs;
+static size_t constant_programs;
+static size_t constant_rejections;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -591,6 +593,84 @@ static void conditional_cases(void) {
         ++conditional_programs;
         semantic_case(conditional_model(initial, pivot) + conditional_model(initial + 1, pivot), 0);
     }
+}
+/* Bounded forward DAGs, modeled in int64_t; execute only known, nontrapping results. */
+static void constant_cases(void) {
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        int32_t values[12];
+        char expressions[12][96];
+        for (unsigned n = 0; n < 12; ++n) {
+            unsigned a = n ? random_number(n) : 0, b = n ? random_number(n) : 0;
+            unsigned op = random_number(5);
+            if (!n || !random_number(3)) {
+                values[n] = test % 2 ? expression_value()
+                    : (int32_t)((int64_t)random_number(65536) * 65536 + random_number(65536) + INT32_MIN);
+                snprintf(expressions[n], sizeof(expressions[n]), "(%d)", values[n]);
+            } else {
+                int64_t left = values[a], right = values[b], value;
+                /* Avoid undefined host division and keep every intermediate in L's int range. */
+                if (op >= 3 && (!right || (left == INT32_MIN && right == -1))) right = 7;
+                value = op == 0 ? left + right : op == 1 ? left - right : op == 2 ? left * right
+                    : op == 3 ? left / right : left % right;
+                if (value < INT32_MIN || value > INT32_MAX || right != values[b]) {
+                    unsigned divisor = 1 + random_number(31);
+                    value = left / divisor;
+                    snprintf(expressions[n], sizeof(expressions[n]), "c%u/%u", a, divisor);
+                } else snprintf(expressions[n], sizeof(expressions[n]), "c%u%c c%u", a, "+-*/%"[op], b);
+                values[n] = (int32_t)value;
+            }
+        }
+        source_length = 0;
+        append("using Count=int;using Flag=bool;");
+        /* Reverse declaration order forces forward resolution through both spellings. */
+        for (unsigned n = 12; n-- > 0;) {
+            if ((test + n) % 2) append("c%u:Count=%s;", n, expressions[n]);
+            else append("const Count c%u=%s;", n, expressions[n]);
+            append("b%u:Flag=c%u==(%d)", n, n, values[n]);
+            if (n < 11) append("&&b%u", n + 1);
+            append(";");
+        }
+        append("safe:bool=false&&(1/0==0);int pass(int value){return value;}"
+               "int main(){return if b0&&!safe then (let c0=pass(c%u);in c0) else 1/0;}", test % 12);
+        ++constant_programs;
+        semantic_case(values[test % 12], 0);
+    }
+}
+static void constant_rejection(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) {
+        (void)compile(ctx, text);
+        failed("invalid name-first constant was accepted");
+    }
+    if (ctx->status != 65) failed("constant rejection returned an unexpected status");
+    ++constant_rejections;
+}
+static void constant_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned constant context could not compile valid source");
+    Program *p = compile(ctx, "answer:int=base+2;base:int=40;int main(){return answer;}");
+    if (p->global_count) failed("constant recovery allocated VM global storage");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void constant_recovery(void) {
+    static const char *const invalid[] = {
+        "answer:int=;int main(){return 0;}",
+        "answer:string=\"42\";int main(){return 0;}",
+        "answer:int=true;int main(){return 0;}",
+        "answer:int=base;base:int=answer;int main(){return 0;}",
+        "answer:int=2147483647+1;int main(){return 0;}",
+        "answer:int=1/0;int main(){return 0;}"
+    };
+    Context *ctx = context("constant-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            constant_rejection(ctx, invalid[n]);
+            cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("constant rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "constant-recovery";
+            constant_success(ctx);
+            cleanup(ctx);
+        }
+    }
+    dispose(ctx);
 }
 /* Independent shared-state model, with repeated runs of each source/bytecode program. */
 static void static_cases(void) {
@@ -1482,6 +1562,12 @@ int main(void) {
     global_array_cases();
     global_array_lifecycle_cases();
     io_array_lifecycle();
+    constant_cases();
+    constant_recovery();
+    scoped_lifecycle(
+        "answer:int=base+2;base:int=40;ready:bool=answer==42;"
+        "int main(){return if ready then answer/(base-40) else 0;}"
+        "int recover(){return let answer=base;in answer+2;}");
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
@@ -1499,5 +1585,7 @@ int main(void) {
     printf("fuzz: %zu static-buffer I/O lifecycle program passed 5 failure modes and %zu executions\n", io_array_programs, io_array_executions);
     printf("fuzz: %zu let programs matched lexical-cell models; source/bytecode trap cleanup and retries passed\n", let_programs);
     printf("fuzz: %zu conditional programs matched selected-branch scope models; cleanup and retries passed\n", conditional_programs);
+    printf("fuzz: %zu constant programs matched full-width forward DAG models; source/bytecode cleanup and retries passed\n", constant_programs);
+    printf("fuzz: %zu constant rejection/cleanup/recompile cycles passed\n", constant_rejections);
     return 0;
 }

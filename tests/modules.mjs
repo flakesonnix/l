@@ -1349,12 +1349,17 @@ try {
   const edges = [-2147483648n, -2147483647n, -42n, -1n, 0n, 1n, 42n, 2147483646n, 2147483647n];
   const folded = [];
   let constantModels = 0, shapeModels = 0;
+  let nameFirstConstantModels = 0;
   const lengthBody = expression => `int main(){int a[${expression}];return 42;}`;
   const labelBody = expression => `int main(){switch(0){case ${expression}:return 42;default:return 1;}}`;
   function model(expression, type, value, error) {
     ++constantModels;
-    if (error) rejected({ 'app/main.l': `module app.main;const ${type} value=${expression};int main(){return 42;}` }, error);
+    if (error) {
+      rejected({ 'app/main.l': `module app.main;const ${type} value=${expression};int main(){return 42;}` }, error);
+      rejected({ 'app/main.l': `module app.main;value:${type}=${expression};int main(){return 42;}` }, error);
+    }
     else folded.push({ expression, type, value: String(value) });
+    ++nameFirstConstantModels;
     if (type === 'int') {
       ++shapeModels;
       if (error) {
@@ -1393,6 +1398,8 @@ try {
     const declarations = batch.map((c, n) => `const ${c.type} c${n}=${c.expression};`).join('');
     const assertions = batch.map((c, n) => `if(c${n}!=${c.value})return 1;`).join('');
     constantProgram(`${declarations}int main(){${assertions}return 42;}`);
+    const nameFirst = batch.map((c, n) => `c${n}:${c.type}=v${n};const ${c.type} v${n}=${c.expression};`).join('');
+    constantProgram(`${nameFirst}int main(){${assertions}return 42;}`);
   }
   const integerShapes = folded.filter(value => value.type === 'int');
   for (let first = 0; first < integerShapes.length; first += 64) {
@@ -1428,6 +1435,54 @@ try {
     project['app/main.l'] = `module app.main;import app.c7::{value};int main(){if(value==${values[7]})return 42;return 1;}`;
     program(project);
   }
+
+  // Mixed spelling, cross-package constant DAGs: forward references and all import forms.
+  state = 0x4e434f4e;
+  for (let test = 0; test < 32; ++test) {
+    const project = {}, nodes = [];
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.v${n}`, seed = BigInt(1 + random(100));
+      let imports = '', expression = 'seed', value = seed;
+      for (let p = 0; p < n; ++p) if (p === n - 1 || random(3) === 0) {
+        const parent = nodes[p].name, form = (test + p) % 3;
+        if (!form) { imports += `import ${parent};`; expression += `+${parent.replaceAll('.', '::')}::value`; }
+        else if (form === 1) { imports += `import ${parent} as m${p};`; expression += `+m${p}::value`; }
+        else { imports += `import ${parent}::{value as v${p}};`; expression += `+v${p}`; }
+        value += nodes[p].value;
+      }
+      nodes.push({ name, value });
+      const declaration = n % 2 ? `pub value:int=${expression};const int seed=${seed};`
+        : `pub const int value=${expression};seed:int=${seed};`;
+      project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${imports}${declaration}pub ready:bool=value==${value};`;
+    }
+    let bytes;
+    for (const reverse of [false, true]) {
+      const imports = ['import app.v7 as top;', 'import app.v6::{value as next};'];
+      if (reverse) imports.reverse();
+      project['app/main.l'] = `module app.main;${imports.join('')}answer:int=top::value;`
+        + `int main(){return if top::ready&&answer==${nodes[7].value}&&next==${nodes[6].value} then 42 else 1;}`;
+      const settings = config(); if (reverse) settings.module_roots.reverse();
+      const f = program(project, 42, settings), output = readFileSync(resolve(f.directory, 'program.lbc'));
+      assert.equal(output.readUInt32LE(16), 0, 'constants must not allocate VM storage');
+      if (bytes) assert.deepEqual(output, bytes, 'constant module/import order must not change bytecode');
+      bytes = output;
+    }
+  }
+  const namedConstants = main => ({ 'app/main.l': `module app.main;${main}`,
+    'std/values.l': 'module std.values;hidden:int=40;pub answer:int=hidden+2;pub ready:bool=answer==42;' });
+  for (const [body, message] of [
+    ['import std.values;int main(){return std::values::hidden;}', /inaccessible symbol/],
+    ['import std.values::{hidden};int main(){return 0;}', /requires pub/],
+    ['import std.values as v;v:int=42;int main(){return 0;}', /alias conflicts/],
+    ['import std.values::{answer};import std.values::{ready as answer};int main(){return 0;}', /ambiguous selective/],
+    ['import std.values as v;int main(){v::answer++;return 0;}', /cannot modify module constant/],
+    ['import std.values;int main(){return answer;}', /unknown local variable or constant/],
+  ]) rejected(namedConstants(body), message);
+  rejected({ ...namedConstants('import std.values;int main(){return 42;}'),
+    'std/values.l': 'module std.values;pub answer:int=2147483647+1;' }, /invalid constant expression: integer overflow/);
+  rejected({ 'app/main.l': 'module app.main;import app.bridge;int main(){return app::bridge::answer;}',
+    'app/bridge.l': 'module app.bridge;import std.values::{answer};',
+    'std/values.l': 'module std.values;pub answer:int=42;' }, /not a scalar constant/);
 
   // Lengths and labels use module-constant rules, never runtime locals or mutable storage.
   constantProgram('int main(){int a[(1+2)*2/3];a[1]=42;return a[1];}');
@@ -1881,7 +1936,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 struct DAGs, 32 alias DAGs, 32 constant DAGs, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 struct DAGs, 32 alias DAGs, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }
