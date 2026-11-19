@@ -327,6 +327,9 @@ static uint32_t intern_string(Semantic *s, Token token) {
     reserve(s->ctx, (void **)&ast->strings, &ast->string_capacity, ast->string_count + 1, sizeof(*ast->strings));
     ast->strings[ast->string_count] = value; return ast->string_count++;
 }
+static bool scalar_expression_type(Type type) {
+    return type == TY_INT || type == TY_BOOL || type == TY_BYTE || type == TY_STRING || IS_ENUM(type);
+}
 static Type analyze_expr(Semantic *s, Expr *e) {
     enter(s->ctx, e->token);
     switch (e->kind) {
@@ -336,8 +339,8 @@ static Type analyze_expr(Semantic *s, Expr *e) {
         /* Both alternatives are checked, even when the condition is a literal. */
         Type yes = analyze_expr(s, e->left), no = analyze_expr(s, e->right);
         require(s, e->right->token, no, yes);
-        if (yes != TY_INT && yes != TY_BOOL)
-            token_fail(s->ctx, e->token, "conditional branches must have int or bool type");
+        if (!scalar_expression_type(yes))
+            token_fail(s->ctx, e->token, "conditional branches must have scalar type");
         e->type = yes; break;
     }
     case EX_LET: {
@@ -349,14 +352,14 @@ static Type analyze_expr(Semantic *s, Expr *e) {
             /* Eager, sequential scope: the initializer sees outer/earlier bindings only. */
             Type init = analyze_expr(s, d->value);
             if (d->type == TY_AUTO) d->type = init;
-            if (d->type != TY_INT && d->type != TY_BOOL)
-                token_fail(s->ctx, d->name, "let binding type must be int or bool");
+            if (!scalar_expression_type(d->type))
+                token_fail(s->ctx, d->name, "let binding type must be scalar");
             require(s, d->name, init, d->type);
             bind(s, d);
         }
         e->type = analyze_expr(s, e->right);
-        if (e->type != TY_INT && e->type != TY_BOOL)
-            token_fail(s->ctx, e->token, "let body must have int or bool type");
+        if (!scalar_expression_type(e->type))
+            token_fail(s->ctx, e->token, "let body must have scalar type");
         --s->depth; s->bindings = saved;
         break;
     }

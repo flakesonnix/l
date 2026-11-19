@@ -14,7 +14,8 @@ the existing Stage 0 pipeline: C-style typed functions, locals and expressions,
 plus eager, scoped `let/in` with immutable bindings and explicit `var`, typed
 `if … then … else …` conditional expressions, typed name-first file constants,
 name-first transparent scalar aliases, name-first namespaces, and name-first
-nominal enums and records with named-field literals.
+nominal enums and records with named-field literals. Runtime `let` and conditional
+results accept all existing scalar types: int, bool, byte, string and nominal enums.
 Legacy bootstrap implementation sources and examples still compile. The separate
 L-written Stage 1 frontend accepts a broader replacement grammar as syntax only.
 
@@ -53,7 +54,7 @@ frontend rather than adding a second compiler, AST serialization protocol or
 runtime. It does **not** connect the L-written Stage 1 arenas to the backend or
 claim self-hosting.
 
-Executable features include modules, `pub`, `int`/`bool` signatures and parameters,
+Executable features include modules, `pub`, scalar signatures and parameters,
 initialized C locals, `const` parameters/locals, arithmetic/comparisons, boolean
 operators, direct calls, explicit returns, nested `let/in`, conditional
 expressions, `[pub] name: Type = expression;` file constants and
@@ -69,11 +70,16 @@ type, call, visibility and entry-point checks apply before bytecode is written.
   A shadowing initializer can therefore read the outer binding of the same name.
 - The body sees all bindings. Nothing declared by the `let` escapes its scope;
   duplicate names within one `let` are errors. Empty `let in body` is allowed.
-- This first executable slice restricts `let` bindings and results to `int`/`bool`.
-  It rejects `let` in compile-time constant contexts. Short-circuit operators still
+- `let` bindings and results accept `int`, `bool`, `byte`, `string` and nominal
+  enums, including transparent primitive aliases and qualified/imported enum types.
+  Annotations must match exactly; there are no implicit scalar conversions. Void,
+  aggregates and whole arrays remain rejected. Immutable/`var` rules apply to every
+  scalar type, and shadowing preserves the same eager sequential scopes.
+  `let` remains rejected in compile-time constant contexts. Short-circuit operators still
   skip their right operand, but skipped/unreachable source is type-checked.
 - `if condition then value else value` requires a bool condition and matching
-  int/bool alternative types. The condition executes once and only the selected
+  scalar alternative types (the same nominal enum, not merely equal payloads).
+  The condition executes once and only the selected
   alternative executes; both are parsed and type-checked, even for a literal
   condition. Branch-local `let` names do not escape to the other branch or beyond
   the expression. Conditional expressions are runtime-only, not compile-time
@@ -116,8 +122,8 @@ type, call, visibility and entry-point checks apply before bytecode is written.
   parameter/return, same-enum comparison and switch behavior. New and legacy
   `enum Name { Member, ... };` declarations share budgets and type rules; legacy
   syntax remains migration scaffolding. Primitive aliases cannot target enums,
-  and name-first constants plus executable `let`/conditional results remain
-  int/bool-only in this slice.
+  and name-first constants remain int/bool-only. Runtime `let`/conditional values
+  support enums without extending their compile-time initializer rules.
 - Records reuse existing nominal value-struct semantics. Nonempty field lists
   require written scalar types resolving to int/bool/byte/string or enums, with
   the existing 256-type/64-field limits shared with C-style structs. Nested
@@ -137,8 +143,8 @@ type, call, visibility and entry-point checks apply before bytecode is written.
 - `record` is contextual after `Name =`, not newly reserved. These internal AST
   spelling flags/field indexes are not serialized: named values use the same
   existing `struct.make` LIR, nominal metadata and VM as C-style structs. Record
-  literals remain runtime-only; int/bool-only `let`/conditional results and
-  name-first constant restrictions are unchanged.
+  literals remain runtime-only; aggregate `let`/conditional results and name-first
+  constants of types other than int/bool remain unsupported.
 - `let`, `in`, `var` and `then` are now reserved by the source compiler. Parentheses
   delimit a `let` when an operator should apply outside its full body expression. Existing
   256-level compiler nesting, per-function slot and VM resource limits remain.
@@ -207,6 +213,22 @@ reversed mixed-type fields in written order, then checks by-value copy behavior:
 ./build/l run build/records.lbc                  # Exit code 42
 ```
 
+[`examples/replacement/scalars.l`](examples/replacement/scalars.l) combines string,
+byte-alias and nominal-enum `let`/conditional values. Eager bindings execute once;
+the unselected out-of-range byte conversion never executes:
+
+```sh
+./build/l check examples/replacement/scalars.l --manifest examples/replacement/package.json
+./build/l compile examples/replacement/scalars.l --manifest examples/replacement/package.json -o build/scalars.lbc
+./build/l run build/scalars.lbc                  # Exit code 42
+```
+
+Scalar expressions reuse the existing typed lexical slots, branch temporaries,
+registers and VM operations. Their values can be passed, returned, assigned and
+used in scalar record fields. Array lengths, switch labels, enum members and
+constant/static initializers still reject `let` and conditionals; scalar runtime
+support does not turn either form into compile-time evaluation.
+
 ### Broader syntax-only replacement-parser slices
 
 ```text
@@ -243,7 +265,7 @@ int choose(bool ready) { return if ready then 42 else 0; }
 ```
 
 They can nest in conditions, either branch, calls and `let` initializers. The
-executable C frontend enforces bool conditions, matching int/bool results and
+executable C frontend enforces bool conditions, exactly matching scalar results and
 selected-branch evaluation as described above. The standalone Stage 1 driver
 still does not check condition or branch types, select a branch, or execute
 either branch. Parentheses delimit a

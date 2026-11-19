@@ -1025,6 +1025,70 @@ try {
     }
   }
 
+  // Scalar let/conditional values retain shared enum identity and model only selected effects.
+  state = 0x5343414c;
+  for (let test = 0; test < 32; ++test) {
+    const nodes = [], pick = BigInt(random(65536)) * 65536n + BigInt(random(65536)) - 2147483648n;
+    const project = { 'std/scalars.l': `module std.scalars;pub Octet=alias byte;pub Text=alias string;`
+      + `pub Kind=enum{Low=-2147483648;High=2147483647;Pick=(${pick});};pub static int ticks=0;`
+      + 'pub bool flip(){return ticks++%2==0;}'
+      + 'pub Octet touch(Octet value){ticks++;return value;}pub Text touch(Text value){ticks++;return value;}'
+      + 'pub Kind touch(Kind value){ticks++;return value;}' };
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.s${n}`, parents = [], delta = random(256);
+      let imports = 'import std.scalars as t;';
+      const calls = { octet: '', text: '', kind: '' };
+      for (let p = 0; p < n; ++p) if (p === n - 1 || random(3) === 0) {
+        parents.push(p);
+        const parent = nodes[p].name, form = (test + p) % 3;
+        if (!form) imports += `import ${parent};`;
+        else if (form === 1) imports += `import ${parent} as m${p};`;
+        else imports += `import ${parent}::{work::octet as o${p},work::text as s${p},work::kind as k${p}};`;
+        for (const [kind, short] of [['octet', 'o'], ['text', 's'], ['kind', 'k']]) {
+          const fn = !form ? `${parent.replaceAll('.', '::')}::work::${kind}` : form === 1 ? `m${p}::work::${kind}` : `${short}${p}`;
+          calls[kind] += `current=${fn}(current);`;
+        }
+      }
+      let functions = '';
+      for (const [kind, type, transform] of [
+        ['octet', 't::Octet', `byte((int(old)+${delta})%256)`],
+        ['text', 't::Text', delta % 2 ? '"*"' : '"a\\0\\xff"'],
+        ['kind', 't::Kind', delta % 2 ? 't::Kind::Low' : 't::Kind::High'],
+      ]) functions += `pub ${type} ${kind}(const ${type} input){${type} current=let var value:${type}=input;unused=t::touch(input);`
+        + `in if t::flip() then (let old=t::touch(value);in ${transform}) else t::touch(value);${calls[kind]}return current;}`;
+      project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${imports}work=namespace{${functions}};`;
+      nodes.push({ name, delta, parents });
+    }
+    let ticks = 0;
+    function simulate(n, input, kind) {
+      ++ticks;
+      const yes = ticks++ % 2 === 0;
+      let current = input;
+      if (yes) {
+        ++ticks;
+        current = kind === 'octet' ? (input + BigInt(nodes[n].delta)) % 256n
+          : kind === 'text' ? (nodes[n].delta % 2 ? '"*"' : '"a\\0\\xff"')
+            : nodes[n].delta % 2 ? -2147483648n : 2147483647n;
+      } else ++ticks;
+      for (const parent of nodes[n].parents) current = simulate(parent, current, kind);
+      return current;
+    }
+    const octet = simulate(7, 17n, 'octet'), text = simulate(7, '"*"', 'text'), kind = simulate(7, pick, 'kind');
+    const member = kind === -2147483648n ? 'Low' : kind === 2147483647n ? 'High' : 'Pick';
+    for (const reverse of [false, true]) {
+      const imports = ['import std.scalars as t;', 'import app.s7 as top;'];
+      if (reverse) imports.reverse();
+      project['app/main.l'] = `module app.main;${imports.join('')}int main(){t::Octet octet=top::work::octet(byte(17));`
+        + `t::Text text=top::work::text("*");t::Kind kind=top::work::kind(t::Kind::Pick);`
+        + `if(int(octet)!=${octet}||text!=${text}||kind!=t::Kind::${member}||t::ticks!=${ticks})return 1;return 42;}`;
+      const settings = config(); if (reverse) settings.module_roots.reverse();
+      const f = program(project, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
+      assert.equal(bytes.readUInt32LE(16), 1, 'scalar expressions add no implicit global storage');
+      assert.equal(bytes.readUInt32LE(20), 0, 'scalar expressions add no aggregate metadata');
+      assert.equal(bytes.readUInt32LE(24), 1, 'imported scalar enum identity remains shared');
+    }
+  }
+
   // Named record permutations keep source evaluation order and copies across package DAGs.
   state = 0x52454344;
   for (let test = 0; test < 32; ++test) {
@@ -2125,7 +2189,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 reopened replacement namespace DAGs in two import orders, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 mixed-spelling nominal enum DAGs in two import orders, 32 named record order/copy DAGs in two import orders, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 reopened replacement namespace DAGs in two import orders, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 mixed-spelling nominal enum DAGs in two import orders, 32 scalar let/conditional DAGs in two import orders, 32 named record order/copy DAGs in two import orders, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

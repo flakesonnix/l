@@ -142,7 +142,7 @@ declarations as syntax-only migration slices through #28; bootstrap implementati
 sources retain legacy syntax.
 
 The subsequent executable milestone extends the existing C frontend with bounded
-`int`/`bool` `let/in` and typed selected-branch conditional expressions, reusing its
+scalar `let/in` and typed selected-branch conditional expressions, reusing its
 semantic analysis, LIR, verified bytecode 1.9
 and VM. It does not make the L-written parsers executable compilers or migrate
 all replacement declarations. Source commands still require explicit manifests.
@@ -209,12 +209,16 @@ present on the default branch, so manual dispatch is available.
   Reject namespace-level `pub`, runtime namespace values and hidden initialization.
 - Check executable name-first enums for required member semicolons, nonempty
   nominal types, checked explicit/implicit values, equal-valued aliases, visibility,
-  duplicate cases and shared old/new budgets. Keep int/bool-only expression and
-  name-first constant restrictions intact.
+   duplicate cases and shared old/new budgets. Keep int/bool-only name-first
+   constant restrictions and runtime-only expression rules intact.
 - Check named records for nominal identity, complete/exact field sets, scalar types,
   by-value copies and readonly writes. Initializers must execute in written order,
   including nested calls and unused fields; map registers afterward, never reorder
   the AST. Preserve legacy positional assignments and require named new-record literals.
+- Check scalar `let`/conditional values for exact byte/string/enum types, same-enum
+  nominal identity, alias transparency, readonly writes, eager lexical effects and
+  selected branches. Reuse existing typed slots/registers; preserve aggregate/void
+  rejection, explicit conversions and compile-time restrictions.
 - The coverage gate measures **Stage 0 C only**, not L-source coverage. Arbitrary
   bytecode mutants and cyclic verifier graphs must never be executed.
 - Treat local command results and hosted GitHub status checks as separate evidence.

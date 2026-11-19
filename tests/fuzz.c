@@ -30,6 +30,7 @@ static size_t alias_programs, alias_rejections;
 static size_t namespace_programs, namespace_rejections;
 static size_t replacement_enum_programs, enum_rejections;
 static size_t record_programs, record_rejections;
+static size_t scalar_expression_programs, scalar_expression_rejections;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -909,6 +910,115 @@ static void record_recovery(void) {
             if (ctx->allocated || ctx->allocations) failed("record rejection could not be cleaned up");
             memset(ctx, 0, sizeof(*ctx)); ctx->filename = "record-recovery";
             record_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
+typedef struct { int32_t cell; uint32_t ticks; } ScalarExpressionModel;
+static const char *scalar_expression_type(unsigned kind) {
+    return kind == 0 ? "Octet" : kind == 1 ? "Text" : "Kind";
+}
+static void scalar_expression_literal(unsigned kind, int32_t value) {
+    if (!kind) append("byte(%d)", value);
+    else if (kind == 1) {
+        static const char *const text[] = {"\"\"", "\"*\"", "\"a\\0\\xff\""};
+        append("%s", text[value]);
+    } else append(value == INT32_MIN ? "Kind::Low" : value == INT32_MAX ? "Kind::High" : "Kind::Pick");
+}
+static int32_t scalar_expression_value(unsigned kind, int32_t pick) {
+    if (!kind) return (int32_t)random_number(256);
+    if (kind == 1) return (int32_t)random_number(3);
+    return random_number(2) ? pick : random_number(2) ? INT32_MIN : INT32_MAX;
+}
+/* Strings use host-side content IDs; enum values retain full-width nominal payloads. */
+static int32_t scalar_expression_model(ScalarExpressionModel *model, unsigned depth, unsigned kind, int32_t pick) {
+    unsigned form = random_number(depth ? 8 : 2);
+    if (!form) {
+        int32_t value = scalar_expression_value(kind, pick);
+        scalar_expression_literal(kind, value); return value;
+    }
+    if (form == 1) { append("cell"); return model->cell; }
+    if (form == 2) {
+        append("tick("); int32_t value = scalar_expression_model(model, depth - 1, kind, pick); append(")");
+        ++model->ticks; return value;
+    }
+    if (form == 3) {
+        append("(if flip() then ");
+        bool selected = model->ticks++ % 2 == 0;
+        ScalarExpressionModel yes = *model, no = *model;
+        int32_t a = scalar_expression_model(&yes, depth - 1, kind, pick);
+        append(" else "); int32_t b = scalar_expression_model(&no, depth - 1, kind, pick); append(")");
+        *model = selected ? yes : no; return selected ? a : b;
+    }
+    if (form == 4) {
+        append("(let var cell:%s=", scalar_expression_type(kind));
+        int32_t initial = scalar_expression_model(model, depth - 1, kind, pick), outer = model->cell;
+        model->cell = initial;
+        append(";snapshot=cell;in ");
+        int32_t value = scalar_expression_model(model, depth - 1, kind, pick); append(")");
+        model->cell = outer; return value;
+    }
+    if (form == 5) {
+        append("(cell="); int32_t value = scalar_expression_model(model, depth - 1, kind, pick); append(")");
+        model->cell = value; return value;
+    }
+    if (form == 6) {
+        append("(let unused=tick("); scalar_expression_literal(kind, scalar_expression_value(kind, pick));
+        append(");in "); ++model->ticks;
+        int32_t value = scalar_expression_model(model, depth - 1, kind, pick); append(")"); return value;
+    }
+    append("last("); (void)scalar_expression_model(model, depth - 1, kind, pick);
+    append(","); int32_t value = scalar_expression_model(model, depth - 1, kind, pick); append(")"); return value;
+}
+static void scalar_expression_cases(void) {
+    for (unsigned kind = 0; kind < 3; ++kind) {
+        for (unsigned test = 0; test < MODEL_CASES; ++test) {
+            int32_t pick = (int32_t)((int64_t)random_number(65536) * 65536 + random_number(65536) + INT32_MIN);
+            ScalarExpressionModel model = {scalar_expression_value(kind, pick), random_number(7)};
+            source_length = 0;
+            const char *type = scalar_expression_type(kind);
+            append("Octet=alias byte;Text=alias string;Kind=enum{Low=-2147483648;High=2147483647;Pick=(%d);};"
+                   "static int ticks=%u;bool flip(){return ticks++%%2==0;}"
+                   "%s tick(%s value){ticks++;return value;}%s last(%s a,%s b){return b;}"
+                   "int main(){%s cell=", pick, model.ticks, type, type, type, type, type, type);
+            scalar_expression_literal(kind, model.cell); append(";%s result=", type);
+            int32_t expected = scalar_expression_model(&model, 1 + random_number(5), kind, pick);
+            append(";if(result!="); scalar_expression_literal(kind, expected);
+            append("||cell!="); scalar_expression_literal(kind, model.cell);
+            append("||ticks!=%u)1/0;return 42;}", model.ticks);
+            ++scalar_expression_programs; semantic_case(42, 0);
+        }
+    }
+}
+static void scalar_expression_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) {
+        (void)compile(ctx, text);
+        failed("invalid scalar expression was accepted");
+    }
+    if (ctx->status != 65) failed("scalar expression rejection returned an unexpected status");
+    ++scalar_expression_rejections;
+}
+static void scalar_expression_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned scalar expression context rejected valid source");
+    Program *p = compile(ctx, "K=enum{Off;On;};int main(){return let text=if true then \"*\" else \"\";"
+        "octet=if text==\"*\" then byte(42) else byte(256);kind=if true then K::On else K::Off;"
+        "in if kind==K::On then int(octet) else 0;}");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void scalar_expression_recovery(void) {
+    static const char *const invalid[] = {
+        "R=record{x:int;};int main(){return let value=R{x=42;};in 0;}",
+        "A=enum{X;};B=enum{X;};int main(){A value=if true then A::X else B::X;return 0;}",
+        "int main(){return let value=byte(1);in int(value=byte(42));}",
+        "void f(){}int main(){let in f();return 0;}"
+    };
+    Context *ctx = context("scalar-expression-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            scalar_expression_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("scalar expression rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "scalar-expression-recovery";
+            scalar_expression_success(ctx); cleanup(ctx);
         }
     }
     dispose(ctx);
@@ -1832,6 +1942,12 @@ int main(void) {
     scoped_lifecycle(
         "Pair=record{x:int;};int main(){Pair p=Pair{x=42;};return p.x/(p.x-42);}"
         "int recover(){Pair p=Pair{x=42;};Pair q=p;q.x=0;return p.x;}");
+    scalar_expression_cases();
+    scalar_expression_recovery();
+    scoped_lifecycle(
+        "K=enum{Off;On;};int main(){return let text=if true then \"\" else \"*\";in int(text[0]);}"
+        "int recover(){return let text=if true then \"*\" else \"\";octet=if true then byte(42) else byte(256);"
+        "kind=if text==\"*\" then K::On else K::Off;in if kind==K::On then int(octet) else 0;}");
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
@@ -1859,5 +1975,7 @@ int main(void) {
     printf("fuzz: %zu enum rejection/cleanup/recompile cycles passed; source/bytecode nominal-cell trap recovery passed\n", enum_rejections);
     printf("fuzz: %zu record programs matched full-width written-order, six-field and value-copy models\n", record_programs);
     printf("fuzz: %zu record rejection/cleanup/recompile cycles passed; source/bytecode allocation trap recovery passed\n", record_rejections);
+    printf("fuzz: %zu scalar expression programs matched byte/string/nominal-enum cell, effect and selected-branch models\n", scalar_expression_programs);
+    printf("fuzz: %zu scalar expression rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", scalar_expression_rejections);
     return 0;
 }

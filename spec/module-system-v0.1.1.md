@@ -9,7 +9,7 @@ This document replaces sections 2.2 and 2.3 of Language L Specification 0.1.0.
 > **Repository status (non-normative):** Source examples here use the currently
 > implemented legacy bootstrap syntax. A typed, Nix-inspired source replacement
 > is approved, with a broader syntax-only function/binding parser and a first
-> executable C-function/local, `let/in`, conditional, typed name-first constant,
+> executable C-function/local, scalar `let/in`/conditional, typed name-first constant,
 > transparent scalar-alias, namespace, nominal-enum and named-record
 > subset in the existing C compiler. The complete replacement grammar and executable-source migration
 > remain unfinished. This note
