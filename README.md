@@ -1,40 +1,44 @@
 # Language L — Stage 0
 
-C11 bootstrap for the first end-to-end slice of the L 0.1.0 specification.
-**Not yet L 0.1 conformant, and not yet a complete L-Core implementation.**
-No LLVM or external library dependencies.
+L is a language under construction. This is its C11 bootstrap compiler and
+bytecode VM: enough to compile and run real programs, not a finished implementation
+of L 0.1 or L-Core. There is no LLVM dependency, and no external library dependency.
 
 Build, Nix and CI instructions: [development guide](docs/DEVELOPMENT.md).
 GitHub review order and merge instructions: [review guide](docs/REVIEWING.md).
 
 ## Source syntax status
 
-The compiler now executes a **first approved replacement-syntax subset** through
-the existing Stage 0 pipeline: C-style typed functions, locals and expressions,
-plus eager, scoped `let/in` with immutable bindings and explicit `var`, typed
-`if … then … else …` conditional expressions, typed name-first file constants,
-name-first transparent scalar aliases, name-first namespaces, and name-first
-nominal enums and records with named-field literals. Runtime `let` and conditional
-results accept all existing scalar types: int, bool, byte, string and nominal enums.
-Legacy bootstrap implementation sources and examples still compile. The separate
-L-written Stage 1 frontend accepts a broader replacement grammar as syntax only.
+The executable replacement stack, **#30–#37, is merged**. The
+[`examples/replacement/`](examples/replacement/) programs run through the C
+bootstrap; they are not just parser demos. The merged compiler snapshot is
+`e2ca42a3`, with [passing main CI](https://github.com/flakesonnix/l/actions/runs/44551718137).
 
-The approved direction is a **typed hybrid: C-style functions and control flow,
-with selected Nix-inspired features** such as `let/in` and name-first bindings.
-The user explicitly chose C-style definitions over the earlier arrow-function
-proposal. This is a breaking source migration, not a permanent second grammar.
-The approved binding, conditional, aggregate, alias, namespace and storage spellings are shown below. The rest
-of the replacement grammar and the full executable-source migration remain incomplete.
+The syntax mixes **C-style functions and control flow** with a few Nix-inspired
+ideas: `let/in`, conditional expressions, and name-first constants, aliases,
+namespaces, enums and records. Runtime `let` and conditional values can be `int`,
+`bool`, `byte`, `string` or nominal enums. Functions use C-style definitions; the
+earlier arrow-function form is no longer part of the replacement grammar.
 
-Static typing, eager left-to-right evaluation and the
-[module-system semantics](spec/module-system-v0.1.1.md) stay intact. Nix-style lazy
-evaluation, dynamic typing and implicit module discovery are not part of the
-change. IR/bytecode remains **1.9**. Syntax replacement takes precedence over expanding the legacy
-Stage 1 grammar with enum/struct declarations.
+The Nix influence stops at syntax. Evaluation is eager and left to right, types
+are static, and [module resolution](spec/module-system-v0.1.1.md) needs an explicit
+manifest. There is no laziness, dynamic typing or implicit module search.
+IR/bytecode is still **1.9**.
+
+There are two paths to keep straight:
+
+- **Stage 0, written in C, compiles and runs programs.** It supports the executable
+  subset below and still accepts the old bootstrap sources.
+- **Stage 1, written in L, checks syntax.** Its parsers accept more of the planned
+  grammar, but do not resolve names, check types or compile their input.
+
+The source migration is unfinished. Keeping old code working while that happens
+does not mean maintaining two permanent user grammars. New syntax takes priority
+over adding enum/struct declarations to the legacy Stage 1 file parser.
 
 ### First executable replacement subset
 
-[`examples/replacement/answer.l`](examples/replacement/answer.l) is executable:
+Start with [`examples/replacement/answer.l`](examples/replacement/answer.l):
 
 ```sh
 make
@@ -43,116 +47,125 @@ make
 ./build/l run build/answer.lbc                   # Exit code 42
 ```
 
-Source commands retain an **explicit manifest**; no package or module roots are
-implicitly discovered. The example declares `module app.answer;` because the
-manifest maps `app` to its directory and the file is `answer.l`. The acceptance
-program below is also tested in a correctly mapped `main.l` fixture.
+An exit code of **42** is the expected result, not a failed test. Source commands
+need an **explicit manifest**. Here it maps `app` to the example directory, so
+`answer.l` declares `module app.answer;`. The acceptance program below is also
+tested as `main.l` under a matching root. Nothing searches your working directory
+for a package or standard library.
 
-The path is source → existing C lexer/parser → owned AST → semantic analysis →
-existing LIR → verified **bytecode 1.9** → existing VM. This extends the bootstrap
-frontend rather than adding a second compiler, AST serialization protocol or
-runtime. It does **not** connect the L-written Stage 1 arenas to the backend or
-claim self-hosting.
+The path is source → C lexer/parser → owned AST → semantic analysis → LIR →
+verified **bytecode 1.9** → VM. The new syntax uses that same compiler and runtime.
+It does not connect the L-written parser arenas to the backend, add an AST file
+format, or make the compiler self-hosted.
 
-Executable features include modules, `pub`, scalar signatures and parameters,
-initialized C locals, `const` parameters/locals, arithmetic/comparisons, boolean
-operators, direct calls, explicit returns, nested `let/in`, conditional
-expressions, `[pub] name: Type = expression;` file constants and
-`[pub] Name = alias Type;` transparent aliases and `Name = namespace { ... };`
-compile-time scopes, `[pub] Name = enum { Member; ... };` nominal enums, and
-`[pub] Name = record { field: Type; ... };` value records with named literals. Existing name,
-type, call, visibility and entry-point checks apply before bytecode is written.
+You get modules and `pub`, typed functions and calls, initialized C locals,
+`const` parameters/locals, arithmetic, comparisons and explicit returns. The
+name-first forms below go through the same name, type, visibility and entry-point
+checks before any bytecode is written.
 
-- `let name[: Type] = expression; ... in body` opens a lexical scope. Bindings are
-  immutable unless prefixed by `var`; types are inferred when omitted.
-- Initializers execute exactly once, eagerly in written order, including unused
-  bindings. Each sees outer and earlier bindings, **not itself or later bindings**.
-  A shadowing initializer can therefore read the outer binding of the same name.
-- The body sees all bindings. Nothing declared by the `let` escapes its scope;
-  duplicate names within one `let` are errors. Empty `let in body` is allowed.
-- `let` bindings and results accept `int`, `bool`, `byte`, `string` and nominal
-  enums, including transparent primitive aliases and qualified/imported enum types.
-  Annotations must match exactly; there are no implicit scalar conversions. Void,
-  aggregates and whole arrays remain rejected. Immutable/`var` rules apply to every
-  scalar type, and shadowing preserves the same eager sequential scopes.
-  `let` remains rejected in compile-time constant contexts. Short-circuit operators still
-  skip their right operand, but skipped/unreachable source is type-checked.
-- `if condition then value else value` requires a bool condition and matching
-  scalar alternative types (the same nominal enum, not merely equal payloads).
-  The condition executes once and only the selected
-  alternative executes; both are parsed and type-checked, even for a literal
-  condition. Branch-local `let` names do not escape to the other branch or beyond
-  the expression. Conditional expressions are runtime-only, not compile-time
-  constant expressions in this slice.
-- File constants require a written type resolving to `int` or `bool`; existing
-  transparent aliases to those types are accepted. Initializers use the existing
-  compile-time evaluator, with checked integer arithmetic and boolean
-  short-circuiting. Forward references are allowed, evaluated dependency cycles
-  are errors, and skipped operands still undergo semantic checking.
-- Constants are immutable, follow existing duplicate/import/`pub` rules, and fold
-  into the existing LIR without allocating VM global storage. They may supply
-  array lengths, switch labels and legacy static initializers. Function calls,
-  mutable-static reads, `let` and conditional expressions are not constant
-  initializers. The existing 1024-constant budget is shared across loaded modules
-  and both spellings; nesting limits also apply to dependency chains.
-- Name-first aliases reuse existing scalar-alias resolution: targets must resolve
-  to `int`, `bool`, `byte` or `string`, including forward/chained/imported aliases.
-  They introduce no nominal identity, runtime value or VM storage. Existing
-  duplicate, visibility, cycle, overload and readonly rules remain authoritative.
-  The 1024-alias budget is shared across loaded modules and both spellings.
-- `alias` is contextual after `Name =`, not a new reserved source keyword. Legacy
-  `using Name = Type;` remains bootstrap migration scaffolding. Alias declarations
-  are module/namespace-level, not local; both namespace spellings work.
-  Aliases to byte/string do
-  not expand the int/bool-only restriction on name-first constants.
-- Name-first namespace bindings reuse existing nested/reopened compile-time
-  scopes, relative/qualified lookup and member visibility. The closing `}` requires
-  `;`. `pub` on the namespace itself is rejected: export each member with its own
-  `pub`. Namespaces are not runtime values, records or initialization blocks.
-- Legacy `namespace Name { ... }` remains bootstrap migration scaffolding and
-  reopens the same scopes as the new spelling. Existing member/dependency rules,
-  256-level nesting and shared resource limits remain in force. Imports and module
-  headers still belong at file scope before declarations, never inside namespaces.
-- Name-first enum members are names, optionally `= expression`, **each requiring
-  `;`**; the closing `}` also requires `;`. Existing enum analysis rejects empty
-  or duplicate-name lists, checks explicit/implicit int32 values and overflow,
-  and preserves nominal type identity. Distinct names may share a value, but
-  equal-valued switch cases remain duplicates.
-- Enum values retain existing constant/static storage, copied struct fields,
-  parameter/return, same-enum comparison and switch behavior. New and legacy
-  `enum Name { Member, ... };` declarations share budgets and type rules; legacy
-  syntax remains migration scaffolding. Primitive aliases cannot target enums,
-  and name-first constants remain int/bool-only. Runtime `let`/conditional values
-  support enums without extending their compile-time initializer rules.
-- Records reuse existing nominal value-struct semantics. Nonempty field lists
-  require written scalar types resolving to int/bool/byte/string or enums, with
-  the existing 256-type/64-field limits shared with C-style structs. Nested
-  aggregate fields, field arrays/defaults, aggregate globals and primitive aliases
-  to records remain unsupported.
-- `Type { field = expression; ... }` supplies each declared field exactly once.
-  Unknown, duplicate, missing or mistyped fields are compilation errors. Values
-  execute exactly once in **written order**, regardless of declaration order;
-  labels do not bind variables or create recursive attribute scopes. Unused fields
-  still execute. Nested calls retain their existing argument evaluation order.
-- Record values copy through locals, parameters and returns; updates affect the
-  receiving copy, and existing `const` protection covers field writes. Named
-  literals also work with approved C-style struct declarations. New record
-  declarations require named literals; comma-separated positional literals remain
-  bootstrap scaffolding for C-style structs, including positional assignments.
-  Semicolons distinguish named fields from those legacy expressions.
-- `record` is contextual after `Name =`, not newly reserved. These internal AST
-  spelling flags/field indexes are not serialized: named values use the same
-  existing `struct.make` LIR, nominal metadata and VM as C-style structs. Record
-  literals remain runtime-only; aggregate `let`/conditional results and name-first
-  constants of types other than int/bool remain unsupported.
-- `let`, `in`, `var` and `then` are now reserved by the source compiler. Parentheses
-  delimit a `let` when an operator should apply outside its full body expression. Existing
-  256-level compiler nesting, per-function slot and VM resource limits remain.
+#### Local values and conditionals
 
-The standalone L-written Stage 1 drivers remain **syntax-only**, even for these
-executable C-frontend forms. Legacy `const Type name = expression;` remains temporary bootstrap
-migration scaffolding. Both namespace spellings share the same member semantics;
-the L-written replacement parser itself remains syntax-only.
+`let name[: Type] = expression; ... in body` opens a lexical scope. Leave out the
+type to infer it; write `var` if the binding needs to change. Otherwise it is
+immutable. Empty `let in body` is fine, but duplicate names in one `let` are not.
+
+Initializers run **once, in written order**, even if their values go unused. Each
+can read outer and earlier bindings, not itself or later bindings. That means a
+shadowing initializer can read the outer value of its own name. The body sees all
+the bindings; none escape the `let`.
+
+Bindings and results can be `int`, `bool`, `byte`, `string` or nominal enums,
+including primitive aliases and qualified/imported enum types. Written types must
+match exactly. There are no implicit conversions, and no void, aggregate or
+whole-array results. The same immutability rules apply to every scalar type.
+
+`if condition then value else value` needs a bool condition and two exactly
+matching scalar types. Two enums with identical payloads are still different
+types. The condition runs once, and **only the selected branch runs**. Both
+branches are parsed and type-checked, even when the condition is a literal.
+Branch-local bindings stay local.
+
+These are runtime expressions, not compile-time constants. `&&` and `||` still
+short-circuit, but skipping execution never skips name or type checking.
+
+#### Constants and aliases
+
+`[pub] name: Type = expression;` declares a file constant. Its written type must
+resolve to `int` or `bool`; aliases to those types work too. The existing constant
+evaluator checks arithmetic and honors boolean short-circuiting. Forward
+references work; evaluated dependency cycles do not. Skipped operands are still
+checked for valid names and types.
+
+Constants follow the usual duplicate, import and visibility rules. They fold into
+LIR without allocating VM globals, and can supply array lengths, switch labels and
+legacy static initializers. Calls, mutable-static reads, `let` and conditionals
+are not constant initializers. Both constant spellings share the 1024-constant
+budget across loaded modules, plus the existing dependency nesting limits.
+
+`[pub] Name = alias Type;` gives a scalar type another name, not another identity.
+Targets must resolve to `int`, `bool`, `byte` or `string`. Forward, chained and
+imported aliases work; cycles and duplicate signatures are errors. There is no
+runtime alias value or storage. Both spellings share the 1024-alias budget.
+
+Aliases belong at module or namespace scope, not inside functions. `alias` is
+contextual after `Name =`, not a new reserved keyword. The old `using` spelling
+still works. A byte/string alias does not relax the int/bool-only file-constant
+restriction.
+
+#### Namespaces and enums
+
+`Name = namespace { ... };` opens a compile-time scope. Nest it, reopen it, and
+use relative or qualified lookup as usual. Keep the final `;`. Export members
+with their own `pub`: `pub` on the namespace itself is rejected. A namespace is
+not a runtime object or an initialization block.
+
+The old `namespace Name { ... }` spelling reopens the same scope. Both forms share
+the existing visibility, dependency, nesting and resource rules, including the
+256-level limit. Module headers and imports still go before declarations at file
+scope, never inside a namespace.
+
+`[pub] Name = enum { Member; Other = expression; };` declares a nominal enum.
+Every member needs `;`, and so does the closing `}`. Empty lists, duplicate names
+and out-of-range explicit/implicit int32 values are errors. Different members may
+share a value; duplicate folded switch cases may not.
+
+Enum values work in the existing constant/static storage, scalar struct fields,
+parameters, returns, comparisons and switches. Runtime `let` and conditionals
+support them too. The old comma-separated enum form shares the same budgets and
+type rules. Aliases still cannot target enums, and name-first constants remain
+int/bool-only.
+
+#### Records and field order
+
+`[pub] Name = record { field: Type; ... };` declares a nominal value record.
+Fields must resolve to int/bool/byte/string or enum types. Records and C-style
+structs share the 256-type limit and 1..64 fields per type. Nested aggregate
+fields, arrays/defaults, aggregate globals and aliases to records are not supported.
+
+`Type { field = expression; ... }` supplies every field exactly once. Unknown,
+duplicate, missing and mistyped fields are errors. Values run **in written field
+order**, not declaration order. Labels do not create variable bindings or recursive
+attribute scopes. Unused fields still run, and nested calls keep their normal
+argument order.
+
+Assignment, parameters and returns copy records by value. Changing a copy does
+not change the original; `const` protects field writes. Named literals work with
+C-style structs too. New record declarations require named literals; C-style
+structs keep comma-separated positional expressions, including assignments.
+Semicolons distinguish the named form.
+
+`record` is contextual after `Name =`. Its spelling flags and resolved field
+indexes stay inside the compiler: the result uses existing `struct.make` LIR,
+nominal metadata and VM code. Record literals remain runtime-only. Aggregate
+`let`/conditional results are still unsupported.
+
+The source compiler reserves `let`, `in`, `var` and `then`. Use parentheses when
+an operator should apply outside a whole `let` or conditional expression. The
+existing 256-level compiler nesting, slot and VM budgets still apply.
+
+The standalone L-written drivers only record this syntax. They do not become
+executable compilers because Stage 0 accepts it. Old `const Type name` and the
+other bootstrap spellings remain available while the source migration continues.
 
 [`examples/replacement/choose.l`](examples/replacement/choose.l) exercises a
 conditional with a nested `let` and an unselected division-by-zero branch:
@@ -396,16 +409,17 @@ make coverage                                  # Requires GCC/gcov and Node.js 2
 
 ## L-written frontend slices
 
-[`bootstrap/stage1/`](bootstrap/stage1/README.md) contains an L-written lexer,
-expression parser, statement/local-declaration parser, module/import header parser,
-legacy function-file parser, replacement binding-file parser and stdin syntax-check
-drivers, compiled and executed by Stage 0. The implementation sources still use
-legacy bootstrap syntax. Legacy function files support definitions,
-`extern` declarations, `using` aliases, module constants, scalar/static-array
-storage and nested/reopened namespaces; struct/enum declarations remain unimplemented.
-There is **no L-written semantic checker, code generator or self-hosted compiler**
-yet. These drivers do not check types, resolve names or evaluate the input; the
-executable replacement subset instead uses Stage 0's existing C pipeline.
+[`bootstrap/stage1/`](bootstrap/stage1/README.md) is where the L-written frontend
+is growing: lexer, expression/statement/header parsers, a legacy function-file
+parser, a replacement binding-file parser and stdin drivers. Stage 0 compiles and
+runs those tools. Their implementation sources still use bootstrap syntax.
+
+The legacy file parser handles functions, externs, aliases, constants, static
+scalars/arrays and nested/reopened namespaces, but not struct/enum declarations.
+The replacement parser handles those declarations syntactically. Neither checks
+types, resolves names or executes the input. There is **no L-written semantic
+checker, code generator or self-hosted compiler** yet. Use the C pipeline to run
+the supported replacement subset.
 
 ```sh
 make stage1
@@ -454,11 +468,9 @@ above; artifacts remain at **1.9**.
 
 ## Supported subset
 
-This section describes Stage 0's bootstrap subset, now extended with executable
-`let/in`, conditional expressions, typed name-first constants and transparent
-name-first aliases, namespaces, nominal enums and named-field records. It is not the
-full replacement grammar. Stage 1's broader syntax-only subset is listed
-separately above.
+Here is what Stage 0 can actually compile. This includes the bootstrap syntax and
+the merged replacement forms above; it is not the whole planned language. The
+broader syntax accepted by Stage 1 is a separate list, not a promise of execution.
 
 - ASCII identifiers, decimal literals, `//` and `/* … */` comments.
 - Mandatory `module a.b;`, one file per module, explicitly configured source roots.
@@ -485,8 +497,10 @@ separately above.
 - Explicitly imported `std.io` byte input, byte/string stdout and string stderr,
   backed by four fixed `pub extern` VM intrinsics.
 - Initialized local variables, `const`, lexical scopes and shadowing.
-- Eager/sequential `let/in` expressions with inferred/annotated `int`/`bool`
-  bindings, lexical shadowing and explicit mutable `var`.
+- Eager/sequential `let/in` with inferred/annotated int/bool/byte/string/enum
+  bindings and results, lexical shadowing and explicit mutable `var`.
+- Bool-conditioned `if … then … else …` expressions with exactly matching scalar
+  results and selected-branch execution.
 - Fixed local `int`/`bool`/`byte` arrays: `int values[10];`, indexing and element
   assignment with runtime bounds checks; lengths may be compile-time expressions.
 - Direct calls, forward function references, recursion and value parameters.
@@ -534,10 +548,11 @@ defined traps without C overflow UB. The VM limits execution to 10 million
 instructions, call depth to 256 and managed working memory to 128 MiB.
 These are seed-profile limits, not general L language limits.
 
-Not implemented yet: other primitive types,
-dynamic strings, file/network I/O, nested/array-field structs, pointers/slices, ownership/borrows,
-generics/concepts, dynamic values, GC, classes, effects, native/LLVM, self-hosting and build/package
-management. The repository does not imply these subsystems have been implemented.
+Still missing: other primitive types, dynamic strings, file/network I/O,
+nested/array-field structs, pointers/slices, ownership/borrows, generics/concepts,
+dynamic values, GC, classes, effects, native/LLVM output, self-hosting and
+build/package management. Those are not hidden behind a flag; they are not
+implemented here yet.
 
 ## Modules and manifests
 
@@ -548,9 +563,9 @@ resolution. Public function signatures may contain public primitives and public
 struct/enum types, but must not expose private nominal types. Public constants,
 statics and struct fields must also expose only publicly accessible types.
 
-Every source command requires an explicit `--manifest FILE.json`. No manifest,
-module directory, standard library or dependency is implicitly searched for.
-Manifest version 1 has exactly these required fields:
+Every source command needs `--manifest FILE.json`. There is no fallback search for
+a manifest, module directory, standard library or dependency. Manifest version 1
+has exactly these required fields:
 
 ```json
 {
@@ -631,7 +646,9 @@ namespace flags {
 }
 ```
 
-`using Name = Type;` declares a transparent alias at module or namespace scope.
+The example uses the bootstrap `using Name = Type;` spelling. The preferred
+replacement is `Name = alias Type;`; both declare the same transparent alias at
+module or namespace scope.
 The target must resolve to `int`, `bool`, `byte` or `string`, directly or through
 other aliases.
 Forward references and namespace reopening work; every alias is checked, including
@@ -687,9 +704,9 @@ int main() {
 returns, overloads, equality and same-byte switches. `byte` is a reserved keyword.
 Decimal literals still have type `int`; initializing a byte requires a byte value.
 
-`byte(intExpr)` evaluates its operand once and traps if the result is outside
-0..255; it never truncates or wraps. `int(byteExpr)` widens without loss. These
-are the only conversions in this slice, each taking exactly one operand.
+`byte(intExpr)` evaluates its operand once and traps outside 0..255. It does not
+quietly truncate or wrap. `int(byteExpr)` widens without loss. Those are the only
+conversions in this slice, and each takes exactly one operand.
 Same-type conversions, boolean/string/enum/struct conversions and calls through aliases
 are rejected. Arithmetic, ordering and postfix updates require `int`; byte
 arithmetic must explicitly widen operands and, when needed, narrow the result.
@@ -885,9 +902,11 @@ normal module/namespace/import lookup. Struct names are private unless `pub`;
 fields are public by default. Public functions cannot expose a private struct in
 their result or parameter types. Scalar aliases may be used for field types.
 
-`Type{...}` supplies exactly one correctly typed value per field in declaration
-order; trailing commas are accepted. Arguments evaluate left to right. Local
-bindings require explicit initialization; `auto` may infer a struct type.
+The comma-separated `Type{...}` form in this bootstrap example supplies one value
+per field in declaration order; a trailing comma is fine. Structs also accept
+`Type { field = value; ... }`, which checks labels and evaluates values in written
+order. New record declarations require that named form. Neither spelling reorders
+evaluation. Local bindings require explicit initialization; `auto` may infer a struct type.
 Assignment, parameter passing and returns copy every field. Mutating a callee's
 parameter or a returned copy never changes its caller's original value.
 
@@ -925,6 +944,10 @@ int main() {
     }
 }
 ```
+
+This example uses the bootstrap enum spelling. The replacement form is
+`Name = enum { Member; ... };`: use semicolons instead of commas. Both forms
+declare the same kind of nominal enum.
 
 Enum declarations are module/namespace scoped, nonempty and private unless `pub`.
 Members are scoped under their enum, with the enum's visibility; bare member
@@ -1234,8 +1257,35 @@ Program results can overlap these codes; diagnostics are written to stderr.
 
 ## Tests
 
-`make test` checks the frontend, source and serialized-bytecode execution, IR
-roundtrips, reproducible output and defined failures.
+`make test` checks more than whether a program happens to return 42. It compares
+source and serialized execution, checks IR roundtrips and reproducible output,
+and makes sure invalid programs fail in the right way.
+
+At merged compiler snapshot `e2ca42a3`, the main results are:
+
+| Check | Result |
+| --- | --- |
+| Executable replacement syntax | 620 fixtures / 3458 CLI checks |
+| Modules and cross-package models | 12671 checks |
+| Bounded semantic models | 4396 programs / 13091 VM executions |
+| Bytecode mutation corpus | 31966 inputs, parsed and verified rather than executed |
+| Verifier path models | 2560 graphs, verification only |
+| Stage 0 C coverage | 2722/2722 lines, 165/165 functions, 2804/2804 branches; all 11 files |
+
+The [resulting-main run](https://github.com/flakesonnix/l/actions/runs/44551718137)
+passed all four jobs. Native, local Nix, merge-gate hosted and resulting-main
+coverage reports match. That is **100% Stage 0 C coverage**, not L-source coverage
+and certainly not a proof that the compiler is correct.
+
+The models are deliberately separate from the implementation: BigInt arithmetic,
+byte buffers, lexical cells and explicit effect counters give us something else
+to compare against. Arbitrary bytecode mutants and possibly cyclic verifier
+graphs never run in the VM. Executed programs are bounded and have known results,
+traps or resource-limit expectations.
+
+<details>
+<summary>What the individual model suites exercise</summary>
+
 Module tests exercise manifest validation, aliases, overloads, visibility, cycle
 paths, limits, imported-source diagnostics, root ordering, relocation and changes
 of working directory. They include 32 fixed-seed dependency DAGs (`0x4d4f4455`)
@@ -1355,13 +1405,20 @@ Arbitrary bytecode mutants are parsed and verified, not executed, because they
 may contain nonterminating loops. VM executions use bounded generated programs
 with known expected values or traps. This is bounded, deterministic mutation and
 model-based testing, not an exhaustive or coverage-guided fuzzing campaign.
+The replacement suites also cover typed name-first constants, transparent aliases,
+namespace reopening, nominal enums, named-field order/copies and scalar
+`let`/conditional expressions. The newest scalar slice adds 384 independent
+byte/string/enum cell-and-effect models, 32 package DAGs in both import/root orders,
+and 16 rejection/cleanup/recompile cycles. Record tests keep their 128 six-field
+models and 32 package DAGs. Neither set replaces the older tests above.
+
+</details>
+
 `make sanitize` builds and tests with AddressSanitizer and UndefinedBehaviorSanitizer.
 `make coverage` measures all stage-0 C files without source exclusions and fails
 below 100% line, function **or branch coverage**. It also runs fault-injection,
 verifier and bytecode-mutation tests. The report is `build/coverage/report.json`.
-The 1.9 slice measures 2596/2596 lines, 163/163 functions and 2660/2660 branches.
-Its suites pass 842 integration checks, 8872 module checks, 182 frontend cases,
-52 fault cases, 319 verifier cases plus format mutations, and 132 observer cases. Deterministic fuzzing
-covers 31966 bytecode inputs, 3116 semantic programs, 8595 VM executions and 2560
-verification-only control-flow graphs.
-100% coverage does not establish correctness or full language conformance.
+The same snapshot also passes 842 integration checks, 182 frontend cases, 52 fault
+cases, 319 verifier cases plus format mutations, and 132 observer cases. These are
+different kinds of checks, not percentages to add together. Passing them does not
+make this a complete or conforming L implementation.
