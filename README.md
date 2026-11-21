@@ -17,7 +17,9 @@ bootstrap; they are not just parser demos. The merged compiler snapshot is
 The syntax mixes **C-style functions and control flow** with a few Nix-inspired
 ideas: `let/in`, conditional expressions, and name-first constants, aliases,
 namespaces, enums and records. Runtime `let` and conditional values can be `int`,
-`bool`, `byte`, `string` or nominal enums. Functions use C-style definitions; the
+`bool`, `byte`, `string`, nominal enums or record/struct values. Aggregate
+expressions extend the merged snapshot above without adding a new backend or
+bytecode version. Functions use C-style definitions; the
 earlier arrow-function form is no longer part of the replacement grammar.
 
 The Nix influence stops at syntax. Evaluation is eager and left to right, types
@@ -74,15 +76,20 @@ can read outer and earlier bindings, not itself or later bindings. That means a
 shadowing initializer can read the outer value of its own name. The body sees all
 the bindings; none escape the `let`.
 
-Bindings and results can be `int`, `bool`, `byte`, `string` or nominal enums,
-including primitive aliases and qualified/imported enum types. Written types must
-match exactly. There are no implicit conversions, and no void, aggregate or
-whole-array results. The same immutability rules apply to every scalar type.
+Bindings and results can be `int`, `bool`, `byte`, `string`, nominal enums or
+nominal records/structs, including primitive aliases and qualified/imported types.
+Written types must match exactly. There are no implicit conversions, and no void
+or whole-array results.
+
+An aggregate binding holds a copy, not a reference into another binding. Plain
+`let` bindings protect the whole value and its fields; `var` permits whole-value
+assignment and field writes. Passing either kind to a function still copies the
+value. Returning a value from a `let` does not expose its local storage.
 
 `if condition then value else value` needs a bool condition and two exactly
-matching scalar types. Two enums with identical payloads are still different
-types. The condition runs once, and **only the selected branch runs**. Both
-branches are parsed and type-checked, even when the condition is a literal.
+matching value types. Two enums or aggregates with identical layouts are still
+different nominal types. The condition runs once, and **only the selected branch
+runs**. Both branches are parsed and type-checked, even when the condition is a literal.
 Branch-local bindings stay local.
 
 These are runtime expressions, not compile-time constants. `&&` and `||` still
@@ -156,8 +163,9 @@ Semicolons distinguish the named form.
 
 `record` is contextual after `Name =`. Its spelling flags and resolved field
 indexes stay inside the compiler: the result uses existing `struct.make` LIR,
-nominal metadata and VM code. Record literals remain runtime-only. Aggregate
-`let`/conditional results are still unsupported.
+nominal metadata and VM code. Record literals remain runtime-only. Records and
+structs can flow through `let` and conditionals using those same value copies;
+this does not add nested aggregate fields, aggregate arrays or aggregate globals.
 
 The source compiler reserves `let`, `in`, `var` and `then`. Use parentheses when
 an operator should apply outside a whole `let` or conditional expression. The
@@ -236,9 +244,21 @@ the unselected out-of-range byte conversion never executes:
 ./build/l run build/scalars.lbc                  # Exit code 42
 ```
 
-Scalar expressions reuse the existing typed lexical slots, branch temporaries,
-registers and VM operations. Their values can be passed, returned, assigned and
-used in scalar record fields. Array lengths, switch labels, enum members and
+[`examples/replacement/aggregates.l`](examples/replacement/aggregates.l) returns a
+record from a conditional and a `let`, then changes a copy without touching the
+original. The unselected constructor would divide by zero, but never runs:
+
+```sh
+./build/l check examples/replacement/aggregates.l --manifest examples/replacement/package.json
+./build/l compile examples/replacement/aggregates.l --manifest examples/replacement/package.json -o build/aggregates.lbc
+./build/l run build/aggregates.lbc               # Exit code 42
+```
+
+Scalar and aggregate expressions reuse the existing typed lexical slots, branch
+temporaries, registers and VM operations. Values can be passed, returned and
+assigned; scalar results can also initialize record fields. Reading a temporary
+aggregate's field is fine, but it is not a writable view into the original.
+Array lengths, switch labels, enum members and
 constant/static initializers still reject `let` and conditionals; scalar runtime
 support does not turn either form into compile-time evaluation.
 
@@ -278,7 +298,7 @@ int choose(bool ready) { return if ready then 42 else 0; }
 ```
 
 They can nest in conditions, either branch, calls and `let` initializers. The
-executable C frontend enforces bool conditions, exactly matching scalar results and
+executable C frontend enforces bool conditions, exactly matching value results and
 selected-branch evaluation as described above. The standalone Stage 1 driver
 still does not check condition or branch types, select a branch, or execute
 either branch. Parentheses delimit a
@@ -497,10 +517,10 @@ broader syntax accepted by Stage 1 is a separate list, not a promise of executio
 - Explicitly imported `std.io` byte input, byte/string stdout and string stderr,
   backed by four fixed `pub extern` VM intrinsics.
 - Initialized local variables, `const`, lexical scopes and shadowing.
-- Eager/sequential `let/in` with inferred/annotated int/bool/byte/string/enum
+- Eager/sequential `let/in` with inferred/annotated scalar or nominal record/struct
   bindings and results, lexical shadowing and explicit mutable `var`.
 - Bool-conditioned `if … then … else …` expressions with exactly matching scalar
-  results and selected-branch execution.
+  or nominal aggregate results and selected-branch execution.
 - Fixed local `int`/`bool`/`byte` arrays: `int values[10];`, indexing and element
   assignment with runtime bounds checks; lengths may be compile-time expressions.
 - Direct calls, forward function references, recursion and value parameters.
@@ -914,6 +934,10 @@ parameter or a returned copy never changes its caller's original value.
 postfix updates require a mutable local/parameter root; `const` bindings protect
 all fields. Whole-value assignment also respects `const`. Struct equality and
 implicit conversions between nominal types are not supported.
+
+`let` bindings and conditional results use the same copies. A plain `let` binding
+protects field writes like `const`; a `var` binding permits mutation. A temporary
+result is readable, not a reference that can be used to mutate its source.
 
 This slice supports 1..64 `int`/`bool`/`byte`/`string`/enum fields and at most 256 linked
 struct types.
@@ -1411,6 +1435,10 @@ namespace reopening, nominal enums, named-field order/copies and scalar
 byte/string/enum cell-and-effect models, 32 package DAGs in both import/root orders,
 and 16 rejection/cleanup/recompile cycles. Record tests keep their 128 six-field
 models and 32 package DAGs. Neither set replaces the older tests above.
+Aggregate-expression tests add 256 six-field copy/cell/effect models across both
+declaration spellings, 32 package DAGs in both import/root orders and 16 more
+rejection/cleanup/recompile cycles. They check snapshots before mutation and
+same-nominal-type branch results without weakening the scalar or verifier tests.
 
 </details>
 

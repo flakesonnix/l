@@ -1025,6 +1025,66 @@ try {
     }
   }
 
+  // Aggregate expression snapshots copy fields before mutation, across shared package DAGs.
+  state = 0x41474752;
+  for (let test = 0; test < 32; ++test) {
+    const nodes = [];
+    const declaration = test % 2
+      ? 'pub struct Packet{int left;int right;bool active;byte octet;string text;Kind kind;};'
+      : 'pub Packet=record{left:int;right:int;active:bool;octet:byte;text:string;kind:Kind;};';
+    const project = { 'std/aggregates.l': 'module std.aggregates;pub Kind=enum{Low=-2147483648;High=2147483647;};'
+      + declaration + 'pub static int ticks=0;pub int tick(){return ticks++;}pub bool flip(){return ticks++%2==0;}' };
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.a${n}`, parents = [], delta = BigInt(random(41) - 20), octet = random(256);
+      let imports = 'import std.aggregates as t;', calls = '';
+      for (let p = 0; p < n; ++p) if (p === n - 1 || random(3) === 0) {
+        parents.push(p);
+        const parent = nodes[p].name, form = (test + p) % 3;
+        if (!form) { imports += `import ${parent};`; calls += `current=${parent.replaceAll('.', '::')}::work::run(current);`; }
+        else if (form === 1) { imports += `import ${parent} as m${p};`; calls += `current=m${p}::work::run(current);`; }
+        else { imports += `import ${parent}::{work::run as f${p}};`; calls += `current=f${p}(current);`; }
+      }
+      const body = `t::Packet current=let var value:t::Packet=input;before=value;unused=t::tick();`
+        + `left=(value.left=(value.left+(${delta}))%1009);right=(value.right=(value.right-t::tick())%1009);`
+        + `active=(value.active=!value.active);octet=(value.octet=byte((int(value.octet)+${octet})%256));`
+        + 'text=(value.text=if value.active then "*" else "a\\0\\xff");'
+        + 'kind=(value.kind=if value.kind==t::Kind::Low then t::Kind::High else t::Kind::Low);'
+        + `in if t::flip() then before else value;${calls}return let result=current;in result;`;
+      project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${imports}work=namespace{pub t::Packet run(const t::Packet input){${body}}};`;
+      nodes.push({ name, parents, delta, octet });
+    }
+    let ticks = 0;
+    function simulate(n, input) {
+      const before = { ...input }, value = { ...input };
+      ++ticks;
+      value.left = (value.left + nodes[n].delta) % 1009n;
+      value.right = (value.right - BigInt(ticks++)) % 1009n;
+      value.active = !value.active;
+      value.octet = (value.octet + nodes[n].octet) % 256;
+      value.text = value.active;
+      value.kind = !value.kind;
+      let current = ticks++ % 2 === 0 ? before : value;
+      for (const parent of nodes[n].parents) current = simulate(parent, current);
+      return current;
+    }
+    const original = { left: 17n, right: -23n, active: true, octet: 42, text: true, kind: false };
+    const a = simulate(7, original), b = simulate(6, original);
+    const check = (name, value) => `${name}.left==${value.left}&&${name}.right==${value.right}&&${name}.active==${value.active}`
+      + `&&int(${name}.octet)==${value.octet}&&${name}.text==${value.text ? '"*"' : '"a\\0\\xff"'}&&${name}.kind==t::Kind::${value.kind ? 'High' : 'Low'}`;
+    for (const reverse of [false, true]) {
+      const imports = ['import std.aggregates as t;', 'import app.a7 as top;', 'import app.a6 as next;'];
+      if (reverse) imports.reverse();
+      project['app/main.l'] = `module app.main;${imports.join('')}int main(){return let original:t::Packet=t::Packet{`
+        + 'kind=t::Kind::Low;text="*";octet=byte(42);active=true;right=-23;left=17;};'
+        + `a=top::work::run(original);b=next::work::run(original);in if ${check('original', original)}&&${check('a', a)}&&${check('b', b)}&&t::ticks==${ticks} then 42 else 0;}`;
+      const settings = config(); if (reverse) settings.module_roots.reverse();
+      const f = program(project, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
+      assert.equal(bytes.readUInt32LE(16), 1, 'aggregate expressions add no implicit global storage');
+      assert.equal(bytes.readUInt32LE(20), 1, 'imported record/struct expression identity must remain shared');
+      assert.equal(bytes.readUInt32LE(24), 1, 'copied enum fields retain shared nominal identity');
+    }
+  }
+
   // Scalar let/conditional values retain shared enum identity and model only selected effects.
   state = 0x5343414c;
   for (let test = 0; test < 32; ++test) {
@@ -2189,7 +2249,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 reopened replacement namespace DAGs in two import orders, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 mixed-spelling nominal enum DAGs in two import orders, 32 scalar let/conditional DAGs in two import orders, 32 named record order/copy DAGs in two import orders, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 reopened replacement namespace DAGs in two import orders, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 mixed-spelling nominal enum DAGs in two import orders, 32 aggregate let/conditional DAGs in two import orders, 32 scalar let/conditional DAGs in two import orders, 32 named record order/copy DAGs in two import orders, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

@@ -9,6 +9,9 @@ program into the Stage 1 binding driver only checks its syntax.
 typed name-first constants, aliases, namespaces, enums and named-field records.
 The [README](../README.md#source-syntax-status) spells out the supported subset and
 what is still missing. The bootstrap sources keep their old spelling for now.
+The aggregate-expression slice builds on that snapshot: records/structs can be
+`let` bindings/results and conditional results using the existing by-value path.
+It does not add aggregate globals, arrays or nested aggregate fields.
 
 The important bits have not changed: static types, eager left-to-right evaluation,
 explicit manifests, [module rules](../spec/module-system-v0.1.1.md), and bytecode
@@ -80,9 +83,11 @@ CLI checks**, modules pass **12671 checks**, and the bounded semantic suite pass
 2804 branches, all 100%, across 11 Stage 0 C files**. None of those numbers is
 L-source coverage or evidence of self-hosting.
 
-Runtime scalar support does not make aggregates or void valid expression results,
-and it does not turn `let` or conditionals into compile-time expressions. Keep
-those rejection tests too.
+Aggregate-expression models now also check six-field copies, shadowing, mutation
+and snapshots before writes, across both record/struct spellings. Conditional
+results must keep the same nominal type; they are not structural unions. Void and
+whole arrays remain invalid values, and neither `let` nor conditionals become
+compile-time expressions. Keep those rejection tests too.
 
 ## Nix workflow
 
@@ -105,7 +110,7 @@ nix fmt flake.nix
 The shell supplies the compiler, Make, Node.js, Git, GitHub CLI, nixfmt and
 actionlint. `nix flake check` runs regular package and installation tests, separate
 sanitizer/coverage builds, Nix formatting and workflow lint. Installed tests run
-all eight replacement examples from source and bytecode.
+all nine replacement examples from source and bytecode.
 
 Coverage builds at `-O0`, so its derivation and the development shell disable
 glibc fortification. The installed compiler keeps the standard Nix hardening
@@ -164,6 +169,7 @@ bytes, including NUL and values above 127; they do not perform text conversion.
 | Executable name-first enums | 1.9 | Existing nominal-enum semantics, checked int32 values and shared limits; each member requires `;`, legacy comma-separated enums retained. |
 | Executable named-field records | 1.9 | Existing nominal value-struct metadata/VM; validate field names and map written-order results to declaration indexes, no new runtime representation. |
 | Scalar `let`/conditional expressions | 1.9 | Extend runtime values to byte/string/nominal enums and primitive aliases; exact types, existing slots/branches/VM, no aggregate or compile-time expression expansion. |
+| Aggregate `let`/conditional expressions | 1.9 | Nominal record/struct values use existing by-value slots and branch temporaries; no new runtime representation, aggregate arrays/globals or compile-time expression expansion. |
 
 The version table is history, not a list of formats the loader still accepts.
 Only the exact current version loads, even when a program does not use the newest

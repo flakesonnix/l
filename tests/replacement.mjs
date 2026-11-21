@@ -216,9 +216,9 @@ for (const [body, message, marker] of [
   ['int main(){bool x=false&&(let n=missing;in true);return 0;}', /unknown local variable or constant/],
   ['int main(){return 0;let x=1;in x=2;}', /cannot modify const binding/],
   ['int main(){return let x=1;in (let y=2;in y)=3;}', /assignment requires/],
-  ['int main(){return let x:void=1;in 42;}', /let binding type must be scalar/],
-  ['void f(){}int main(){return let x=f();in 42;}', /let binding type must be scalar/],
-  ['void f(){}int main(){let in f();return 42;}', /let body must have scalar type/],
+  ['int main(){return let x:void=1;in 42;}', /let binding type must be scalar or struct/],
+  ['void f(){}int main(){return let x=f();in 42;}', /let binding type must be scalar or struct/],
+  ['void f(){}int main(){let in f();return 42;}', /let body must have scalar or struct type/],
   ['int main(){return let x:byte=byte(1);in x;}', /expected int, got byte/],
   ['int main(){return let in "text";}', /expected int, got string/],
   ['const int value=let x=1;in x;int main(){return value;}', /not a compile-time constant expression/],
@@ -255,7 +255,7 @@ for (const [body, message, marker] of [
   ['int main(){return if (let n=true;in n) then 42 else n;}', /unknown local variable or constant/],
   ['int main(){return (if true then 1 else 0)=42;}', /assignment requires/],
   ['int main(){return (if true then 1 else 0)++;}', /assignment requires/],
-  ['void f(){}int main(){(if true then f() else f());return 0;}', /conditional branches must have scalar type/],
+  ['void f(){}int main(){(if true then f() else f());return 0;}', /conditional branches must have scalar or struct type/],
   ['int main(){return if true then byte(1) else byte(2);}', /expected int, got byte/],
   ['int main(){return if true then "a" else "b";}', /expected int, got string/],
   ['const int n=if true then 42 else 0;int main(){return n;}', /conditional is not a compile-time constant expression/],
@@ -634,8 +634,6 @@ for (const [body, message, marker] of [
   ['Pair=record{x:int;};Count=alias Pair;int main(){return 0;}', /type alias target must be int or bool or byte or string/],
   ['Pair=record{x:int;};answer:Pair=Pair{x=42;};int main(){return 0;}', /name-first constant type must be int or bool/],
   ['Pair=record{x:int;};const int answer=Pair{x=42;}.x;int main(){return 0;}', /struct literal is not a constant expression/],
-  ['Pair=record{x:int;};int main(){return let p=Pair{x=42;};in 0;}', /let binding type must be scalar/],
-  ['Pair=record{x:int;};Pair get(){return if true then Pair{x=42;} else Pair{x=0;};}int main(){return 0;}', /conditional branches must have scalar type/],
   ['Pair=record{x:int;};pub Pair get(){return Pair{x=42;};}int main(){return 0;}', /public signature exposes a private struct type/],
   ['Pair=record{x:int[2];};int main(){return 0;}', /after scalar struct field/],
   ['Pair=record{x:int=42;};int main(){return 0;}', /after scalar struct field/],
@@ -722,8 +720,6 @@ for (const [body, message] of [
   ['int main(){string s=if true then (let text="*";in text) else text;return 0;}', /unknown local variable or constant/],
   ['int main(){byte b=if true then byte(42) else missing;return 0;}', /unknown local variable or constant/],
   ['int main(){string s=if true then "*" else (let text="";in text="*");return 0;}', /cannot modify const binding/],
-  ['Pair=record{x:int;};Pair get(){return let in Pair{x=42;};}int main(){return 0;}', /let body must have scalar type/],
-  ['Pair=record{x:int;};int main(){return let p:Pair=Pair{x=42;};in 0;}', /let binding type must be scalar/],
   ['int main(){byte a[1];return let value=a;in 0;}', /array used without an index/],
   ['int main(){byte a[1];return int(let in a);}', /array used without an index/],
   ['int main(){byte a[1];return int(if true then a else a);}', /array used without an index/],
@@ -734,6 +730,78 @@ for (const [body, message] of [
   ['int main(){byte b=byte(42);switch(b){case (let x=byte(42);in x):return 42;default:return 0;}}', /let is not a compile-time constant expression/],
   ['Kind=enum{A;};int main(){switch(Kind::A){case (if true then Kind::A else Kind::A):return 42;default:return 0;}}', /conditional is not a compile-time constant expression/],
 ]) rejected(body, message);
+
+// Aggregate expressions are nominal values, never aliases into a lexical cell.
+for (const declaration of ['Pair=record{value:int;ready:bool;};', 'struct Pair{int value;bool ready;};']) {
+  const pair = body => declaration + body;
+  program(pair('int main(){return let p=Pair{ready=true;value=42;};in p.value;}'));
+  program(pair('int main(){return let p:Pair=Pair{value=42;ready=true;};in p.value;}'));
+  program(pair('int main(){return let p=Pair{value=42;ready=true;};in 0;}'), 0);
+  program(pair('Pair get(){return let p=Pair{value=42;ready=true;};in p;}int main(){return get().value;}'));
+  program(pair('Pair get(){return let in Pair{value=42;ready=true;};}int main(){return get().value;}'));
+  program(pair('Pair get(){return if true then Pair{value=42;ready=true;} else Pair{value=1/0;ready=false;};}int main(){return get().value;}'));
+  program(pair('Pair get(){return if false then Pair{value=1/0;ready=false;} else Pair{value=42;ready=true;};}int main(){return get().value;}'));
+  program(pair('Pair get(){return let var p=Pair{value=0;ready=true;};in p=Pair{value=42;ready=true;};}int main(){return get().value;}'));
+  program(pair('Pair get(){return let var p=Pair{value=42;ready=true;};snapshot=p;changed=(p.value=0);in snapshot;}int main(){return get().value;}'));
+  program(pair('Pair change(Pair p){return let var p=p;changed=(p.value=0);in p;}int main(){Pair p=Pair{value=42;ready=true;};Pair q=change(p);return if q.value==0 then p.value else 0;}'));
+  program(pair('int change(Pair p){p.value=0;return 0;}int main(){return let p=Pair{value=42;ready=true;};unused=change(p);in p.value;}'));
+  program(pair('int main(){return (let var p=Pair{value=40;ready=true;};first=p.value++;second=p.value++;in p).value;}'));
+  program(pair('int main(){Pair p=Pair{value=42;ready=true;};Pair q=let p=p;in let p=p;in p;q.value=0;return p.value;}'));
+  program(pair('int inspect(Pair p,int ignored){return p.value;}int main(){Pair p=Pair{value=42;ready=true;};return inspect((let in p),p.value=0);}'));
+  program(pair('int inspect(Pair p,int ignored){return p.value;}int main(){Pair p=Pair{value=42;ready=true;};return inspect((if true then p else p),p.value=0);}'));
+  program(pair('int pair(Pair a,Pair b){return a.value*10+b.value;}int main(){int n=3;return pair((let p=Pair{value=n++;ready=true;};in p),(if true then Pair{ready=true;value=n++;} else Pair{value=1/0;ready=false;}))+8;}'));
+  program(pair('int main(){int n=0;Pair p=if n++==0 then (let tick=n++;in Pair{value=42;ready=true;}) else Pair{value=1/0;ready=false;};return if n==2&&p.ready then p.value else 0;}'));
+  program(pair('int main(){int n=0;Pair p=if n++!=0 then Pair{value=1/0;ready=false;} else (let tick=n++;in Pair{value=42;ready=true;});return if n==2&&p.ready then p.value else 0;}'));
+  program(pair('int main(){int n=40;return (let unused=Pair{value=n++;ready=true;};p=Pair{value=n++;ready=true;};in p).value+1;}'));
+  program(pair('int main(){int sum=0;for(int i=0;i<3;i++){Pair p=let var p=Pair{value=14;ready=true;};in p;sum=sum+p.value;}return sum;}'));
+  program(pair('Pair recurse(int n){return if n==0 then Pair{value=42;ready=true;} else (let p=recurse(n-1);in p);}int main(){return recurse(4).value;}'));
+  program(pair('int main(){return (let p=if true then (let q=Pair{value=42;ready=true;};in q) else Pair{value=1/0;ready=false;};in p).value;}'));
+  program(pair('int main(){return Pair{ready=true;value=(let p=if true then Pair{value=42;ready=true;} else Pair{value=1/0;ready=false;};in p).value;}.value;}'));
+  program(pair('int main(){return let unused=Pair{value=1/0;ready=true;};later=byte(256);in 42;}'), 70, {}, /division by zero/);
+  program(pair('int main(){return (if false then Pair{value=42;ready=true;} else Pair{value=1/0;ready=true;}).value;}'), 70, {}, /division by zero/);
+  program(pair('int main(){return if false&&((let p=Pair{value=1/0;ready=true;};in p).ready) then 0 else 42;}'));
+  for (const [body, message] of [
+    ['int main(){return let p=Pair{value=42;ready=true;};in p=Pair{value=0;ready=false;};}', /cannot modify const binding/],
+    ['int main(){return let p=Pair{value=42;ready=true;};in p.value=0;}', /cannot modify const binding/],
+    ['int main(){return let p=Pair{value=42;ready=true;};in p.value++;}', /cannot modify const binding/],
+    ['int main(){return let p=Pair{value=42;ready=true;};in p;}', /expected int, got struct/],
+    ['int main(){return let p:Pair=42;in 0;}', /expected struct, got int/],
+    ['Pair get(){return if true then Pair{value=42;ready=true;} else 0;}int main(){return 0;}', /expected struct, got int/],
+    ['int main(){return if Pair{value=42;ready=true;} then 42 else 0;}', /expected bool, got struct/],
+    ['int main(){Pair p=let q=Pair{value=42;ready=true;};in q;return q.value;}', /unknown local variable or constant/],
+    ['Pair get(){return if true then (let q=Pair{value=42;ready=true;};in q) else q;}int main(){return 0;}', /unknown local variable or constant/],
+    ['Pair get(){return if true then Pair{value=42;ready=true;} else Pair{unknown=0;ready=false;};}int main(){return 0;}', /unknown record initializer field/],
+    ['int main(){return let p=Pair{value=42;ready=true;};p=p;in 0;}', /duplicate local declaration/],
+    ['int main(){return let p=p;in 0;}', /unknown local variable or constant/],
+    ['int main(){return (let var p=Pair{value=42;ready=true;};in p).value=0;}', /field mutation requires a local struct binding/],
+    ['int main(){return (if true then Pair{value=42;ready=true;} else Pair{value=0;ready=false;}).value++;}', /field mutation requires a local struct binding/],
+    ['int main(){return (let in Pair{value=42;ready=true;})==Pair{value=42;ready=true;};}', /equality requires matching scalar types/],
+    ['const int answer=(let p=Pair{value=42;ready=true;};in p).value;int main(){return 0;}', /let is not a compile-time constant expression/],
+    ['static int answer=(if true then Pair{value=42;ready=true;} else Pair{value=0;ready=false;}).value;int main(){return 0;}', /conditional is not a compile-time constant expression/],
+    ['int main(){int a[(let in Pair{value=1;ready=true;}).value];return 0;}', /let is not a compile-time constant expression/],
+    ['int main(){switch(42){case (if true then Pair{value=42;ready=true;} else Pair{value=0;ready=false;}).value:return 42;default:return 0;}}', /conditional is not a compile-time constant expression/],
+    ['enum K{A=(let in Pair{value=42;ready=true;}).value};int main(){return 0;}', /let is not a compile-time constant expression/],
+    ['int main(){Pair a[1];return 0;}', /array element type/],
+    ['static Pair p=Pair{value=42;ready=true;};int main(){return 0;}', /module constant\/static type/],
+  ]) rejected(pair(body), message);
+}
+program('struct Pair{int value;bool ready;};Pair get(){return if true then (let p=Pair{42,true};in p) else Pair{0,false};}int main(){return get().value;}');
+program('Kind=enum{Low=-2147483648;High=2147483647;};Packet=record{low:int;high:int;ready:bool;octet:byte;text:string;kind:Kind;};Packet get(){return let p=if false then Packet{low=1/0;high=0;ready=false;octet=byte(0);text="";kind=Kind::Low;} else Packet{text="a\\0\\xff";kind=Kind::High;octet=byte(255);ready=true;high=2147483647;low=-2147483648;};in p;}int main(){Packet p=get();return if p.low==-2147483648&&p.high==2147483647&&p.ready&&int(p.octet)==255&&p.text.length==3&&p.kind==Kind::High then 42 else 0;}');
+for (const [body, message] of [
+  ['A=record{x:int;};B=record{x:int;};int main(){return let p:A=B{x=42;};in 0;}', /expected struct, got struct/],
+  ['A=record{x:int;};struct B{int x;};A get(){return if true then A{x=42;} else B{42};}int main(){return 0;}', /expected struct, got struct/],
+  ['A=record{x:int;};int main(){return let var p=A{x=42;};in p=42;}', /expected struct, got int/],
+  ['Inner=record{x:int;};Outer=record{inner:Inner;};int main(){return 0;}', /struct fields must be scalar/],
+  ['A=record{x:int;};Copy=alias A;int main(){return 0;}', /type alias target must be/],
+]) rejected(body, message);
+const aggregateLibrary = 'module app.aggregates;Hidden=record{value:int;ready:bool;};pub Pair=record{value:int;ready:bool;};'
+  + 'pub Pair choose(bool ready){return if ready then (let p=Pair{ready=true;value=42;};in p) else Pair{value=1/0;ready=false;};}';
+for (const [imports, type, choose] of [
+  ['import app.aggregates as a;', 'a::Pair', 'a::choose'],
+  ['import app.aggregates::{Pair as P,choose};', 'P', 'choose'],
+]) program(`${imports}int main(){return let p:${type}=${choose}(true);in p.value;}`, 42, { 'aggregates.l': aggregateLibrary });
+rejected('import app.aggregates as a;int main(){return let p:a::Hidden=a::Hidden{value=42;ready=true;};in p.value;}',
+  /inaccessible symbol/, { 'aggregates.l': aggregateLibrary });
 
 // Keep the existing frontend and VM budgets, not Stage 1's separate syntax limits.
 const bindings = count => Array.from({ length: count }, (_, n) => `x${n}=${n};`).join('');
@@ -756,6 +824,13 @@ for (const [type, value, result, declarations] of [
   rejected(`${declarations}${type} get(){return let ${scalarBindings(1025)}in ${value};}int main(){return 0;}`, /too many local slots/);
   program(`${declarations}${type} get(){return let ${scalarBindings(1023)}in if true then x1022 else ${value};}int main(){return ${result};}`);
   rejected(`${declarations}${type} get(){return let ${scalarBindings(1024)}in if true then ${value} else ${value};}int main(){return 0;}`, /too many LIR slots/);
+}
+for (const declaration of ['Pair=record{value:int;ready:bool;};', 'struct Pair{int value;bool ready;};']) {
+  const aggregateBindings = count => Array.from({ length: count }, (_, n) => `p${n}:Pair=Pair{value=42;ready=true;};`).join('');
+  program(`${declaration}Pair get(){return let ${aggregateBindings(1024)}in p1023;}int main(){return get().value;}`);
+  rejected(`${declaration}Pair get(){return let ${aggregateBindings(1025)}in Pair{value=42;ready=true;};}int main(){return 0;}`, /too many local slots/);
+  program(`${declaration}Pair get(){return let ${aggregateBindings(1023)}in if true then p1022 else Pair{value=0;ready=false;};}int main(){return get().value;}`);
+  rejected(`${declaration}Pair get(){return let ${aggregateBindings(1024)}in if true then p1023 else p1023;}int main(){return 0;}`, /too many LIR slots/);
 }
 const constants = count => Array.from({ length: count }, (_, n) => `c${n}:int=${n};`).join('');
 program(`${constants(1024)}int main(){return c1023;}`, 255);
@@ -793,9 +868,12 @@ rejected(`Kind=enum{${members(1025)}};int main(){return 0;}`, /too many enum mem
 const recordFields = count => Array.from({ length: count }, (_, n) => `f${n}:int;`).join('');
 const recordValues = count => Array.from({ length: count }, (_, n) => `f${count - n - 1}=${count - n - 1};`).join('');
 program(`Wide=record{${recordFields(64)}};int main(){Wide p=Wide{${recordValues(64)}};return p.f42;}`);
+program(`Wide=record{${recordFields(64)}};Wide get(){return let var p=Wide{${recordValues(64)}};snapshot=p;changed=(p.f63=0);in if true then snapshot else p;}`
+  + `int main(){Wide p=get();return if ${Array.from({ length: 64 }, (_, n) => `p.f${n}==${n}`).join('&&')} then p.f42 else 0;}`);
 rejected(`Wide=record{${recordFields(65)}};int main(){return 0;}`, /too many struct fields/);
 const records = count => Array.from({ length: count }, (_, n) => `R${n}=record{x:int;};`).join('');
 program(`${records(256)}int main(){return R255{x=42;}.x;}`);
+program(`${records(256)}R255 get(){return let p=R255{x=42;};in if true then p else R255{x=0;};}int main(){return get().x;}`);
 program(`${records(255)}struct Last{int x;};int main(){return Last{42}.x;}`);
 rejected(`${records(257)}int main(){return 0;}`, /too many structs/);
 rejected(`import app.records;${records(256)}int main(){return 0;}`, /too many structs across modules/,
@@ -835,5 +913,9 @@ const scalarExample = resolve(root, 'examples/replacement/scalars.l'), scalarOut
 command(0, ['compile', scalarExample, '--manifest', manifest, '-o', scalarOutput]);
 command(0, ['check', scalarOutput]);
 command(42, ['run', scalarOutput]);
+const aggregateExample = resolve(root, 'examples/replacement/aggregates.l'), aggregateOutput = resolve(work, 'aggregates.lbc');
+command(0, ['compile', aggregateExample, '--manifest', manifest, '-o', aggregateOutput]);
+command(0, ['check', aggregateOutput]);
+command(42, ['run', aggregateOutput]);
 assert.match(command(65, ['check', example]).stderr, /requires an explicit --manifest/);
 console.log(`replacement execution: ${fixtures} fixtures, ${commands} CLI checks passed (bytecode 1.9)`);

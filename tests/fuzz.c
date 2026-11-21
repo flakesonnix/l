@@ -31,6 +31,8 @@ static size_t namespace_programs, namespace_rejections;
 static size_t replacement_enum_programs, enum_rejections;
 static size_t record_programs, record_rejections;
 static size_t scalar_expression_programs, scalar_expression_rejections;
+static size_t aggregate_expression_programs, aggregate_expression_rejections;
+static uint32_t aggregate_expression_forms, aggregate_expression_mutations, aggregate_expression_branches;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -1007,7 +1009,7 @@ static void scalar_expression_success(Context *ctx) {
 }
 static void scalar_expression_recovery(void) {
     static const char *const invalid[] = {
-        "R=record{x:int;};int main(){return let value=R{x=42;};in 0;}",
+        "void f(){}int main(){return let value=f();in 0;}",
         "A=enum{X;};B=enum{X;};int main(){A value=if true then A::X else B::X;return 0;}",
         "int main(){return let value=byte(1);in int(value=byte(42));}",
         "void f(){}int main(){let in f();return 0;}"
@@ -1019,6 +1021,139 @@ static void scalar_expression_recovery(void) {
             if (ctx->allocated || ctx->allocations) failed("scalar expression rejection could not be cleaned up");
             memset(ctx, 0, sizeof(*ctx)); ctx->filename = "scalar-expression-recovery";
             scalar_expression_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
+typedef struct { int32_t fields[6]; } AggregateExpressionValue;
+typedef struct { AggregateExpressionValue cell; uint32_t ticks; } AggregateExpressionModel;
+static const char *const aggregate_fields[] = {"left", "right", "active", "octet", "text", "kind"};
+static void aggregate_expression_scalar(unsigned field, int32_t value) {
+    if (field < 2) append("(%d)", value);
+    else if (field == 2) append(value ? "true" : "false");
+    else scalar_expression_literal(field - 3, value);
+}
+static int32_t aggregate_expression_value(unsigned field, int32_t pick) {
+    if (field < 2) return random_number(2) ? expression_value()
+        : (int32_t)((int64_t)random_number(65536) * 65536 + random_number(65536) + INT32_MIN);
+    if (field == 2) return (int32_t)random_number(2);
+    return scalar_expression_value(field - 3, pick);
+}
+static AggregateExpressionValue aggregate_expression_literal(int32_t pick) {
+    AggregateExpressionValue value;
+    unsigned order[] = {0, 1, 2, 3, 4, 5};
+    for (unsigned field = 0; field < 6; ++field) value.fields[field] = aggregate_expression_value(field, pick);
+    for (unsigned n = 6; n > 1; --n) {
+        unsigned at = random_number(n), saved = order[n - 1]; order[n - 1] = order[at]; order[at] = saved;
+    }
+    append("Packet{");
+    for (unsigned n = 0; n < 6; ++n) {
+        unsigned field = order[n]; append("%s=", aggregate_fields[field]);
+        aggregate_expression_scalar(field, value.fields[field]); append(";");
+    }
+    append("}"); return value;
+}
+/* Host structs are copied directly: no compiler slots or aggregate offsets in this model. */
+static AggregateExpressionValue aggregate_expression_model(AggregateExpressionModel *model, unsigned depth, int32_t pick) {
+    unsigned form = random_number(depth ? 9 : 2);
+    aggregate_expression_forms |= 1u << form;
+    if (!form) return aggregate_expression_literal(pick);
+    if (form == 1) { append("cell"); return model->cell; }
+    if (form == 2) {
+        append("touch("); AggregateExpressionValue value = aggregate_expression_model(model, depth - 1, pick); append(")");
+        ++model->ticks; return value;
+    }
+    if (form == 3) {
+        append("(if flip() then "); bool selected = model->ticks++ % 2 == 0;
+        aggregate_expression_branches |= 1u << selected;
+        AggregateExpressionModel yes = *model, no = *model;
+        AggregateExpressionValue a = aggregate_expression_model(&yes, depth - 1, pick);
+        append(" else "); AggregateExpressionValue b = aggregate_expression_model(&no, depth - 1, pick); append(")");
+        *model = selected ? yes : no; return selected ? a : b;
+    }
+    if (form == 4) {
+        append("(let var cell:Packet="); AggregateExpressionValue initial = aggregate_expression_model(model, depth - 1, pick);
+        AggregateExpressionValue outer = model->cell; model->cell = initial;
+        append(";in "); AggregateExpressionValue value = aggregate_expression_model(model, depth - 1, pick); append(")");
+        model->cell = outer; return value;
+    }
+    if (form == 5) {
+        append("(cell="); AggregateExpressionValue value = aggregate_expression_model(model, depth - 1, pick); append(")");
+        model->cell = value; return value;
+    }
+    if (form == 6) {
+        unsigned field = random_number(6); int32_t value = aggregate_expression_value(field, pick);
+        aggregate_expression_mutations |= 1u << field;
+        append("(let ignored=(cell.%s=touch(", aggregate_fields[field]); aggregate_expression_scalar(field, value);
+        append("));in cell)"); model->cell.fields[field] = value; ++model->ticks; return model->cell;
+    }
+    if (form == 7) {
+        append("last("); (void)aggregate_expression_model(model, depth - 1, pick);
+        append(","); AggregateExpressionValue value = aggregate_expression_model(model, depth - 1, pick); append(")"); return value;
+    }
+    append("(let var saved="); AggregateExpressionValue value = aggregate_expression_model(model, depth - 1, pick);
+    append(";snapshot=saved;ignored=(saved.left=touch(");
+    aggregate_expression_scalar(0, (int32_t)(-(int64_t)value.fields[0] - 1));
+    append("));in snapshot)"); ++model->ticks; return value;
+}
+static void aggregate_expression_check(const char *name, AggregateExpressionValue value) {
+    for (unsigned field = 0; field < 6; ++field) {
+        append("%s.%s!=", name, aggregate_fields[field]); aggregate_expression_scalar(field, value.fields[field]); append("||");
+    }
+}
+static void aggregate_expression_cases(void) {
+    random_state = UINT32_C(0x41474752);
+    for (unsigned legacy = 0; legacy < 2; ++legacy) {
+        for (unsigned test = 0; test < MODEL_CASES; ++test) {
+            int32_t pick = (int32_t)((int64_t)random_number(65536) * 65536 + random_number(65536) + INT32_MIN);
+            source_length = 0;
+            append("Kind=enum{Low=-2147483648;High=2147483647;Pick=(%d);};", pick);
+            append(legacy ? "struct Packet{int left;int right;bool active;byte octet;string text;Kind kind;};"
+                : "Packet=record{left:int;right:int;active:bool;octet:byte;text:string;kind:Kind;};");
+            AggregateExpressionModel model = {.ticks = random_number(7)};
+            append("static int ticks=%u;bool flip(){return ticks++%%2==0;}"
+                   "Packet touch(Packet value){ticks++;return value;}int touch(int value){ticks++;return value;}"
+                   "bool touch(bool value){ticks++;return value;}byte touch(byte value){ticks++;return value;}"
+                   "string touch(string value){ticks++;return value;}Kind touch(Kind value){ticks++;return value;}"
+                   "Packet last(Packet a,Packet b){return b;}int main(){Packet cell=", model.ticks);
+            model.cell = aggregate_expression_literal(pick); append(";Packet result=");
+            AggregateExpressionValue value = aggregate_expression_model(&model, 1 + random_number(4), pick);
+            append(";if("); aggregate_expression_check("result", value); aggregate_expression_check("cell", model.cell);
+            append("ticks!=%u)1/0;return result.left;}", model.ticks);
+            ++aggregate_expression_programs; semantic_case(value.fields[0], 0);
+        }
+    }
+    if (aggregate_expression_forms != 511 || aggregate_expression_mutations != 63 || aggregate_expression_branches != 3)
+        failed("aggregate expression model missed a form, field type or branch outcome");
+}
+static void aggregate_expression_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) {
+        (void)compile(ctx, text); failed("invalid aggregate expression was accepted");
+    }
+    if (ctx->status != 65) failed("aggregate expression rejection returned an unexpected status");
+    ++aggregate_expression_rejections;
+}
+static void aggregate_expression_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned aggregate expression context rejected valid source");
+    Program *p = compile(ctx, "P=record{x:int;};P get(){return let var p=if true then P{x=42;} else P{x=1/0;};"
+        "snapshot=p;changed=(p.x=0);in snapshot;}int main(){return get().x;}");
+    if (p->struct_count != 1 || p->global_count) failed("aggregate expressions added unexpected runtime metadata");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void aggregate_expression_recovery(void) {
+    static const char *const invalid[] = {
+        "P=record{x:int;};int main(){return let p=P{x=42;};in p.x=0;}",
+        "A=record{x:int;};B=record{x:int;};A get(){return if true then A{x=42;} else B{x=42;};}int main(){return 0;}",
+        "int main(){int a[1];return let value=a;in 0;}",
+        "void f(){}int main(){let in f();return 0;}"
+    };
+    Context *ctx = context("aggregate-expression-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            aggregate_expression_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("aggregate expression rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "aggregate-expression-recovery";
+            aggregate_expression_success(ctx); cleanup(ctx);
         }
     }
     dispose(ctx);
@@ -1948,6 +2083,12 @@ int main(void) {
         "K=enum{Off;On;};int main(){return let text=if true then \"\" else \"*\";in int(text[0]);}"
         "int recover(){return let text=if true then \"*\" else \"\";octet=if true then byte(42) else byte(256);"
         "kind=if text==\"*\" then K::On else K::Off;in if kind==K::On then int(octet) else 0;}");
+    aggregate_expression_cases();
+    aggregate_expression_recovery();
+    scoped_lifecycle(
+        "P=record{x:int;};static int visits=0;int main(){return (let p=if true then P{x=1/visits++;} else P{x=42;};in p).x;}"
+        "int recover(){return (let var p=if visits==0 then P{x=42;} else P{x=1/0;};"
+        "snapshot=p;changed=(p.x=0);in snapshot).x;}");
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
@@ -1977,5 +2118,7 @@ int main(void) {
     printf("fuzz: %zu record rejection/cleanup/recompile cycles passed; source/bytecode allocation trap recovery passed\n", record_rejections);
     printf("fuzz: %zu scalar expression programs matched byte/string/nominal-enum cell, effect and selected-branch models\n", scalar_expression_programs);
     printf("fuzz: %zu scalar expression rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", scalar_expression_rejections);
+    printf("fuzz: %zu aggregate expression programs matched six-field lexical-copy, effect and selected-branch models\n", aggregate_expression_programs);
+    printf("fuzz: %zu aggregate expression rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", aggregate_expression_rejections);
     return 0;
 }
