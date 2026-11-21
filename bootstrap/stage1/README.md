@@ -1,62 +1,51 @@
 # Stage 1: L-written frontend slices
 
-These are the first L-written implementation slices. Stage 0 compiles them to
-existing **1.9 bytecode**, and the Stage 0 VM executes them. The file parser accepts
-headers, functions, aliases, module constants, static storage and namespaces in
-legacy syntax; the replacement binding parser adds a separate migration slice.
-Legacy struct/enum declarations remain unimplemented there, while the replacement
-binding parser records name-first enums, C-style structs and static/extern declarations.
-There is no L-written semantic checker, code generator or complete compiler yet. The
-statement parser includes local declarations; the separate header driver handles
-module/import prefixes only. Running a
-lexer over its own source is **not self-hosting**.
+These are parsers written in L. Stage 0 compiles them to **1.9 bytecode**, then
+the Stage 0 VM runs them. They turn input into tokens and syntax nodes, not
+executable programs. Reading their own source is a useful test, not self-hosting.
+
+The legacy file parser handles headers, functions, aliases, constants, static
+storage and namespaces. The replacement binding parser adds name-first forms,
+enums, C-style structs and static/extern declarations. There is still no L-written
+semantic checker, code generator or complete compiler.
 
 ## Source syntax status
 
-Unless marked as replacement syntax, contracts and examples below describe
-**legacy bootstrap syntax**, the currently compiled C-like grammar. The approved
-replacement is a typed hybrid: **C-style functions/control flow plus selected
-Nix-inspired features**. The user explicitly replaced the earlier arrow-function
-proposal with C-style definitions. Name-first records/aliases/namespaces and
-eager/sequential `let/in` remain approved. Enums use the name-first
-`Name = enum { Member; ... };` spelling; structs use the C-style keyword-first
-`struct Name { Type field; ... };` form as a second aggregate spelling. It is a
-breaking source migration, not
-a permanent dual grammar. The remaining grammar, semantic checker and complete
-executable-source migration are not implemented in these L-written modules.
-The actual CLI now executes a first `int`/`bool`, C-function/local and eager
-`let/in`, conditional-expression, typed name-first file-constant, transparent
-scalar-alias, namespace, nominal-enum and named-record subset by
-extending the existing C frontend and reusing its semantic analyzer, constant
-evaluator, LIR, bytecode backend and VM. File constants require a written type
-resolving to int/bool; legacy `const Type name` remains bootstrap migration
-scaffolding. Name-first aliases reuse existing int/bool/byte/string resolution,
-while legacy `using` remains migration scaffolding; `alias` is contextual in the
-C parser, not newly reserved. Namespace bindings reuse existing reopening,
-lookup and member-specific visibility; legacy containers remain supported.
-Name-first enums reuse checked int32 values, nominal identities and existing
-storage/dispatch rules; executable empty enums are rejected. Legacy comma-separated
-enums remain supported. Runtime `let`/conditional values now support int/bool/byte/
-string and nominal enums using the existing typed slots/registers; name-first
-constants remain int/bool-only. Both expression forms remain runtime-only.
-Named records reuse nominal value structs, scalar field checking and copied
-parameters/returns. The C analyzer checks named fields without reordering their
-evaluation, and lowering maps the resulting registers to existing struct fields.
-`record` stays contextual; C-style structs and legacy positional literals remain
-supported, while new record declarations require named literals. Aggregate globals,
-nested aggregate fields and aggregate `let`/conditional results remain unsupported.
-The L-written parsers below still only record syntax. See the
-[executable contract](../../README.md#first-executable-replacement-subset).
-This does not turn `binding_main.l` into an executable compiler: it still checks
-syntax only and returns 0 rather than running the supplied program.
+Unless a section says replacement syntax, it describes **legacy bootstrap syntax**.
+The implementation sources still use that spelling. The replacement keeps
+C-style functions/control flow and adds selected Nix-inspired bindings and
+expressions. Arrow-function definitions are out; name-first records, aliases,
+namespaces and enums are in. C-style structs remain the second aggregate spelling.
+This is a source migration in progress, not two permanent user grammars.
 
-Static typing, eager left-to-right evaluation and the normative
-[module-system semantics](../../spec/module-system-v0.1.1.md) are preserved.
-Nix laziness and dynamic typing are not implied. These provisional AST contracts
-are not a source-compatibility promise or serialized format; IR/bytecode remains
-**1.9**. Extending the legacy file parser with enum/struct declarations is deferred
-behind syntax replacement. This does not remove Stage 0's existing enum/struct
-support or add Stage 1 semantic analysis.
+The executable stack through **#37 is already merged** at `e2ca42a3`, but that work
+is in the **C frontend**, not these L modules:
+
+| Operation | Stage 0 C compiler | These L-written drivers |
+| --- | --- | --- |
+| Parse supported replacement forms | Yes | Yes, with the contracts below |
+| Resolve imports, names, types and visibility | Yes | No |
+| Evaluate constants, allocate input storage and generate code | Yes | No |
+| Run the supplied program | Yes | No; successful syntax checks return 0 |
+
+Stage 0 supports scalar `let`/conditional values, int/bool name-first constants,
+transparent primitive aliases, reopened namespaces, checked nominal enums and
+named-field value records. Record values run in written field order. Scalar
+expressions accept int/bool/byte/string/enums, not aggregate or void results, and
+remain runtime-only. Aggregate globals and nested aggregate fields are still
+unsupported. The [executable contract](../../README.md#first-executable-replacement-subset)
+has the details; this file documents how the parsers record syntax.
+
+The C parser treats `alias` and `record` as contextual words. The L replacement
+parser has its own keyword handling, described below. Do not infer identical
+lexical rules just because the spellings look the same.
+
+Static typing, eager left-to-right evaluation and the
+[module rules](../../spec/module-system-v0.1.1.md) stay intact. Nix-like syntax
+does not imply lazy or dynamic semantics. These ASTs are provisional in-memory
+contracts, not serialized formats or compatibility promises. Bytecode stays
+**1.9**. Adding enum/struct declarations to the legacy file parser remains
+deferred behind replacement work; Stage 0 already supports them.
 
 ## Build and run
 
@@ -89,11 +78,11 @@ Alternatively run the driver directly from source:
   --manifest bootstrap/stage1/package.json < examples/answer.l
 ```
 
-The lexer driver reads raw stdin bytes. Success produces no output and exits 0. A
-lexical error produces a diagnostic on stderr and exits 65; input overflow also exits 65.
-Reported stream errors retain the VM's trap behavior (70). It validates tokens
-only: input such as `module missing; return` intentionally succeeds. It does not
-resolve the input's modules or check its entry point, grammar or types.
+The lexer driver reads raw stdin bytes. On success it says nothing and returns 0.
+Lexical errors and input overflow print a diagnostic to stderr and return 65;
+reported stream errors trap with 70. `module missing; return` intentionally passes:
+the tokens are fine, even though this is not a valid program. This driver does not
+resolve modules or check grammar, types or an entry point.
 
 The separate expression driver accepts exactly one expression, without a trailing
 semicolon. It also produces no output on success (0), reports syntax/input-limit
@@ -111,9 +100,9 @@ Local scalar/array declarations are supported, including declaration initializer
 in `for` headers. Statement sequences must be wrapped in a block; full source files
 with modules/functions are not accepted.
 
-This is still syntax only: `break;` outside a loop, non-bool conditions, unknown
-names and duplicate switch labels are not semantically checked. Input loops,
-calls and other expressions are parsed, **never executed**.
+Keep the syntax/semantics boundary in mind: `break;` outside a loop, non-bool
+conditions, unknown names and duplicate switch labels can all parse. Input loops
+and calls are **never executed** by the driver.
 
 The header driver (`bootstrap/stage1/header_main.l`, with the same manifest)
 checks a module declaration followed by zero or more imports and EOF. It uses the
@@ -144,8 +133,8 @@ with the stdlib at the relative location required by its manifest.
 
 ## Current scanner contract
 
-`lexer.l` is an internal, single-scanner module, not a new standard-library API.
-Its declarations use the existing module, enum, struct and static-array syntax.
+`lexer.l` owns one scanner. It is a compiler internal, not a standard-library API.
+Its implementation uses the existing module, enum, struct and static-array syntax.
 
 - `reset()` discards the logical input and opens a fresh load phase.
 - `append(byte)` accepts bytes until the 65535-byte capacity is reached. It returns
@@ -227,7 +216,8 @@ discarded, while unary minus is retained rather than evaluated or folded.
   returns a retained decoded byte, or -1 outside that text node. Rewinding or
   advancing the lexer does not replace those copies; parsing again does.
 
-The larger statement parser uses internal streaming operations:
+The statement parser needs to parse more than one expression without throwing
+the earlier nodes away. It uses these internal streaming operations:
 `begin()` resets the expression arena/cursor, `current()` exposes the current
 token, `consume(kind)` advances a matching token, and `parse_next()` parses an
 expression without requiring EOF. They retain multiple roots in one arena.
@@ -245,7 +235,8 @@ checked-access/replay conventions. Invalid statement IDs produce zero token
 metadata and -1 for all child/expression links. Failed parses expose no partial
 statement or expression nodes. IDs expire at the next parse/source replacement.
 
-Statement and expression IDs are **different arenas**:
+Statement and expression IDs belong to **different arenas**. An integer ID is not
+enough to tell you which one to index; follow the field's contract:
 
 - `expression` refers to an expression-statement value, return operand, switch
   selector or case label in `expressions.l`.
@@ -348,12 +339,11 @@ All path/list parsing is iterative, without recursive syntax-depth growth. Node
 exhaustion is a seed resource diagnostic, not a language restriction. No header
 AST format or new standard-library API is introduced.
 
-There is no package/file lookup, canonical-path checking, dependency graph, alias
-uniqueness, selective-binding resolution, visibility checking or cycle detection.
-Duplicate/conflicting imports remain syntax-valid here. Header-only parsing does
-not check import placement inside or after an unparsed top-level body. These
-semantic and whole-file responsibilities still belong to Stage 0; this slice does
-not claim a complete implementation of the module system.
+Parsing an import does not open a file. There is no package lookup, canonical-path
+check, dependency graph, alias-uniqueness check, binding resolution, visibility
+check or cycle detection here. Conflicting imports can be syntax-valid. The
+header-only parser also cannot check placement inside a body it never parsed.
+Those whole-file and semantic jobs still belong to Stage 0.
 
 `headers::discard()` exposes the existing header/expression rollback operation to
 the enclosing file parser; it retains the header diagnostic.
@@ -495,12 +485,13 @@ execution. Stage 0 still compiles and runs the parser implementation.
 
 ## Replacement binding-file contract
 
-`bindings.l` and `binding_main.l` are the first **replacement-syntax** file slice.
-The implementation is still compiled from legacy source by Stage 0. This is not
-self-hosting, a Stage 0 grammar replacement or a claim that the new source can be
-compiled/executed yet. The replacement driver accepts the approved hybrid grammar:
-C-style functions and selected name-first bindings, plus C-style struct
-declarations:
+`bindings.l` and `binding_main.l` parse **replacement-syntax** files. Stage 0 still
+compiles their bootstrap implementation. This driver records syntax; it does not
+compile its input or connect these arenas to a backend. The C frontend separately
+executes the supported replacement subset described in the README.
+
+The replacement file grammar combines C-style functions, selected name-first
+bindings and C-style struct declarations:
 
 ```text
 module app.main;
@@ -641,9 +632,9 @@ places `b + c` in the negative branch. Use `(if p then a else b) + c` to apply t
 operator outside the conditional. Call commas, binding semicolons and closing
 delimiters bound bare conditional expressions as usual.
 
-Intended typed semantics require a bool condition and matching branch result
-types, with one condition evaluation and only the selected branch evaluated.
-**None of that semantic checking or execution occurs here**. Even
+Stage 0 requires a bool condition and matching scalar results, evaluates the
+condition once and runs only the selected branch. **This parser does none of that
+checking or execution.** Even
 `if 1 then "wrong" else false` can be syntax-valid. Both branch trees and their
 strings are retained; malformed syntax or lexical errors in either branch still
 fail parsing, even for a literal condition. `ExpectedThen`/`ExpectedElse` preserve
@@ -673,12 +664,11 @@ int main() {
 }
 ```
 
-Intended semantics preserve nominal identity, by-value copies and eager left-to-
-right evaluation of values in **written field order**, independently of eventual
-field layout. This is not structural typing, a Nix recursive attribute scope, new
-aggregate runtime capabilities or permission to evaluate initializers. The parser
-does not match fields/types, resolve the type prefix, check visibility/readonly
-writes or enforce nominal identity/copy behavior. Empty declarations/literals,
+Stage 0 implements nominal identity, by-value copies and eager evaluation in
+**written field order**, independently of field layout. These are not structural
+types or recursive attribute scopes. This parser just keeps the syntax: it does
+not match fields/types, resolve the prefix, check visibility/readonly writes or
+enforce copy behavior. Empty declarations/literals,
 duplicate declarations/fields, unknown/missing fields, invalid `void`/`auto` field
 types and oversized initializer lists may be syntax-valid, not semantically valid.
 The intended existing nonempty/scalar-field restrictions remain semantic work.
@@ -960,8 +950,8 @@ false/absent metadata on unrelated kinds. No input storage or calls are executed
 
 ## Limits and verification
 
-The **65535-byte total input limit is this Stage 1 seed's buffer profile**, not a
-new language rule or a Stage 0 source-file limit. It also bounds decoded strings:
+The **65535-byte total input limit belongs to this Stage 1 buffer**, not the
+language or Stage 0 source files. It also bounds decoded strings:
 quotes and escapes consume input capacity. The existing VM still enforces its
 10-million-instruction, 256-call-depth and 128-MiB working-memory limits; satisfying
 the input-size bound does not disable those limits.
@@ -1045,26 +1035,33 @@ a coverage gate for L source. No arbitrary mutant bytecode or cyclic verifier
 graphs are executed by these tests.
 
 The replacement suite has **1043 fixtures / 366266 modeled node checks** across
-its declaration, header, statement and expression arenas, in **324 batches / 1389 commands**.
-The scanner suite has **1184 fixtures / 121540 token checks**. All legacy
-expression, statement, header and function-file suites still pass. Stage 0 C
-coverage remains **2596 lines / 163 functions / 2660 branches (100%)**; these
-numbers do not measure L-source coverage.
+its declaration, header, statement and expression arenas, in **324 batches / 1389
+commands**. The scanner has **1184 fixtures / 121540 token checks**. Those are
+assertions about parsed nodes and tokens, not percentages of L source executed.
 
 ### Validation snapshot
 
-At parser implementation `4dd9e68`, the independent suites pass through both
-source and serialized execution:
+At merged compiler snapshot **`e2ca42a3`**, these independent parser suites pass
+through source and serialized execution:
 
 | Suite | Fixtures | Modeled checks |
 | --- | --- | --- |
-| Lexer | 1175 | 95048 token checks |
+| Lexer | 1184 | 121540 token checks |
 | Expressions | 351 | 25352 expression-node checks |
 | Statements/locals | 409 | 14704 statement + 22752 expression-node checks |
 | Module/import headers | 168 | 44012 header-node checks |
 | Function files/globals | 478 | 135036 checks across all four arenas |
+| Replacement bindings | 1043 | 366266 checks across all four arenas |
 
-The file suite uses 185 batches and 805 commands. These are model assertion
-counts, **not L-source coverage**. Stage 0 C coverage remains 2596/2596 lines,
-163/163 functions and 2660/2660 branches (100%). Hosted results for this exact
-implementation are available in [PR #18's CI](https://github.com/flakesonnix/l/actions/runs/42817722271).
+The legacy file suite uses 185 batches and 805 commands. All expression,
+statement, header and file suites still pass. The executable C-frontend tests
+are a different set: 620 replacement fixtures / 3458 CLI checks, plus the module
+and bounded semantic models described in the root README.
+
+Current **Stage 0 C** coverage is **2722/2722 lines, 165/165 functions and
+2804/2804 branches**, all 100%, across 11 files. The
+[resulting-main run](https://github.com/flakesonnix/l/actions/runs/44551718137)
+passed, and its downloaded report matches native, local Nix and merge-gate
+reports. None of this is L-source coverage or a self-hosting result. For older
+parser results, [PR #18's CI](https://github.com/flakesonnix/l/actions/runs/42817722271)
+remains a historical snapshot, not the current totals.
