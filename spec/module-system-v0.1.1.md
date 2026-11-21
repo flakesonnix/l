@@ -12,6 +12,9 @@ This document replaces sections 2.2 and 2.3 of Language L Specification 0.1.0.
 > conditionals, name-first constants, aliases, namespaces, enums and named-field
 > records. The L-written frontend still checks syntax only, and the full source
 > migration is unfinished.
+> The aggregate-expression extension also allows nominal record/struct values in
+> runtime `let` and conditional results using existing copies, not reference
+> semantics. It does not add aggregate globals, arrays or nested aggregate fields.
 >
 > This document defines module behavior, not parser progress. Changing a
 > declaration's spelling does not change module identity, explicit imports,
