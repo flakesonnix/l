@@ -66,7 +66,130 @@ function rejected(body, message, files = {}, marker) {
   assert.equal(readFileSync(output, 'utf8'), 'preserve existing output');
 }
 
-// Exact acceptance target (module app.main maps to main.l under the declared root).
+// Nix-style definitions are typed direct functions, not closures or partial applications.
+const nixMain = expression => `main:()->int;main=${expression};`;
+const nixAdd = 'pub add:int->int->int;add=a:b:a+b;';
+program(nixAdd + 'main:()->int;main=do{return add 20 22;};');
+program(nixAdd + nixMain('add 20 22'));
+for (const call of ['add(20)(22)', 'add (20) (22)', '(add) 20 22', 'add /* first */ 20\n/* second */ 22'])
+  program(nixAdd + nixMain(call));
+program(nixAdd + nixMain('add 10 10*2+2'));
+program(nixAdd + nixMain('add (10*2) (11*2)'));
+program('id:int->int;id=x:x;' + nixMain('-id (-42)'));
+program('id:int->int;id=x:x;' + nixMain('id (+42)'));
+program('not:bool->bool;not=x:!x;' + nixMain('if not false && not (!true) then 42 else 0'));
+program('id:bool->bool;id=x:x;' + nixMain('if id true then 42 else 0'));
+program('id:string->string;id=x:x;' + nixMain('(id "a\\0\\xff").length+39'));
+program('id:byte->byte;id=x:x;' + nixMain('int(id byte(42))'));
+program('id:byte->byte;id=x:x;' + nixMain('int(id (byte(42)))'));
+program('id:int->int;id=x:x;' + nixMain('id int(byte(42))'));
+program(nixAdd + 'one:()->int;one=1;' + nixMain('add (one ()) 41'));
+program('one:()->int;one=42;' + nixMain('one()'));
+program('one:()->int;one=42;' + nixMain('one /* no arguments */ ()'));
+program('int old(int x,int y){return x+y;}' + nixMain('old 20 22'));
+program(nixAdd + 'int main(){return add(20,22);}');
+program('void old(){}nop:()->void;nop=old ();main:()->int;main=do{nop ();return 42;};');
+program('nop:int->void;nop=x:do{x++;return;};main:()->int;main=do{nop 1;return 42;};');
+program('noop:int->void;noop=x:do{};main:()->int;main=do{noop 1;return 42;};');
+program('fact:int->int;fact=n:if n<2 then 1 else n*fact (n-1);' + nixMain('fact 4+18'));
+program('even:int->bool;even=n:if n==0 then true else odd (n-1);'
+  + 'odd:int->bool;odd=n:if n==0 then false else even (n-1);' + nixMain('if even 8 then 42 else 0'));
+program('choose:int->int;choose=x:x;choose:bool->int;choose=x:if x then 42 else 0;' + nixMain('choose true'));
+program('Count=alias int;add:Count->Count->Count;add=a:b:a+b;' + nixMain('let n:Count=20;in add n 22'));
+program('n=namespace{pub Count=alias int;pub id:Count->Count;id=x:x;};' + nixMain('n::id 42'));
+program('Kind=enum{Low;High;};id:Kind->Kind;id=x:x;' + nixMain('if id Kind::High==Kind::High then 42 else 0'));
+program('Pair=record{x:int;y:int;};copy:Pair->Pair;copy=p:let var q=p;ignored=(q.x=0);in q;'
+  + 'main:()->int;main=do{Pair p=Pair{x=42;y=1;};Pair q=copy p;return if q.x==0 then p.x else 0;};');
+program('Pair=record{x:int;};id:Pair->Pair;id=p:p;' + nixMain('(id Pair{x=42;}).x'));
+program('id:int->int;id=x:x;' + nixMain('let a=40;in id (let b=a+2;in b)'));
+program('id:int->int;id=x:x;' + nixMain('id (if false then 1/0 else 42)'));
+program('static int n=3;next:()->int;next=n++;pair:int->int->int;pair=a:b:a*10+b;'
+  + nixMain('pair (next ()) (next ())+8'));
+program('pair:int->int->int;pair=a:b:a*10+b;main:()->int;main=do{int n=3;return pair n++ n+++8;};');
+program('static int n=0;take:int->int;take=x:do{n++;return x;};'
+  + nixMain('if true then take 42 else take (1/0)'));
+program('f:int->int;f=x:x;main:()->int;main=do{int x=0;for(int i=f 0;i<f 3;i++){x=x+f 14;}return x;};');
+program('f:int->int;f=x:x;main:()->int;main=do{int x=0;while(f x<3)x++;return x+39;};');
+program('f:int->int;f=x:x;main:()->int;main=do{int a[1];a[0]=42;return f a[0];};');
+program('f:int->int;f=x:x;main:()->int;main=do{int x=42;f x;return x;};');
+program('do:int->int;do=x:x;' + nixMain('do 42'));
+program('id:int->int;id=x:x;' + nixMain('let do=42;in id do'));
+program('f:int->int;f=x:do{return x;};int do(int x){return x;}int main(){return do(f(42));}');
+program('id:int->int;id=x:x;' + nixMain('id (1/0)'), 70, {}, /division by zero/);
+program('pair:int->int->int;pair=a:b:a+b;' + nixMain('pair (1/0) (2147483647+1)'), 70, {}, /division by zero/);
+rejected('f:int->int;', /matching function definition/);
+for (const [body, message] of [
+  ['f:int->int;g=x:x;', /must match preceding signature/],
+  ['f:int->int;f x:x;', /expected '='/],
+  ['f:int->int;f=42;', /expected parameter name/],
+  ['f:int->int;f=x x;', /expected ':' after lambda parameter/],
+  ['f:int->int;f=x:x', /expected ';' after function definition/],
+  ['f:int->;f=x:x;', /expected Stage 0 type/],
+  ['f:(int)->int;f=42;', /zero-parameter signature/],
+  ['f:()int;f=42;', /expected '->'/],
+  ['f:()->int->int;f=x:x;', /expected ';' after function signature/],
+  ['f:int->int f=x:x;', /expected ';' after function signature/],
+  ['f:int->int;f=x:y:x;', /expected ';' after function definition/],
+  ['f:void->int;f=x:42;', /parameter type/],
+  ['f:auto->int;f=x:42;', /parameter type/],
+  ['f:int->auto;f=x:x;', /return type must be explicit/],
+  ['f:int->int->int;f=x:x:x;', /duplicate local declaration/],
+  ['f:int->int;f=x:true;', /expected int, got bool/],
+  ['f:int->int;f=x:do{if(x==1)return 1;};', /not all control-flow paths/],
+  [nixAdd + nixMain('add 42'), /no matching function overload/],
+  [nixAdd + nixMain('add 1 2 3'), /no matching function overload/],
+  [nixAdd + nixMain('(add 20) 22'), /direct function calls only/],
+  [nixAdd + nixMain('add(20,22)'), /expected '\)'/],
+  [nixAdd + nixMain('add true 22'), /no matching function overload/],
+  [nixAdd + nixMain('let f=add;in 42'), /declaration is not a scalar constant/],
+  [nixMain('let f=x: x;in 42'), /expected ';' after let binding initializer/],
+  [nixMain('let x=();in 42'), /expected expression/],
+  [nixAdd + nixMain('let add=42;in add 20 22'), /local binding is not callable/],
+  [nixMain('42 1'), /direct function calls only/],
+  ['one:()->int;one=42;' + nixMain('one () 1'), /direct function calls only/],
+  ['one:()->int;one=42;' + nixMain('one'), /declaration is not a scalar constant/],
+  ['f:int->int;f=x:x;' + nixMain('f ()'), /no matching function overload/],
+  ['f:int->int;f=x:x;' + nixMain('f x'), /unknown local variable or constant/],
+  ['P=record{x:int;};id:P->P;id=p:p;main:()->int;main=do{P a[1];return 0;};', /array element type/],
+  ['f:int->int;f=x:x;main:()->int;main=do{int a[1];return f a;};', /array used without an index/],
+  ['f:int->int;f=x:let y=x;in y;' + nixMain('y'), /unknown local variable or constant/],
+  ['main:int->int;main=x:x;', /entry point must have signature/],
+  ['main:()->bool;main=true;', /entry point must have signature/],
+  ['int f(){return 42;}main:()->int;main=do{int f=0;return f ();};', /local binding is not callable/],
+]) rejected(body.includes('main:') ? body : body + '\n' + nixMain('0'), message);
+rejected('f:int', /module constants require a scalar initializer/);
+rejected('f:int;', /module constants require a scalar initializer/);
+rejected('f:', /expected Stage 0 type/);
+rejected('f:int->int;other=x:x;', /must match preceding signature/, {}, 'other');
+const nixParameters = count => 'int->'.repeat(count) + 'int';
+const nixLambdas = count => Array.from({ length: count }, (_, n) => `x${n}:`).join('');
+const nixArguments = count => ' 0'.repeat(count);
+program(`f:${nixParameters(1024)};f=${nixLambdas(1024)}42;` + nixMain(`f${nixArguments(1024)}`));
+rejected(`f:${nixParameters(1025)};f=${nixLambdas(1025)}42;` + nixMain('42'), /too many parameters/);
+rejected(`f:${nixParameters(1024)};f=${nixLambdas(1024)}42;` + nixMain(`f${nixArguments(1025)}`), /too many function arguments/);
+const nixFunctions = count => Array.from({ length: count }, (_, n) => `f${n}:()->int;f${n}=42;`).join('');
+program(nixFunctions(255) + nixMain('f254 ()'));
+rejected(nixFunctions(256) + nixMain('42'), /too many functions/);
+rejected(nixFunctions(256) + 'int main(){return 42;}', /too many functions/);
+rejected(nixFunctions(255) + 'int f(){return 42;}' + nixMain('42'), /too many functions/);
+const nixPublicLibrary = 'module app.functions;pub Count=alias int;Hidden=record{x:int;};'
+  + 'private:()->int;private=0;'
+  + 'work=namespace{pub add:Count->Count->Count;add=a:b:a+b;};';
+for (const [imports, call] of [
+  ['import app.functions;', 'app::functions::work::add'],
+  ['import app.functions as f;', 'f::work::add'],
+  ['import app.functions::{work::add as plus};', 'plus'],
+]) program(imports + nixMain(`${call} 20 22`), 42, { 'functions.l': nixPublicLibrary });
+program('n=namespace{pub Count=alias int;pub f:Count->Count;f=x:x;};'
+  + 'main:()->int;main=do{n::Count value=42;n::f value;return n::f value;};');
+rejected('import app.functions as f;' + nixMain('f::private ()'), /inaccessible symbol/,
+  { 'functions.l': nixPublicLibrary });
+rejected('import app.functions as f;id:f::Hidden->int;id=p:p.x;' + nixMain('0'), /inaccessible symbol/,
+  { 'functions.l': nixPublicLibrary });
+rejected('Hidden=record{x:int;};pub id:Hidden->Hidden;id=p:p;' + nixMain('0'), /public signature exposes a private struct/);
+rejected('id:int->int;id=x:x;int id(int x){return x;}' + nixMain('42'), /duplicate function signature/);
+
+// Exact legacy acceptance target (module app.main maps to main.l under the declared root).
 program(`
 pub int add(int a, int b) {
     return a + b;
@@ -917,5 +1040,9 @@ const aggregateExample = resolve(root, 'examples/replacement/aggregates.l'), agg
 command(0, ['compile', aggregateExample, '--manifest', manifest, '-o', aggregateOutput]);
 command(0, ['check', aggregateOutput]);
 command(42, ['run', aggregateOutput]);
+const functionExample = resolve(root, 'examples/replacement/functions.l'), functionOutput = resolve(work, 'functions.lbc');
+command(0, ['compile', functionExample, '--manifest', manifest, '-o', functionOutput]);
+command(0, ['check', functionOutput]);
+command(42, ['run', functionOutput]);
 assert.match(command(65, ['check', example]).stderr, /requires an explicit --manifest/);
 console.log(`replacement execution: ${fixtures} fixtures, ${commands} CLI checks passed (bytecode 1.9)`);

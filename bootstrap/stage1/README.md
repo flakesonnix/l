@@ -12,11 +12,18 @@ semantic checker, code generator or complete compiler.
 ## Source syntax status
 
 Unless a section says replacement syntax, it describes **legacy bootstrap syntax**.
-The implementation sources still use that spelling. The replacement keeps
-C-style functions/control flow and adds selected Nix-inspired bindings and
-expressions. Arrow-function definitions are out; name-first records, aliases,
+The implementation sources still use that spelling. The L replacement driver
+keeps C-style functions/control flow and adds selected Nix-inspired bindings and
+expressions. The superseded `=>` definitions are out; name-first records, aliases,
 namespaces and enums are in. C-style structs remain the second aggregate spelling.
 This is a source migration in progress, not two permanent user grammars.
+
+The **C compiler** now also accepts typed Nix-style functions and application:
+`add : int -> int -> int; add = a: b: a + b;`, called as `add 20 22`.
+`do { ... }` allows an imperative function body with the existing loops. These
+are still complete direct calls, not curried functions or closures. This is a
+Stage 0 extension: none of these new forms is added to the L-written drivers in
+this slice. Their documented node and syntax contracts remain unchanged.
 
 The executable stack through **#37 is already merged** at `e2ca42a3`, but that work
 is in the **C frontend**, not these L modules:

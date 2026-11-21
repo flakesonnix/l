@@ -1,6 +1,6 @@
 #include "l.h"
 
-typedef struct { Context *ctx; Token *tokens; size_t at, count; } Parser;
+typedef struct { Context *ctx; Token *tokens; size_t at, count; bool nix_calls; } Parser;
 static Token peek(Parser *p) { return p->tokens[p->at]; }
 static bool take(Parser *p, int kind) {
     if (peek(p).kind != kind) return false;
@@ -45,7 +45,9 @@ static bool starts_decl(Parser *p) {
         if (p->tokens[++at].kind != TK_NAME) return false;
         ++at;
     }
-    return p->tokens[at].kind == TK_NAME;
+    if (p->tokens[at].kind != TK_NAME) return false;
+    /* In Nix bodies, adjacent names can also be an application: f value. */
+    return !p->nix_calls || p->tokens[at + 1].kind == '=' || p->tokens[at + 1].kind == '[';
 }
 static Expr *expression(Parser *, int);
 static Stmt *statement(Parser *);
@@ -126,7 +128,7 @@ static Expr *primary(Parser *p) {
         }
     } else token_fail(p->ctx, token, "expected expression");
     for (;;) {
-        if (take(p, '(')) {
+        if (!p->nix_calls && take(p, '(')) {
             Expr *call = new_expr(p, EX_CALL, e->token); call->left = e;
             ExprList **tail = &call->args;
             if (!take(p, ')')) {
@@ -181,11 +183,32 @@ static Expr *primary(Parser *p) {
     }
     return e;
 }
+static bool application_argument(int kind) {
+    return kind == TK_NAME || kind == TK_INTEGER || kind == TK_TEXT || kind == TK_TRUE ||
+        kind == TK_FALSE || kind == '(' || kind == TK_INT || kind == TK_BYTE;
+}
 static Expr *expression(Parser *p, int minimum) {
     enter(p->ctx, peek(p));
     Expr *left = primary(p);
     for (;;) {
         Token op = peek(p);
+        /* Application binds above infix operators. Arguments are atoms/postfixes;
+           nested applications, let/if and unary operands can be parenthesized. */
+        if (p->nix_calls && application_argument(op.kind)) {
+            Expr *call = new_expr(p, EX_CALL, left->token); call->left = left;
+            ExprList **tail = &call->args;
+            if (op.kind == '(' && p->tokens[p->at + 1].kind == ')') {
+                p->at += 2; /* Explicit zero-argument invocation: f (). */
+            } else {
+                do {
+                    ExprList *arg = allocate(p->ctx, sizeof(*arg));
+                    arg->value = primary(p); *tail = arg; tail = &arg->next;
+                    op = peek(p);
+                } while (application_argument(op.kind));
+            }
+            left = call;
+            continue;
+        }
         int prec = precedence(op.kind);
         if (prec < minimum) break;
         ++p->at;
@@ -300,6 +323,61 @@ static Stmt *statement(Parser *p) {
     return s;
 }
 
+/* A name-first constant stops at '='; function signatures contain '->' or '()'. */
+static bool nix_signature(Parser *p) {
+    if (peek(p).kind != TK_NAME || p->tokens[p->at + 1].kind != ':') return false;
+    size_t at = p->at + 2;
+    if (p->tokens[at].kind == '(') return true;
+    while (p->tokens[at].kind != TK_EOF && p->tokens[at].kind != '=' && p->tokens[at].kind != ';') {
+        if (p->tokens[at].kind == TK_ARROW) return true;
+        ++at;
+    }
+    return false;
+}
+static Function *nix_function(Parser *p, Ast *ast, Token scope, bool exported) {
+    if (ast->function_count++ >= L_MAX_FUNCTIONS) token_fail(p->ctx, peek(p), "too many functions (maximum 256)");
+    Function *fn = allocate(p->ctx, sizeof(*fn));
+    fn->module = ast->entry; fn->scope = scope; fn->exported = exported;
+    fn->name = expect(p, TK_NAME, "expected function name");
+    expect(p, ':', "expected ':' after function name");
+    if (take(p, '(')) {
+        expect(p, ')', "expected '()' for zero-parameter signature");
+        expect(p, TK_ARROW, "expected '->' after '()'");
+        fn->result = parse_type(p, &fn->result_name);
+    } else {
+        Token name = {0}; Type type = parse_type(p, &name);
+        Decl **tail = &fn->parameters;
+        while (take(p, TK_ARROW)) {
+            if (++fn->parameter_count > L_MAX_SLOTS) token_fail(p->ctx, peek(p), "too many parameters");
+            Decl *parameter = allocate(p->ctx, sizeof(*parameter));
+            parameter->type = type; parameter->type_name = name;
+            *tail = parameter; tail = &parameter->next;
+            name = (Token){0}; type = parse_type(p, &name);
+        }
+        fn->result = type; fn->result_name = name;
+    }
+    expect(p, ';', "expected ';' after function signature");
+    Token definition = expect(p, TK_NAME, "expected matching function definition after signature");
+    if (!token_equal(definition, fn->name)) token_fail(p->ctx, definition, "function definition must match preceding signature");
+    expect(p, '=', "expected '=' after function definition name");
+    for (Decl *parameter = fn->parameters; parameter; parameter = parameter->next) {
+        parameter->name = expect(p, TK_NAME, "expected parameter name from function signature");
+        expect(p, ':', "expected ':' after lambda parameter");
+    }
+    p->nix_calls = true;
+    if (peek(p).kind == TK_NAME && token_equal(peek(p), (Token){.text = "do", .length = 2}) &&
+        p->tokens[p->at + 1].kind == '{') {
+        ++p->at; fn->body = statement(p);
+    } else {
+        fn->body = new_stmt(p, ST_BLOCK, peek(p));
+        fn->body->body = new_stmt(p, ST_RETURN, peek(p));
+        fn->body->body->expr = expression(p, 1);
+    }
+    p->nix_calls = false;
+    expect(p, ';', "expected ';' after function definition");
+    return fn;
+}
+
 static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
     Function **tail = &ast->functions;
     while (*tail) tail = &(*tail)->next;
@@ -403,6 +481,11 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
             *aliases = alias;
             continue;
         }
+        if (nix_signature(p)) {
+            Function *fn = nix_function(p, ast, scope, exported);
+            *tail = fn; tail = &fn->next;
+            continue;
+        }
         bool is_static = take(p, TK_STATIC);
         bool name_first = !is_static && peek(p).kind == TK_NAME && p->tokens[p->at + 1].kind == ':';
         if (name_first || is_static || take(p, TK_CONST)) {
@@ -460,7 +543,7 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
     else expect(p, TK_EOF, "unexpected '}' at module scope");
 }
 Ast *parse(Context *ctx, Token *tokens, size_t count) {
-    Parser p = { ctx, tokens, 0, count };
+    Parser p = { ctx, tokens, 0, count, false };
     Ast *ast = allocate(ctx, sizeof(*ast));
     ast->entry = ast->modules = allocate(ctx, sizeof(*ast->entry));
     ast->entry->path = ctx->filename; ast->entry->package = "";

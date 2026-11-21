@@ -14,13 +14,14 @@ The executable replacement stack, **#30–#37, is merged**. The
 bootstrap; they are not just parser demos. The merged compiler snapshot is
 `e2ca42a3`, with [passing main CI](https://github.com/flakesonnix/l/actions/runs/44551718137).
 
-The syntax mixes **C-style functions and control flow** with a few Nix-inspired
-ideas: `let/in`, conditional expressions, and name-first constants, aliases,
-namespaces, enums and records. Runtime `let` and conditional values can be `int`,
+The goal is **Nix-style syntax with imperative loops and explicit mutation**,
+not C with a few Nix spellings. This branch adds typed Nix-style function
+definitions and direct calls to `let/in`, conditional expressions, and name-first
+constants, aliases, namespaces, enums and records. Runtime `let` and conditional values can be `int`,
 `bool`, `byte`, `string`, nominal enums or record/struct values. Aggregate
 expressions extend the merged snapshot above without adding a new backend or
-bytecode version. Functions use C-style definitions; the
-earlier arrow-function form is no longer part of the replacement grammar.
+bytecode version. C-style definitions remain bootstrap/compatibility syntax;
+the earlier `=>` arrow-function form is still out.
 
 The Nix influence stops at syntax. Evaluation is eager and left to right, types
 are static, and [module resolution](spec/module-system-v0.1.1.md) needs an explicit
@@ -64,6 +65,70 @@ You get modules and `pub`, typed functions and calls, initialized C locals,
 `const` parameters/locals, arithmetic, comparisons and explicit returns. The
 name-first forms below go through the same name, type, visibility and entry-point
 checks before any bytecode is written.
+
+#### Nix-style functions and calls
+
+Write an explicit signature, then its matching definition immediately after it:
+
+```l
+module app.main;
+
+pub add : int -> int -> int;
+add = a: b: a + b;
+
+main : () -> int;
+main = do {
+    return add 20 22;
+};
+```
+
+Each type before the last `->` describes one parameter; the final type is the
+result. Parameter names come from the definition, in that same order. `() -> T`
+is the zero-parameter signature; it is not a unit-valued parameter. Signatures
+and definitions must be adjacent and have the same unqualified name. Put `pub`
+on the signature. Namespaces, imported/qualified types, primitive aliases,
+nominal enum/record types, overloads, forward calls and recursion use the existing
+resolver and type checker. There is no new type inference.
+
+Inside these new function bodies, `add 20 22` is **one complete direct call**.
+Arguments run eagerly, left to right. Application binds tighter than arithmetic:
+`add 10 10 * 2` means `(add 10 10) * 2`. Use parentheses for a nested call or
+compound argument: `add (twice 10) (11 * 2)`. Parentheses need no surrounding
+spaces, so `add(20)(22)` works too. Negative/unary arguments, `let` and `if`
+arguments need parentheses. `answer ()` invokes a zero-parameter function.
+
+This is Nix-like syntax, **not currying**: partial calls, stored/passed function
+values, anonymous lambdas and closures are not supported. `(add 20) 22` is
+rejected. Conversions keep their explicit `int(expr)` and `byte(expr)` forms.
+
+A plain expression body returns its value. For statements and loops, write
+`do { ... }` as the whole function body, ending the definition with `;`.
+It supports the existing `for`, `while`, `break`, `continue`, `switch`, local
+declarations, assignments and explicit returns. `do` is contextual here, not a
+reserved identifier or a general block expression. Locals and parameters retain
+the existing by-value/mutability rules; plain `let` bindings are still readonly,
+and `var` makes a `let` binding mutable.
+
+The parser translates these forms into the existing function/call AST. An
+expression body becomes an ordinary block containing a return. The analyzer,
+LIR, verifier and VM are unchanged, and bytecode remains **1.9**. Existing C-style
+functions keep their original body grammar and comma-separated calls. A Nix-style
+body calls either kind with Nix application; a C-style body calls either kind
+with `add(20, 22)`. There is no global grammar switch or arity-dependent parsing.
+
+[`examples/replacement/functions.l`](examples/replacement/functions.l) combines
+a Nix-style helper with a bounded `for` loop and returns 42:
+
+```sh
+./build/l check examples/replacement/functions.l --manifest examples/replacement/package.json
+./build/l compile examples/replacement/functions.l --manifest examples/replacement/package.json -o build/functions.lbc
+./build/l run build/functions.lbc                # Exit code 42
+```
+
+The L-written Stage 1 drivers do **not** parse these new signatures, colon
+parameters, application or `do` bodies yet. Their older C-style contracts below
+are unchanged. This extension builds on the aggregate-expression slice, not on a
+new backend or a self-hosted compiler.
 
 #### Local values and conditionals
 
@@ -524,6 +589,8 @@ broader syntax accepted by Stage 1 is a separate list, not a promise of executio
 - Fixed local `int`/`bool`/`byte` arrays: `int values[10];`, indexing and element
   assignment with runtime bounds checks; lengths may be compile-time expressions.
 - Direct calls, forward function references, recursion and value parameters.
+- Explicitly typed Nix-style definitions, complete direct application and
+  imperative `do` function bodies; legacy C-style bodies remain compatible.
 - Blocks, `if`/`else`, `while`, `for`, `return`, empty statements.
 - C-style `switch` over `int`, `byte` or an enum with `case`/`default` labels,
   empty-case chaining and fallthrough; unmatched selectors without `default`
@@ -1439,6 +1506,11 @@ Aggregate-expression tests add 256 six-field copy/cell/effect models across both
 declaration spellings, 32 package DAGs in both import/root orders and 16 more
 rejection/cleanup/recompile cycles. They check snapshots before mutation and
 same-nominal-type branch results without weakening the scalar or verifier tests.
+Nix-function tests add 256 eager-call/branch/bounded-loop models across new and
+legacy helper spellings, 32 package DAGs in both import/root orders, and 16
+rejection/cleanup/recompile cycles with source/serialized trap recovery. They
+also check precedence, full arity, overloads, scalar/nominal types and the shared
+parameter/function budgets. They do not execute arbitrary bytecode mutants.
 
 </details>
 
