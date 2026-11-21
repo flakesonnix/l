@@ -120,6 +120,7 @@ Token *lex(Context *ctx, const char *source, size_t length, size_t *count) {
                 else if (c == '|' && next == '|') token.kind = TK_OR;
                 else if (c == '+' && next == '+') token.kind = TK_INC;
                 else if (c == '-' && next == '-') token.kind = TK_DEC;
+                else if (c == '-' && next == '>') token.kind = TK_ARROW;
                 else if (c == ':' && next == ':') token.kind = TK_SCOPE;
                 if (token.kind >= TK_EQ) { ++at; token.length = 2; }
             }
