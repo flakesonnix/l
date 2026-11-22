@@ -109,6 +109,37 @@ reserved identifier or a general block expression. Locals and parameters retain
 the existing by-value/mutability rules; plain `let` bindings are still readonly,
 and `var` makes a `let` binding mutable.
 
+Inside a `do` body, local mutable bindings can also use the name-first form:
+
+```l
+main : () -> int;
+main = do {
+    var total = 0;
+    for (var i = 0; i < 3; i++) {
+        total = total + 14;
+    }
+    return total;
+};
+```
+
+`var name[: Type] = expression;` creates a mutable local. The type is inferred
+when omitted, and the initializer runs before the new binding exists, so a
+shadowing initializer reads the outer value of the same name. This works as a
+statement and as a `for` initializer; it is the same AST, slot, scope, typing
+and copy behavior as an initialized C local. There is no new name-first readonly
+statement here: keep using `let/in` or a typed local for that. `var` remains a
+contextual declaration word only in Nix bodies, so old C declarations and
+`let var` keep working.
+
+[`examples/replacement/bindings.l`](examples/replacement/bindings.l) uses a
+name-first local and a `for (var ...)` initializer to return 42:
+
+```sh
+./build/l check examples/replacement/bindings.l --manifest examples/replacement/package.json
+./build/l compile examples/replacement/bindings.l --manifest examples/replacement/package.json -o build/bindings.lbc
+./build/l run build/bindings.lbc                # Exit code 42
+```
+
 The parser translates these forms into the existing function/call AST. An
 expression body becomes an ordinary block containing a return. The analyzer,
 LIR, verifier and VM are unchanged, and bytecode remains **1.9**. Existing C-style
@@ -126,7 +157,7 @@ a Nix-style helper with a bounded `for` loop and returns 42:
 ```
 
 The L-written Stage 1 drivers do **not** parse these new signatures, colon
-parameters, application or `do` bodies yet. Their older C-style contracts below
+parameters, application, `do` bodies or name-first local declarations yet. Their older C-style contracts below
 are unchanged. This extension builds on the aggregate-expression slice, not on a
 new backend or a self-hosted compiler.
 
@@ -590,7 +621,8 @@ broader syntax accepted by Stage 1 is a separate list, not a promise of executio
   assignment with runtime bounds checks; lengths may be compile-time expressions.
 - Direct calls, forward function references, recursion and value parameters.
 - Explicitly typed Nix-style definitions, complete direct application and
-  imperative `do` function bodies; legacy C-style bodies remain compatible.
+  imperative `do` function bodies, with `var name[: Type] = expr;` locals and
+  `for (var ...)` initializers; legacy C-style bodies remain compatible.
 - Blocks, `if`/`else`, `while`, `for`, `return`, empty statements.
 - C-style `switch` over `int`, `byte` or an enum with `case`/`default` labels,
   empty-case chaining and fallthrough; unmatched selectors without `default`
@@ -1510,7 +1542,10 @@ Nix-function tests add 256 eager-call/branch/bounded-loop models across new and
 legacy helper spellings, 32 package DAGs in both import/root orders, and 16
 rejection/cleanup/recompile cycles with source/serialized trap recovery. They
 also check precedence, full arity, overloads, scalar/nominal types and the shared
-parameter/function budgets. They do not execute arbitrary bytecode mutants.
+parameter/function budgets. Name-first local binding tests add 256 inferred,
+annotated, loop and shadowing models across new/legacy spellings and 16 more
+rejection/cleanup/recompile cycles. None replaces the earlier suites, and no
+arbitrary bytecode mutants are executed.
 
 </details>
 

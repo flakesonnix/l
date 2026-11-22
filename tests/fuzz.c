@@ -34,7 +34,8 @@ static size_t scalar_expression_programs, scalar_expression_rejections;
 static size_t aggregate_expression_programs, aggregate_expression_rejections;
 static uint32_t aggregate_expression_forms, aggregate_expression_mutations, aggregate_expression_branches;
 static size_t nix_function_programs, nix_function_rejections;
-static uint32_t nix_function_forms, nix_function_branches;
+static size_t nix_binding_programs, nix_binding_rejections;
+static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -1252,6 +1253,75 @@ static void nix_function_recovery(void) {
     }
     dispose(ctx);
 }
+/* Host locals are plain cells: a name-first initializer sees only the outer binding. */
+typedef struct { int32_t outer, inner, loop; bool flag; } NixBindingModel;
+static void nix_binding_cases(void) {
+    random_state = UINT32_C(0x4e495842);
+    for (unsigned spelling = 0; spelling < 2; ++spelling) {
+        for (unsigned test = 0; test < MODEL_CASES; ++test) {
+            NixBindingModel model = {
+                .outer = (int32_t)random_number(41) - 20,
+                .inner = (int32_t)random_number(41) - 20,
+                .loop = (int32_t)random_number(5),
+                .flag = random_number(2) != 0,
+            };
+            unsigned form = random_number(4);
+            nix_binding_forms |= 1u << form;
+            source_length = 0;
+            append("main:()->int;main=do{%souter=%d;", spelling ? "int " : "var ", model.outer);
+            int32_t expected = model.outer;
+            if (!form) {
+                append("%sinner=%d;inner=inner+%d;return inner+outer;};", spelling ? "int " : "var ", model.inner, model.inner);
+                expected = model.inner + model.inner + model.outer;
+            } else if (form == 1) {
+                append("%sinner:bool=%s;inner=!inner;if(inner)return outer;return 0;};",
+                    spelling ? "int " : "var ", model.flag ? "true" : "false");
+                /* The legacy spelling cannot type a bool local; use an int branch instead. */
+                if (spelling) {
+                    source_length = 0;
+                    append("main:()->int;main=do{int outer=%d;int inner=%d;inner=inner+%d;"
+                        "if(inner>0)return outer;return 0;};", model.outer, model.inner, model.inner);
+                    expected = model.inner + model.inner > 0 ? model.outer : 0;
+                } else expected = model.flag ? 0 : model.outer;
+            } else if (form == 2) {
+                append("var sum=0;for(var i=0;i<%u;i++){sum=sum+%d;}return sum+outer;};", model.loop, model.inner);
+                expected = (int32_t)model.loop * model.inner + model.outer;
+            } else {
+                append("{var outer=%d;outer=outer+%d;return outer;}};", model.inner, model.inner);
+                expected = model.inner + model.inner;
+            }
+            ++nix_binding_programs; semantic_case(expected, 0);
+        }
+    }
+    if (nix_binding_forms != 15) failed("name-first binding model missed a form");
+}
+static void nix_binding_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("invalid name-first binding was accepted"); }
+    if (ctx->status != 65) failed("name-first binding rejection returned an unexpected status");
+    ++nix_binding_rejections;
+}
+static void nix_binding_recovery(void) {
+    static const char *const invalid[] = {
+        "main:()->int;main=do{var value;return 0;};",
+        "main:()->int;main=do{var=42;return 0;};",
+        "main:()->int;main=do{var value=true;value=42;return 0;};",
+        "main:()->int;main=do{var value=0;for(var i=0;i<2;i++)value=byte(256);return value;};"
+    };
+    Context *ctx = context("nix-binding-recovery");
+    for (volatile unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (volatile unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            nix_binding_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("name-first binding rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "nix-binding-recovery";
+            if (!setjmp(ctx->failure)) {
+                Program *p = compile(ctx, "main:()->int;main=do{var value=40;for(var i=0;i<2;i++)value++;return value;};");
+                run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+            } else failed("cleaned name-first binding context rejected valid source");
+            cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
 /* Independent shared-state model, with repeated runs of each source/bytecode program. */
 static void static_cases(void) {
     for (unsigned test = 0; test < MODEL_CASES; ++test) {
@@ -2185,6 +2255,8 @@ int main(void) {
         "snapshot=p;changed=(p.x=0);in snapshot).x;}");
     nix_function_cases();
     nix_function_recovery();
+    nix_binding_cases();
+    nix_binding_recovery();
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=divide visits++;"
         "recover:()->int;recover=if visits==0 then 42 else 1/0;divide:int->int;divide=x:42/x;");
@@ -2221,5 +2293,7 @@ int main(void) {
     printf("fuzz: %zu aggregate expression rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", aggregate_expression_rejections);
     printf("fuzz: %zu Nix function programs matched independent eager-call, branch and bounded-loop models\n", nix_function_programs);
     printf("fuzz: %zu Nix function rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", nix_function_rejections);
+    printf("fuzz: %zu name-first local binding programs matched inferred/annotated, loop and shadowing models\n", nix_binding_programs);
+    printf("fuzz: %zu name-first local binding rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", nix_binding_rejections);
     return 0;
 }

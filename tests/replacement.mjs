@@ -112,6 +112,40 @@ program('f:int->int;f=x:x;main:()->int;main=do{int x=0;for(int i=f 0;i<f 3;i++){
 program('f:int->int;f=x:x;main:()->int;main=do{int x=0;while(f x<3)x++;return x+39;};');
 program('f:int->int;f=x:x;main:()->int;main=do{int a[1];a[0]=42;return f a[0];};');
 program('f:int->int;f=x:x;main:()->int;main=do{int x=42;f x;return x;};');
+program('main:()->int;main=do{var x=40;x++;return x+1;};');
+program('main:()->int;main=do{var x:int=40;x=x+2;return x;};');
+program('main:()->int;main=do{var flag=false;flag=!flag;if(flag)return 42;return 0;};');
+program('main:()->int;main=do{var text="abc";return text.length+39;};');
+program('main:()->int;main=do{var b=byte(41);b=byte(int(b)+1);return int(b);};');
+program('main:()->int;main=do{var value=if true then 42 else 1/0;return value;};');
+program('main:()->int;main=do{var value=let x=42;in x;return value;};');
+program('id:int->int;id=x:x;main:()->int;main=do{var value=id 42;return value;};');
+program('Pair=record{x:int;};main:()->int;main=do{var p=Pair{x=40;};p.x++;return p.x+1;};');
+program('main:()->int;main=do{var sum=0;for(var i=0;i<3;i++){sum=sum+14;}return sum;};');
+program('main:()->int;main=do{var sum=0;for(var i:int=0;i<3;i++){sum=sum+i;}return sum+39;};');
+program('main:()->int;main=do{var i=0;while(i<3){i++;}return i+39;};');
+program('main:()->int;main=do{var x=40;{var x=x+2;return x;}};');
+program('main:()->int;main=do{var x=2;{var x=x+2;}return x+40;};');
+program('f:int->int;f=x:do{var y=x+1;return y;};' + nixMain('f 41'));
+program('main:()->int;main=do{var x=42;var y=x;x=0;return y;};');
+program('main:()->int;main=do{var p=if false then 1/0 else 42;return p;};');
+program('main:()->int;main=do{var x=1/0;var y=2147483647+1;return 42;};', 70, {}, /division by zero/);
+program('main:()->int;main=do{var x=0;for(var i=0;i<3;i++)x=x+i;return x+39;};');
+program('main:()->int;main=do{for(var i=0;;i++)return 42;return 0;};');
+for (const [body, message] of [
+  ['main:()->int;main=do{var x;return 0;};', /require an initializer/],
+  ['main:()->int;main=do{var=42;return 0;};', /expected variable name after 'var'/],
+  ['main:()->int;main=do{var x:void=42;return 0;};', /variable cannot have void type/],
+  ['main:()->int;main=do{var x:Pair=1;return 0;};', /unknown local variable or constant/],
+  ['main:()->int;main=do{var x=true;x=42;return 0;};', /expected bool, got int/],
+  ['main:()->int;main=do{var x=1;var x=2;return x;};', /duplicate local declaration/],
+  ['main:()->int;main=do{var x=42;const int x=1;return x;};', /duplicate local declaration/],
+  ['main:()->int;main=do{var x[1];return 0;};', /array element type|expected '='|cannot have an initializer/],
+  ['int main(){var x=42;return x;}', /expected expression|expected Stage 0 type/],
+  ['main:()->int;main=let var x=42;in x;var y=1;', /expected ';' after function definition|expected Stage 0 type/],
+  ['main:()->int;main=do{var x=42;in x;};', /expected expression|expected ';'/],
+  ['var x=42;int main(){return 0;}', /expected Stage 0 type|expected expression/],
+]) rejected(body, message);
 program('do:int->int;do=x:x;' + nixMain('do 42'));
 program('id:int->int;id=x:x;' + nixMain('let do=42;in id do'));
 program('f:int->int;f=x:do{return x;};int do(int x){return x;}int main(){return do(f(42));}');

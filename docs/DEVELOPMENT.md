@@ -15,9 +15,11 @@ It does not add aggregate globals, arrays or nested aggregate fields.
 The Nix-function slice adds explicit signatures, colon-parameter definitions,
 complete direct application and imperative `do` function bodies. C-style
 functions keep their original grammar; new bodies use Nix-style calls to either
-kind. The semantic checker, backend and L-written parser sources are unchanged.
-The goal is Nix-based surface syntax with loops/mutation, not lazy evaluation,
-currying or a second compiler.
+kind. Inside `do`, `var name[: Type] = expr;` and `for (var ...)` are name-first
+spellings of the existing mutable local declaration. The semantic checker,
+backend and L-written parser sources are unchanged. The goal is Nix-based
+surface syntax with loops/mutation, not lazy evaluation, currying or a second
+compiler.
 
 The important bits have not changed: static types, eager left-to-right evaluation,
 explicit manifests, [module rules](../spec/module-system-v0.1.1.md), and bytecode
@@ -98,7 +100,10 @@ Nix-function models independently track eager call arguments, selected branches,
 shared counters and bounded loops. Signatures must match their adjacent
 definitions, and incomplete/extra arguments, closures and function values stay
 rejected. Keep cross-spelling calls, precedence, parameter/function limits and
-cleanup/retry checks as well as the earlier scalar/aggregate models.
+cleanup/retry checks as well as the earlier scalar/aggregate models. Name-first
+local models check inferred/annotated locals, shadowing initializers and `for`
+bindings in both new and legacy body spellings; readonly statements stay out of
+scope.
 
 ## Nix workflow
 
@@ -121,7 +126,7 @@ nix fmt flake.nix
 The shell supplies the compiler, Make, Node.js, Git, GitHub CLI, nixfmt and
 actionlint. `nix flake check` runs regular package and installation tests, separate
 sanitizer/coverage builds, Nix formatting and workflow lint. Installed tests run
-all ten replacement examples from source and bytecode.
+all eleven replacement examples from source and bytecode.
 
 Coverage builds at `-O0`, so its derivation and the development shell disable
 glibc fortification. The installed compiler keeps the standard Nix hardening
@@ -182,6 +187,7 @@ bytes, including NUL and values above 127; they do not perform text conversion.
 | Scalar `let`/conditional expressions | 1.9 | Extend runtime values to byte/string/nominal enums and primitive aliases; exact types, existing slots/branches/VM, no aggregate or compile-time expression expansion. |
 | Aggregate `let`/conditional expressions | 1.9 | Nominal record/struct values use existing by-value slots and branch temporaries; no new runtime representation, aggregate arrays/globals or compile-time expression expansion. |
 | Typed Nix-style direct functions | 1.9 | Adjacent explicit signatures/definitions, colon parameters, direct application and imperative `do` function bodies lower to existing function/call/return ASTs; no function values, closures, currying or new runtime representation. |
+| Name-first local `var` bindings | 1.9 | Contextual `var name[: Type] = expr;` locals and `for` initializers in Nix bodies reuse existing mutable declaration slots/scopes; no new readonly statement or runtime behavior. |
 
 The version table is history, not a list of formats the loader still accepts.
 Only the exact current version loads, even when a program does not use the newest

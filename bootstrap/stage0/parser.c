@@ -36,6 +36,7 @@ static Type parse_type(Parser *p, Token *name) {
 }
 static bool starts_decl(Parser *p) {
     int k = peek(p).kind;
+    if (k == TK_VAR && p->nix_calls) return true;
     if (k == TK_INT || k == TK_BYTE) return p->tokens[p->at + 1].kind != '(';
     if (k == TK_CONST || k == TK_BOOL || k == TK_VOID || k == TK_AUTO || k == TK_STRING) return true;
     if (k != TK_NAME) return false;
@@ -222,9 +223,16 @@ static Expr *expression(Parser *p, int minimum) {
 }
 static Decl *declaration(Parser *p, bool parameter) {
     Decl *decl = allocate(p->ctx, sizeof(*decl));
-    decl->immutable = take(p, TK_CONST);
-    decl->type = parse_type(p, &decl->type_name);
-    decl->name = expect(p, TK_NAME, "expected variable name");
+    bool var_first = take(p, TK_VAR);
+    if (var_first) {
+        decl->immutable = false;
+        decl->name = expect(p, TK_NAME, "expected variable name after 'var'");
+        decl->type = take(p, ':') ? parse_type(p, &decl->type_name) : TY_AUTO;
+    } else {
+        decl->immutable = take(p, TK_CONST);
+        decl->type = parse_type(p, &decl->type_name);
+        decl->name = expect(p, TK_NAME, "expected variable name");
+    }
     if (take(p, '[')) {
         decl->length = expression(p, 1);
         expect(p, ']', "expected ']' after array length");
@@ -235,7 +243,8 @@ static Decl *declaration(Parser *p, bool parameter) {
             if (peek(p).kind == '=') token_fail(p->ctx, peek(p), "arrays initialize to zero and cannot have an initializer");
             expect(p, ';', "expected ';' after array declaration");
         } else {
-            expect(p, '=', "Stage 0 local declarations require an initializer");
+            expect(p, '=', var_first ? "name-first 'var' declarations require an initializer"
+                : "Stage 0 local declarations require an initializer");
             decl->value = expression(p, 1);
             expect(p, ';', "expected ';' after declaration");
         }
