@@ -226,6 +226,9 @@ separately; passing a feature-head run does not prove that run passed.
   once, left to right, before binding a fresh loop local; check half-open
   iteration, empty/reversed ranges, nesting, `break`/`continue`, mutation of the
   counter and C-body rejection. There is no step/iterator/lazy-sequence feature.
+  Nix `while` must re-evaluate the bool condition, reuse ordinary loop scope and
+  break/continue lowering, and keep C `while(cond)` valid in both body styles.
+  Contextual `do {` is never a call argument.
 - **Evidence:** coverage measures Stage 0 C only. Arbitrary bytecode mutants and
   cyclic verifier graphs must never execute. Local results and hosted check runs
   are separate evidence; record the exact commit for each.

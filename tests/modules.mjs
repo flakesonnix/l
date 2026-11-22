@@ -1109,6 +1109,51 @@ try {
     }
   }
 
+  // Nix while conditions share mutable cells across package DAGs and both import orders.
+  state = 0x4e495748;
+  for (let test = 0; test < 32; ++test) {
+    const project = { 'std/loops.l': 'module std.loops;pub Count=alias int;pub static int ticks=0;'
+      + 'pub tick:()->Count;tick=ticks++;' }, nodes = [];
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.w${n}`, parents = [], bound = random(6), delta = random(41) - 20;
+      let imports = 'import std.loops as t;', calls = '';
+      for (let p = 0; p < n; ++p) if (p === n - 1 || random(3) === 0) {
+        parents.push(p);
+        const parent = nodes[p].name, spelling = (test + p) % 3;
+        if (!spelling) { imports += `import ${parent};`; calls += `value=${parent.replaceAll('.', '::')}::work::run value;`; }
+        else if (spelling === 1) { imports += `import ${parent} as m${p};`; calls += `value=m${p}::work::run value;`; }
+        else { imports += `import ${parent}::{work::run as f${p}};`; calls += `value=f${p} value;`; }
+      }
+      project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${imports}work=namespace{`
+        + `pub run:t::Count->t::Count;run=x:do{t::Count value=x;var i=0;while i<${bound}:do{`
+        + `value=(value+(${delta})+t::tick ())%1009;i++;}`
+        + `${calls}return value;};};`;
+      nodes.push({ name, parents, bound, delta });
+    }
+    let ticks = 0;
+    function simulate(n, input) {
+      const node = nodes[n];
+      let tickSum = 0n;
+      for (let i = 0; i < node.bound; ++i) tickSum += BigInt(ticks + i);
+      let value = (input + BigInt(node.delta * node.bound) + tickSum) % 1009n;
+      ticks += node.bound;
+      for (const parent of node.parents) value = simulate(parent, value);
+      return value;
+    }
+    const a = simulate(7, 17n), b = simulate(6, -23n);
+    for (const reverse of [false, true]) {
+      const imports = ['import std.loops as t;', 'import app.w7 as top;', 'import app.w6 as next;'];
+      if (reverse) imports.reverse();
+      project['app/main.l'] = `module app.main;${imports.join('')}main:()->int;main=do{var a=top::work::run 17;`
+        + `var b=next::work::run (-23);return if a==${a}&&b==${b}&&t::ticks==${ticks} then 42 else 0;};`;
+      const settings = config(); if (reverse) settings.module_roots.reverse();
+      const f = program(project, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
+      assert.equal(bytes.readUInt32LE(16), 1, 'while loops add no implicit global storage');
+      assert.equal(bytes.readUInt32LE(20), 0, 'while loops do not add runtime nominal metadata');
+      assert.equal(bytes.readUInt32LE(24), 0);
+    }
+  }
+
   // Aggregate expression snapshots copy fields before mutation, across shared package DAGs.
   state = 0x41474752;
   for (let test = 0; test < 32; ++test) {
@@ -2333,7 +2378,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 typed Nix-function DAGs in two import orders, 32 range-loop DAGs in two import orders, 32 reopened replacement namespace DAGs in two import orders, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 mixed-spelling nominal enum DAGs in two import orders, 32 aggregate let/conditional DAGs in two import orders, 32 scalar let/conditional DAGs in two import orders, 32 named record order/copy DAGs in two import orders, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 typed Nix-function DAGs in two import orders, 32 range-loop DAGs in two import orders, 32 Nix while DAGs in two import orders, 32 reopened replacement namespace DAGs in two import orders, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 mixed-spelling nominal enum DAGs in two import orders, 32 aggregate let/conditional DAGs in two import orders, 32 scalar let/conditional DAGs in two import orders, 32 named record order/copy DAGs in two import orders, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

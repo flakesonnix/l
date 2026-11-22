@@ -192,6 +192,27 @@ for (const [body, message] of [
 ]) rejected(body, message);
 program(rangeMain('for i in 1/0..3:do{}return 42;'), 70, {}, /division by zero/);
 program(rangeMain('for i in 0..(2147483647+1):do{}return 42;'), 70, {}, /integer overflow/);
+
+// Nix-style while reuses the existing loop AST; C-style while(...) still works.
+program(rangeMain('var n=0;while n<3:do{n++;}return n+39;'));
+program(rangeMain('while false:do{return 1/0;}return 42;'));
+program(rangeMain('var n=0;var sum=0;while n<5:do{n++;if(n==2)continue;sum=sum+7;}return sum+14;'));
+program(rangeMain('var n=0;while true:do{n++;if(n==4)break;}return n+38;'));
+program(rangeMain('var n=0;var total=0;while n<2:do{var m=0;while m<3:do{total=total+7;m++;}n++;}return total;'));
+program('f:int->bool;f=x:x<3;' + rangeMain('var n=0;while f n:do{n++;}return n+39;'));
+program(rangeMain('var n=0;while let k=n;in k<3:do{n++;}return n+39;'));
+program(rangeMain('var n=0;while n++<3:do{}return n+38;'));
+program(rangeMain('var n=0;while n<3:do{n=n+2;}return n+38;'));
+program(rangeMain('var n=0;while(n<3){n++;}return n+39;'));
+program('int main(){int n=0;while(n<3)n++;return n+39;}');
+for (const [body, message] of [
+  ['main:()->int;main=do{var n=0;while n<3 do{n++;}return 0;};', /expected ':'/],
+  ['main:()->int;main=do{var n=0;while n<3:return 0;return 0;};', /expected 'do'/],
+  ['main:()->int;main=do{var n=0;while n<3:other return 0;};', /expected 'do'/],
+  ['main:()->int;main=do{var n=0;while true:do{n=true;}return 0;};', /expected int, got bool/],
+  ['main:()->int;main=do{while 1:do{}return 0;};', /expected bool, got int/],
+]) rejected(body, message);
+program(rangeMain('var n=0;while 1/0<3:do{n++;}return 42;'), 70, {}, /division by zero/);
 program('do:int->int;do=x:x;' + nixMain('do 42'));
 program('id:int->int;id=x:x;' + nixMain('let do=42;in id do'));
 program('f:int->int;f=x:do{return x;};int do(int x){return x;}int main(){return do(f(42));}');

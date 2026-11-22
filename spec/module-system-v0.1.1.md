@@ -22,7 +22,8 @@ This document replaces sections 2.2 and 2.3 of Language L Specification 0.1.0.
 > syntax to the L-written drivers. The range-loop extension adds half-open
 > `for i in a..b: do { ... }` int ranges in C-compiler function bodies, desugared
 > to existing locals/counting loops; it adds no iterator or runtime type and does
-> not change module identity, visibility or resolution rules.
+> not change module identity, visibility or resolution rules. `while cond: do { ... }`
+> is the Nix spelling of the existing condition loop, with no change to module rules.
 >
 > This document defines module behavior, not parser progress. Changing a
 > declaration's spelling does not change module identity, explicit imports,
