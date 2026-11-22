@@ -222,7 +222,10 @@ separately; passing a feature-head run does not prove that run passed.
 +  Name-first local `var` declarations must remain contextual to Nix bodies,
 +  require an initializer, infer or check the written type, and reuse ordinary
 +  mutable slots/scopes including `for` initializers and shadowing. C declarations
-+  and `let var` must keep working.
++  and `let var` must keep working. Range loops must evaluate both int bounds
+  once, left to right, before binding a fresh loop local; check half-open
+  iteration, empty/reversed ranges, nesting, `break`/`continue`, mutation of the
+  counter and C-body rejection. There is no step/iterator/lazy-sequence feature.
 - **Evidence:** coverage measures Stage 0 C only. Arbitrary bytecode mutants and
   cyclic verifier graphs must never execute. Local results and hosted check runs
   are separate evidence; record the exact commit for each.

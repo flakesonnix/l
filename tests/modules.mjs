@@ -342,7 +342,7 @@ try {
     ['module app.main;import std.math::{answer;', /after selective/],
     ['module app.main;import std.math int main(){return 0;}', /after import/],
     ['module app.main;int main(){return std::();}', /after name separator/],
-    ['module app..main;int main(){return 0;}', /after name separator/],
+    ['module app..main;int main(){return 0;}', /after name separator|after module declaration/],
     ['module app.main int main(){return 0;}', /after module declaration/],
   ]) rejected({ 'app/main.l': body, 'std/math.l': library }, message);
   for (const [body, message] of [
@@ -1062,6 +1062,49 @@ try {
       const f = program(project, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
       assert.equal(bytes.readUInt32LE(16), 1, 'Nix functions add no implicit global storage');
       assert.equal(bytes.readUInt32LE(20), 0, 'Nix functions do not add nominal runtime types');
+      assert.equal(bytes.readUInt32LE(24), 0);
+    }
+  }
+
+  // Range loops reuse function scopes across package DAGs and both import orders.
+  state = 0x4e49524e;
+  for (let test = 0; test < 32; ++test) {
+    const project = { 'std/ranges.l': 'module std.ranges;pub Count=alias int;pub static int ticks=0;'
+      + 'pub tick:()->Count;tick=ticks++;' }, nodes = [];
+    for (let n = 0; n < 8; ++n) {
+      const name = `${n < 4 ? 'std' : 'app'}.r${n}`, parents = [], start = random(4), length = random(6), delta = random(41) - 20;
+      let imports = 'import std.ranges as t;', calls = '';
+      for (let p = 0; p < n; ++p) if (p === n - 1 || random(3) === 0) {
+        parents.push(p);
+        const parent = nodes[p].name, spelling = (test + p) % 3;
+        if (!spelling) { imports += `import ${parent};`; calls += `value=${parent.replaceAll('.', '::')}::work::run value;`; }
+        else if (spelling === 1) { imports += `import ${parent} as m${p};`; calls += `value=m${p}::work::run value;`; }
+        else { imports += `import ${parent}::{work::run as f${p}};`; calls += `value=f${p} value;`; }
+      }
+      project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${imports}work=namespace{`
+        + `pub run:t::Count->t::Count;run=x:do{t::Count value=x;for i in ${start}..${start + length}:do{`
+        + `value=(value+(${delta})+i)%1009;}value=(value+t::tick ())%1009;${calls}return value;};};`;
+      nodes.push({ name, parents, start, length, delta });
+    }
+    let ticks = 0;
+    function simulate(n, input) {
+      const node = nodes[n];
+      let sum = 0n;
+      for (let i = node.start; i < node.start + node.length; ++i) sum += BigInt(i);
+      let value = (input + BigInt(node.delta * node.length) + sum + BigInt(ticks++)) % 1009n;
+      for (const parent of node.parents) value = simulate(parent, value);
+      return value;
+    }
+    const a = simulate(7, 17n), b = simulate(6, -23n);
+    for (const reverse of [false, true]) {
+      const imports = ['import std.ranges as t;', 'import app.r7 as top;', 'import app.r6 as next;'];
+      if (reverse) imports.reverse();
+      project['app/main.l'] = `module app.main;${imports.join('')}main:()->int;main=do{var a=top::work::run 17;`
+        + `var b=next::work::run (-23);return if a==${a}&&b==${b}&&t::ticks==${ticks} then 42 else 0;};`;
+      const settings = config(); if (reverse) settings.module_roots.reverse();
+      const f = program(project, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
+      assert.equal(bytes.readUInt32LE(16), 1, 'range loops add no implicit global storage');
+      assert.equal(bytes.readUInt32LE(20), 0, 'range loops do not add runtime nominal metadata');
       assert.equal(bytes.readUInt32LE(24), 0);
     }
   }
@@ -2290,7 +2333,7 @@ try {
   command(64, ['check', noManifest.input, '--manifest', noManifest.manifest, '--manifest', noManifest.manifest]);
   command(64, ['compile', noManifest.input, '-o']);
   command(64, ['compile', noManifest.input, '-o', 'a', '-o', 'b']);
-  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 typed Nix-function DAGs in two import orders, 32 reopened replacement namespace DAGs in two import orders, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 mixed-spelling nominal enum DAGs in two import orders, 32 aggregate let/conditional DAGs in two import orders, 32 scalar let/conditional DAGs in two import orders, 32 named record order/copy DAGs in two import orders, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
+  console.log(`modules: ${checks} checks passed (32 function DAGs, 32 typed Nix-function DAGs in two import orders, 32 range-loop DAGs in two import orders, 32 reopened replacement namespace DAGs in two import orders, 32 string DAGs, 32 byte DAGs, 32 enum DAGs, 32 mixed-spelling nominal enum DAGs in two import orders, 32 aggregate let/conditional DAGs in two import orders, 32 scalar let/conditional DAGs in two import orders, 32 named record order/copy DAGs in two import orders, 32 struct DAGs, 32 alias DAGs, 32 four-scalar replacement alias DAGs in two import orders, 32 constant DAGs, 32 mixed-spelling constant DAGs in two import orders, 32 static DAGs, 32 static-buffer DAGs in two import orders, ${constantModels} legacy and ${nameFirstConstantModels} name-first constant-expression models, ${stringConstantModels} string constant models, ${byteConstantModels} byte constant models, ${shapeModels} integer shape models)`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

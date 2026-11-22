@@ -146,6 +146,52 @@ for (const [body, message] of [
   ['main:()->int;main=do{var x=42;in x;};', /expected expression|expected ';'/],
   ['var x=42;int main(){return 0;}', /expected Stage 0 type|expected expression/],
 ]) rejected(body, message);
+
+// Name-first range loops are half-open int ranges lowered to the existing counting loop.
+const rangeMain = body => `main:()->int;main=do{${body}};`;
+program(rangeMain('var sum=0;for i in 0..3:do{sum=sum+i;}return sum+39;'));
+program(rangeMain('var sum=0;for i in 1..7:do{sum=sum+i;}return sum+21;'));
+program(rangeMain('for i in 5..2:do{return 1/0;}return 42;'));
+program(rangeMain('var sum=0;for i in -3..2:do{sum=sum+i;}return sum+47;'));
+program(rangeMain('var sum=0;for i in 0+1..2*2:do{sum=sum+i;}return sum+36;'));
+program('static int n=3;' + rangeMain('var sum=0;for i in 0..n++:do{sum=sum+i;}return if n==4&&sum==3 then 42 else 0;'));
+program('static int n=0;' + rangeMain('for i in n++..n++:do{}return if n==2 then 42 else 0;'));
+program(rangeMain('var sum=0;for i in 0..3:do{if(i==2)continue;sum=sum+14;}return sum+14;'));
+program(rangeMain('var sum=0;for i in 0..10:do{if(i==3)break;sum=sum+14;}return sum;'));
+program(rangeMain('var total=0;for i in 0..2:do{for j in 0..3:do{total=total+7;}}return total;'));
+program(rangeMain('var sum=0;for i in 0..3:do{sum=sum+i;if(i==0)i=1;}return sum+40;'));
+program(rangeMain('var i=40;for i in 0..1:do{}return i+2;'));
+program('f:int->int;f=x:x;' + rangeMain('var sum=0;for i in f 0..f 3:do{sum=sum+i;}return sum+39;'));
+program(rangeMain('var sum=0;var limit=3;for i in 0..limit:do{sum=sum+1;}return sum+39;'));
+program(rangeMain('var sum=0;for i in 2147483646..2147483647:do{sum=sum+1;}return sum+41;'));
+program(rangeMain('var sum=0;var n=0;while(n<2){for i in 0..2:do{sum=sum+1;}n++;}return sum+38;'));
+program(rangeMain('for i in 0..3:do{return 42;}return 0;'));
+program('Pair=record{x:int;};' + rangeMain('var p=Pair{x=0;};for i in 0..6:do{p.x=p.x+7;}return p.x;'));
+program(rangeMain('var total=0;for i in 0..3:do{var inner=i;total=total+inner;}return total+39;'));
+program(rangeMain('var sum=0;for i in 0..3:do{sum=sum+(let k=i;in k);}return sum+39;'));
+program(rangeMain('var sum=0;for i in 0..3:do{sum=sum+(if i==0 then 0 else i);}return sum+39;'));
+program(rangeMain('var sum=0;for i in 0..3:do{sum=sum+14;}var j=0;for j in 0..1:do{sum=sum+1;}return sum-1;'));
+program('static int visits=0;tick:()->int;tick=visits++;' + rangeMain('var sum=0;for i in tick ()..tick ():do{sum=sum+1;}return if visits==2&&sum==1 then 42 else 0;'));
+program(rangeMain('for i in 0..0:do{return 1/0;}return 42;'));
+program(rangeMain('var sum=0;for i in -2..1:do{sum=sum+7;}return sum+21;'));
+for (const [body, message] of [
+  ['main:()->int;main=do{for i 0..3:do{}return 0;};', /expected '\('/],
+  ['main:()->int;main=do{for i in 0 3:do{}return 0;};', /expected '\.\.'/],
+  ['main:()->int;main=do{for i in 0..3 do{}return 0;};', /expected ':'/],
+  ['main:()->int;main=do{for i in 0..3:return 0;return 0;};', /expected 'do'/],
+  ['main:()->int;main=do{for i in 0..3:other return 0;};', /expected 'do'/],
+  ['main:()->int;main=do{for i in true..3:do{}return 0;};', /expected int, got bool/],
+  ['main:()->int;main=do{for i in 0..false:do{}return 0;};', /expected int, got bool/],
+  ['main:()->int;main=do{for i in "a"..3:do{}return 0;};', /expected int, got string/],
+  ['main:()->int;main=do{for i in 0..i:do{}return 0;};', /unknown local variable/],
+  ['main:()->int;main=do{for i in 0..3:do{}return i;};', /unknown local variable/],
+  ['main:()->int;main=do{for i in 0..3:do{i=true;}return 0;};', /expected int, got bool/],
+  ['int main(){for i in 0..3:do{}return 42;}', /expected '\('/],
+  ['for i in 0..3:do{}int main(){return 42;}', /expected Stage 0 type|expected expression/],
+  ['main:()->int;main=let in for i in 0..3:do{};', /expected expression|expected ';'/],
+]) rejected(body, message);
+program(rangeMain('for i in 1/0..3:do{}return 42;'), 70, {}, /division by zero/);
+program(rangeMain('for i in 0..(2147483647+1):do{}return 42;'), 70, {}, /integer overflow/);
 program('do:int->int;do=x:x;' + nixMain('do 42'));
 program('id:int->int;id=x:x;' + nixMain('let do=42;in id do'));
 program('f:int->int;f=x:do{return x;};int do(int x){return x;}int main(){return do(f(42));}');

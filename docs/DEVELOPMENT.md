@@ -16,7 +16,8 @@ The Nix-function slice adds explicit signatures, colon-parameter definitions,
 complete direct application and imperative `do` function bodies. C-style
 functions keep their original grammar; new bodies use Nix-style calls to either
 kind. Inside `do`, `var name[: Type] = expr;` and `for (var ...)` are name-first
-spellings of the existing mutable local declaration. The semantic checker,
+spellings of the existing mutable local declaration. `for i in a..b: do { ... }`
+is a half-open int range desugared into the same counting-loop AST. The semantic checker,
 backend and L-written parser sources are unchanged. The goal is Nix-based
 surface syntax with loops/mutation, not lazy evaluation, currying or a second
 compiler.
@@ -103,7 +104,8 @@ rejected. Keep cross-spelling calls, precedence, parameter/function limits and
 cleanup/retry checks as well as the earlier scalar/aggregate models. Name-first
 local models check inferred/annotated locals, shadowing initializers and `for`
 bindings in both new and legacy body spellings; readonly statements stay out of
-scope.
+scope. Range models check half-open iteration, nested loops, `break`/`continue`,
+single evaluation of call bounds and empty ranges.
 
 ## Nix workflow
 
@@ -126,7 +128,7 @@ nix fmt flake.nix
 The shell supplies the compiler, Make, Node.js, Git, GitHub CLI, nixfmt and
 actionlint. `nix flake check` runs regular package and installation tests, separate
 sanitizer/coverage builds, Nix formatting and workflow lint. Installed tests run
-all eleven replacement examples from source and bytecode.
+all twelve replacement examples from source and bytecode.
 
 Coverage builds at `-O0`, so its derivation and the development shell disable
 glibc fortification. The installed compiler keeps the standard Nix hardening
@@ -188,6 +190,7 @@ bytes, including NUL and values above 127; they do not perform text conversion.
 | Aggregate `let`/conditional expressions | 1.9 | Nominal record/struct values use existing by-value slots and branch temporaries; no new runtime representation, aggregate arrays/globals or compile-time expression expansion. |
 | Typed Nix-style direct functions | 1.9 | Adjacent explicit signatures/definitions, colon parameters, direct application and imperative `do` function bodies lower to existing function/call/return ASTs; no function values, closures, currying or new runtime representation. |
 | Name-first local `var` bindings | 1.9 | Contextual `var name[: Type] = expr;` locals and `for` initializers in Nix bodies reuse existing mutable declaration slots/scopes; no new readonly statement or runtime behavior. |
+| Half-open range loops | 1.9 | `for i in a..b: do { ... }` desugars to two evaluated int bounds plus the existing counting loop; no iterator, lazy sequence, step expression or new runtime type. |
 
 The version table is history, not a list of formats the loader still accepts.
 Only the exact current version loads, even when a program does not use the newest
