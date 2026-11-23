@@ -127,6 +127,11 @@ indexes and updates before the infix tail. They add 128 bounded effect/count mod
 postfix variants of the same while DAGs, 16 rejection/cleanup/recompile cycles and
 source/serialized trap recovery. Tests preserve record copies, readonly/lvalue
 checks, array/string bounds, final-condition updates and C block/call bodies.
+Grouped-callee regressions add 128 bounded call/count/evaluation-order models,
+grouped-call variants of the same while DAGs and 16 rejection/cleanup/recompile
+cycles with eager-argument trap recovery. They retain full arity, static overloads
+and direct named calls only. Shared delimiter lookahead avoids speculative ASTs
+and preserves declarations, conversions and named calls as legacy C bodies.
 
 ## Nix workflow
 

@@ -213,6 +213,15 @@ and grouping an array name only permits the same indexing operations as before,
 not arrays as first-class values. C blocks, parenthesized expression statements
 and named calls after a complete C condition retain their existing body grammar.
 
+Parentheses around a callee name also keep the same direct-call meaning:
+`while (check) n: do { ... }`, or `while (ready) (): do { ... }` for a
+zero-argument function. Calls still supply every argument, use static overload
+resolution and evaluate arguments eagerly from left to right; parentheses do not
+create function values, closures or partial applications. Without the condition
+colon, `while (condition) step ();` remains a C-style loop with a call as its body.
+Typed `let` arguments, record literals, qualified `::` names and punctuation in
+strings do not change where the actual condition ends.
+
 Both Nix loop forms require the block after `do`, even for an empty body:
 write `while false: do { }`, not `while false: do ;` or `: do return 0;`.
 The same rule applies to `for i in start..end: do { ... }`. Ordinary C-style

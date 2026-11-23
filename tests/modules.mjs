@@ -1131,8 +1131,9 @@ try {
     const groupedLoops = {};
     const infixLoops = {};
     const postfixLoops = {};
+    const callLoops = {};
     const project = { 'std/loops.l': 'module std.loops;pub Count=alias int;pub static int ticks=0;'
-      + 'pub tick:()->Count;tick=ticks++;' }, nodes = [];
+      + 'pub tick:()->Count;tick=ticks++;pub below:Count->Count->bool;below=value:bound:value<bound;' }, nodes = [];
     for (let n = 0; n < 8; ++n) {
       const name = `${n < 4 ? 'std' : 'app'}.w${n}`, parents = [], bound = random(6), delta = random(41) - 20;
       let imports = 'import std.loops as t;', calls = '';
@@ -1160,6 +1161,10 @@ try {
         .replace(`while i<${bound}:do{`, test % 2 ? `while (let text="${text}";in text).length>i:do{` : `while ("${text}").length>i:do{`);
       assert.notEqual(postfixLoops[`${name.replaceAll('.', '/')}.l`], project[`${name.replaceAll('.', '/')}.l`],
         'postfix while variant must change the generated condition');
+      callLoops[`${name.replaceAll('.', '/')}.l`] = project[`${name.replaceAll('.', '/')}.l`]
+        .replace(`while i<${bound}:do{`, test % 2 ? `while ((t::below)) (i) (${bound}):do{` : `while (t::below) i ${bound}:do{`);
+      assert.notEqual(callLoops[`${name.replaceAll('.', '/')}.l`], project[`${name.replaceAll('.', '/')}.l`],
+        'grouped-call while variant must change the generated condition');
       nodes.push({ name, parents, bound, delta });
     }
     let ticks = 0;
@@ -1179,7 +1184,7 @@ try {
       project['app/main.l'] = `module app.main;${imports.join('')}main:()->int;main=do{var a=top::work::run 17;`
         + `var b=next::work::run (-23);return if a==${a}&&b==${b}&&t::ticks==${ticks} then 42 else 0;};`;
       const settings = config(); if (reverse) settings.module_roots.reverse();
-      for (const variant of [project, { ...project, ...groupedLoops }, { ...project, ...infixLoops }, { ...project, ...postfixLoops }]) {
+      for (const variant of [project, { ...project, ...groupedLoops }, { ...project, ...infixLoops }, { ...project, ...postfixLoops }, { ...project, ...callLoops }]) {
         const f = program(variant, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
         assert.equal(bytes.readUInt32LE(16), 1, 'while loops add no implicit global storage');
         assert.equal(bytes.readUInt32LE(20), 0, 'while loops do not add runtime nominal metadata');
