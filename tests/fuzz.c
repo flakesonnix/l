@@ -36,7 +36,8 @@ static uint32_t aggregate_expression_forms, aggregate_expression_mutations, aggr
 static size_t nix_function_programs, nix_function_rejections;
 static size_t nix_binding_programs, nix_binding_rejections;
 static size_t nix_range_programs, nix_range_rejections;
-static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms;
+static size_t nix_while_programs, nix_while_rejections;
+static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms, nix_while_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -1390,6 +1391,68 @@ static void nix_range_recovery(void) {
     }
     dispose(ctx);
 }
+/* Host-side while model: bounded conditions with independent break/continue/nesting counts. */
+static void nix_while_cases(void) {
+    random_state = UINT32_C(0x4e495748);
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        unsigned form = random_number(6);
+        nix_while_forms |= 1u << form;
+        int32_t limit = (int32_t)random_number(7), weight = (int32_t)random_number(20) + 1, expected;
+        source_length = 0;
+        append("main:()->int;main=do{var n=0;var sum=0;");
+        if (form == 0) {
+            append("while n<%d:do{n++;sum=sum+%d;}", limit, weight);
+            expected = limit * weight;
+        } else if (form == 1) {
+            int32_t stop = (int32_t)random_number((uint32_t)(limit + 1));
+            append("while n<%d:do{n++;if(n==%d)break;sum=sum+%d;}", limit, stop, weight);
+            expected = (stop > 0 && stop <= limit ? stop - 1 : limit) * weight;
+        } else if (form == 2) {
+            int32_t skip = (int32_t)random_number((uint32_t)(limit + 1));
+            append("while n<%d:do{n++;if(n==%d)continue;sum=sum+%d;}", limit, skip, weight);
+            expected = (limit - (skip > 0 && skip <= limit ? 1 : 0)) * weight;
+        } else if (form == 3) {
+            append("while n<%d:do{var m=0;while m<2:do{m++;sum=sum+%d;}n++;}", limit, weight);
+            expected = limit * 2 * weight;
+        } else if (form == 4) {
+            append("while n<%d:do{n=n+2;sum=sum+%d;}", limit, weight);
+            expected = ((limit + 1) / 2) * weight;
+        } else {
+            append("while n<%d:do{n++;if(n==1)return sum+%d;}return -1;", limit, weight);
+            expected = limit > 0 ? weight : -1;
+        }
+        append("return sum;};");
+        ++nix_while_programs; semantic_case(expected, 0);
+    }
+    if (nix_while_forms != 63) failed("while loop model missed a form");
+}
+static void nix_while_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("invalid while loop was accepted"); }
+    if (ctx->status != 65) failed("while loop rejection returned an unexpected status");
+    ++nix_while_rejections;
+}
+static void nix_while_recovery(void) {
+    static const char *const invalid[] = {
+        "main:()->int;main=do{var n=0;while n<3 do{n++;}return 0;};",
+        "main:()->int;main=do{var n=0;while n<3:other return 0;};",
+        "main:()->int;main=do{while 1:do{}return 0;};",
+        "int main(){int n=0;while n<3:do{n++;}return n;}"
+    };
+    Context *ctx = context("nix-while-recovery");
+    for (volatile unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (volatile unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            nix_while_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("while loop rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "nix-while-recovery";
+            if (!setjmp(ctx->failure)) {
+                Program *p = compile(ctx, "main:()->int;main=do{var n=0;while n<3:do{n++;}return n+39;};");
+                run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+            } else failed("cleaned while loop context rejected valid source");
+            cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
 /* Independent shared-state model, with repeated runs of each source/bytecode program. */
 static void static_cases(void) {
     for (unsigned test = 0; test < MODEL_CASES; ++test) {
@@ -2327,6 +2390,8 @@ int main(void) {
     nix_binding_recovery();
     nix_range_cases();
     nix_range_recovery();
+    nix_while_cases();
+    nix_while_recovery();
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=divide visits++;"
         "recover:()->int;recover=if visits==0 then 42 else 1/0;divide:int->int;divide=x:42/x;");
@@ -2367,5 +2432,7 @@ int main(void) {
     printf("fuzz: %zu name-first local binding rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", nix_binding_rejections);
     printf("fuzz: %zu range loop programs matched independent half-open iteration, break/continue and nested models\n", nix_range_programs);
     printf("fuzz: %zu range loop rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", nix_range_rejections);
+    printf("fuzz: %zu Nix while programs matched independent bounded-condition, break/continue and nested models\n", nix_while_programs);
+    printf("fuzz: %zu Nix while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", nix_while_rejections);
     return 0;
 }

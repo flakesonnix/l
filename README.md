@@ -171,6 +171,33 @@ returns 42:
 ./build/l run build/ranges.lbc                  # Exit code 42
 ```
 
+Nix-style bodies also have a condition loop:
+
+```l
+main : () -> int;
+main = do {
+    var n = 0;
+    while n < 3: do {
+        n++;
+    }
+    return n + 39;
+};
+```
+
+`while condition: do { ... }` re-evaluates a `bool` condition on every pass and
+runs the body while it holds. It is the same loop AST, slot scope and `break`/
+`continue` behavior as `while (condition) { ... }`; the C spelling still works in
+both body styles. Only the Nix spelling uses `:` and `do`.
+
+[`examples/replacement/condition.l`](examples/replacement/condition.l) counts a bounded
+countdown and returns 42:
+
+```sh
+./build/l check examples/replacement/condition.l --manifest examples/replacement/package.json
+./build/l compile examples/replacement/condition.l --manifest examples/replacement/package.json -o build/condition.lbc
+./build/l run build/condition.lbc                  # Exit code 42
+```
+
 The parser translates these forms into the existing function/call AST. An
 expression body becomes an ordinary block containing a return. The analyzer,
 LIR, verifier and VM are unchanged, and bytecode remains **1.9**. Existing C-style
@@ -188,8 +215,8 @@ a Nix-style helper with a bounded `for` loop and returns 42:
 ```
 
 The L-written Stage 1 drivers do **not** parse these new signatures, colon
-parameters, application, `do` bodies, name-first local declarations or range
-loops yet. Their older C-style contracts below
+parameters, application, `do` bodies, name-first local declarations, range loops
+or Nix-style `while` yet. Their older C-style contracts below
 are unchanged. This extension builds on the aggregate-expression slice, not on a
 new backend or a self-hosted compiler.
 
@@ -654,8 +681,8 @@ broader syntax accepted by Stage 1 is a separate list, not a promise of executio
 - Direct calls, forward function references, recursion and value parameters.
 - Explicitly typed Nix-style definitions, complete direct application and
   imperative `do` function bodies, with `var name[: Type] = expr;` locals,
-  `for (var ...)` initializers and `for name in start..end: do { ... }` ranges;
-  legacy C-style bodies remain compatible.
+  `for (var ...)` initializers, `for name in start..end: do { ... }` ranges and
+  `while condition: do { ... }` loops; legacy C-style bodies remain compatible.
 - Blocks, `if`/`else`, `while`, `for`, `return`, empty statements.
 - C-style `switch` over `int`, `byte` or an enum with `case`/`default` labels,
   empty-case chaining and fallthrough; unmatched selectors without `default`
@@ -1580,7 +1607,10 @@ annotated, loop and shadowing models across new/legacy spellings and 16 more
 rejection/cleanup/recompile cycles. Range-loop tests add 128 half-open iteration
 models (nested loops, `break`/`continue`, bound effects and empty ranges), 32
 package DAGs in both import orders and 16 rejection/cleanup/recompile cycles.
-None replaces the earlier suites, and no arbitrary bytecode mutants are executed.
+Nix `while` tests add 128 bounded-condition, break/continue, nested and
+early-return models, 32 package DAGs in both import orders and 16
+rejection/cleanup/recompile cycles. None replaces the earlier suites, and no
+arbitrary bytecode mutants are executed.
 
 </details>
 

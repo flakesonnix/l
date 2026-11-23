@@ -194,7 +194,11 @@ static Expr *primary(Parser *p) {
     }
     return e;
 }
-static bool application_argument(int kind) {
+static bool application_argument(Parser *p) {
+    int kind = peek(p).kind;
+    /* Contextual 'do {' starts a body, never a call argument. */
+    if (kind == TK_NAME && token_equal(peek(p), (Token){.text = "do", .length = 2}) && p->tokens[p->at + 1].kind == '{')
+        return false;
     return kind == TK_NAME || kind == TK_INTEGER || kind == TK_TEXT || kind == TK_TRUE ||
         kind == TK_FALSE || kind == '(' || kind == TK_INT || kind == TK_BYTE;
 }
@@ -205,7 +209,7 @@ static Expr *expression(Parser *p, int minimum) {
         Token op = peek(p);
         /* Application binds above infix operators. Arguments are atoms/postfixes;
            nested applications, let/if and unary operands can be parenthesized. */
-        if (p->nix_calls && application_argument(op.kind)) {
+        if (p->nix_calls && application_argument(p)) {
             Expr *call = new_expr(p, EX_CALL, left->token); call->left = left;
             ExprList **tail = &call->args;
             if (op.kind == '(' && p->tokens[p->at + 1].kind == ')') {
@@ -215,7 +219,7 @@ static Expr *expression(Parser *p, int minimum) {
                     ExprList *arg = allocate(p->ctx, sizeof(*arg));
                     arg->value = primary(p); *tail = arg; tail = &arg->next;
                     op = peek(p);
-                } while (application_argument(op.kind));
+                } while (application_argument(p));
             }
             left = call;
             continue;
@@ -320,7 +324,16 @@ static Stmt *statement(Parser *p) {
         s = new_stmt(p, ST_IF, token); s->condition = condition(p); s->body = statement(p);
         if (take(p, TK_ELSE)) s->other = statement(p);
     } else if (take(p, TK_WHILE)) {
-        s = new_stmt(p, ST_WHILE, token); s->condition = condition(p); s->body = statement(p);
+        s = new_stmt(p, ST_WHILE, token);
+        if (p->nix_calls && peek(p).kind != '(') {
+            /* Nix spelling: while condition: do { ... }; condition is re-evaluated each pass. */
+            s->condition = expression(p, 1);
+            expect(p, ':', "expected ':' after while condition");
+            if (peek(p).kind != TK_NAME || !token_equal(peek(p), (Token){.text = "do", .length = 2}))
+                token_fail(p->ctx, peek(p), "expected 'do' after while condition");
+            ++p->at;
+        } else s->condition = condition(p);
+        s->body = statement(p);
     } else if (take(p, TK_FOR)) {
         if (p->nix_calls && peek(p).kind == TK_NAME && p->tokens[p->at + 1].kind == TK_IN) {
             s = range_for(p, token);
