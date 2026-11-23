@@ -19,7 +19,10 @@ This document replaces sections 2.2 and 2.3 of Language L Specification 0.1.0.
 > colon parameters, complete direct application and imperative `do` function
 > bodies to the C compiler. Existing module/type/visibility rules still apply;
 > this does not add function values, currying or closures to the runtime, or new
-> syntax to the L-written drivers.
+> syntax to the L-written drivers. The range-loop extension adds half-open
+> `for i in a..b: do { ... }` int ranges in C-compiler function bodies, desugared
+> to existing locals/counting loops; it adds no iterator or runtime type and does
+> not change module identity, visibility or resolution rules.
 >
 > This document defines module behavior, not parser progress. Changing a
 > declaration's spelling does not change module identity, explicit imports,

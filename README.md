@@ -140,6 +140,37 @@ name-first local and a `for (var ...)` initializer to return 42:
 ./build/l run build/bindings.lbc                # Exit code 42
 ```
 
+Nix-style bodies also have a range loop:
+
+```l
+main : () -> int;
+main = do {
+    var total = 0;
+    for i in 0..3: do {
+        total = total + i;
+    }
+    return total + 39;
+};
+```
+
+`for name in start..end: do { ... }` walks the **half-open** int range
+`start <= i < end`. Both bounds must be `int` and are evaluated once, left to
+right, before the loop variable is bound; each bound can be a call or another
+expression. The loop variable is a fresh mutable local in the loop scope, so
+shadowing, `break`, `continue`, nested loops and postfix updates behave exactly
+as in `for (var i = ...; ...; ...)`. An empty or reversed range executes zero
+times. There is no step expression, float/string/struct range, lazy sequence or
+iterator protocol in this slice.
+
+[`examples/replacement/ranges.l`](examples/replacement/ranges.l) sums a range and
+returns 42:
+
+```sh
+./build/l check examples/replacement/ranges.l --manifest examples/replacement/package.json
+./build/l compile examples/replacement/ranges.l --manifest examples/replacement/package.json -o build/ranges.lbc
+./build/l run build/ranges.lbc                  # Exit code 42
+```
+
 The parser translates these forms into the existing function/call AST. An
 expression body becomes an ordinary block containing a return. The analyzer,
 LIR, verifier and VM are unchanged, and bytecode remains **1.9**. Existing C-style
@@ -157,7 +188,8 @@ a Nix-style helper with a bounded `for` loop and returns 42:
 ```
 
 The L-written Stage 1 drivers do **not** parse these new signatures, colon
-parameters, application, `do` bodies or name-first local declarations yet. Their older C-style contracts below
+parameters, application, `do` bodies, name-first local declarations or range
+loops yet. Their older C-style contracts below
 are unchanged. This extension builds on the aggregate-expression slice, not on a
 new backend or a self-hosted compiler.
 
@@ -621,8 +653,9 @@ broader syntax accepted by Stage 1 is a separate list, not a promise of executio
   assignment with runtime bounds checks; lengths may be compile-time expressions.
 - Direct calls, forward function references, recursion and value parameters.
 - Explicitly typed Nix-style definitions, complete direct application and
-  imperative `do` function bodies, with `var name[: Type] = expr;` locals and
-  `for (var ...)` initializers; legacy C-style bodies remain compatible.
+  imperative `do` function bodies, with `var name[: Type] = expr;` locals,
+  `for (var ...)` initializers and `for name in start..end: do { ... }` ranges;
+  legacy C-style bodies remain compatible.
 - Blocks, `if`/`else`, `while`, `for`, `return`, empty statements.
 - C-style `switch` over `int`, `byte` or an enum with `case`/`default` labels,
   empty-case chaining and fallthrough; unmatched selectors without `default`
@@ -1544,8 +1577,10 @@ rejection/cleanup/recompile cycles with source/serialized trap recovery. They
 also check precedence, full arity, overloads, scalar/nominal types and the shared
 parameter/function budgets. Name-first local binding tests add 256 inferred,
 annotated, loop and shadowing models across new/legacy spellings and 16 more
-rejection/cleanup/recompile cycles. None replaces the earlier suites, and no
-arbitrary bytecode mutants are executed.
+rejection/cleanup/recompile cycles. Range-loop tests add 128 half-open iteration
+models (nested loops, `break`/`continue`, bound effects and empty ranges), 32
+package DAGs in both import orders and 16 rejection/cleanup/recompile cycles.
+None replaces the earlier suites, and no arbitrary bytecode mutants are executed.
 
 </details>
 

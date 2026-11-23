@@ -20,10 +20,11 @@ This is a source migration in progress, not two permanent user grammars.
 
 The **C compiler** now also accepts typed Nix-style functions and application:
 `add : int -> int -> int; add = a: b: a + b;`, called as `add 20 22`.
-`do { ... }` allows an imperative function body with the existing loops. These
-are still complete direct calls, not curried functions or closures. This is a
-Stage 0 extension: none of these new forms is added to the L-written drivers in
-this slice. Their documented node and syntax contracts remain unchanged.
+`do { ... }` allows an imperative function body with the existing loops, name-first
+`var` locals and half-open `for i in a..b: do { ... }` ranges. These are still complete
+direct calls, not curried functions or closures. This is a Stage 0 extension: none of
+these new forms is added to the L-written drivers in this slice. Their documented
+node and syntax contracts remain unchanged.
 
 The executable stack through **#37 is already merged** at `e2ca42a3`, but that work
 is in the **C frontend**, not these L modules:

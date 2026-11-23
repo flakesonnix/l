@@ -35,7 +35,8 @@ static size_t aggregate_expression_programs, aggregate_expression_rejections;
 static uint32_t aggregate_expression_forms, aggregate_expression_mutations, aggregate_expression_branches;
 static size_t nix_function_programs, nix_function_rejections;
 static size_t nix_binding_programs, nix_binding_rejections;
-static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms;
+static size_t nix_range_programs, nix_range_rejections;
+static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -1322,6 +1323,73 @@ static void nix_binding_recovery(void) {
     }
     dispose(ctx);
 }
+/* Host-side half-open range model: each form has an independent iteration count. */
+static void nix_range_cases(void) {
+    random_state = UINT32_C(0x4e495246);
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        unsigned form = random_number(8);
+        nix_range_forms |= 1u << form;
+        int32_t a = (form == 6 ? -4 : (int32_t)random_number(6));
+        int32_t b = a + (form == 7 ? 0 : (int32_t)random_number(7));
+        int32_t weight = (int32_t)random_number(20) + 1, expected;
+        source_length = 0;
+        if (form == 4) append("static int visits=0;tick:()->int;tick=visits++;");
+        append("main:()->int;main=do{var sum=0;");
+        if (form == 3) {
+            append("for i in %d..%d:do{for j in 0..2:do{sum=sum+%d;}}", a, b, weight);
+            expected = (b - a) * 2 * weight;
+        } else if (form == 4) {
+            append("for i in tick ()..tick ():do{sum=sum+%d;}return if visits==2 then sum else 0;", weight);
+            expected = weight;
+        } else if (form == 5) {
+            append("for i in %d..%d:do{sum=sum+%d;i=i+1;}", a, b, weight);
+            expected = ((b - a + 1) / 2) * weight;
+        } else if (form == 1) {
+            int32_t skip = a + (int32_t)random_number((uint32_t)(b - a + 1));
+            append("for i in %d..%d:do{if(i==%d)continue;sum=sum+%d;}", a, b, skip, weight);
+            expected = (b - a - (skip >= a && skip < b ? 1 : 0)) * weight;
+        } else if (form == 2) {
+            int32_t stop = a + (int32_t)random_number((uint32_t)(b - a + 1));
+            append("for i in %d..%d:do{if(i==%d)break;sum=sum+%d;}", a, b, stop, weight);
+            expected = (stop > b ? b : stop) - a > 0 ? ((stop > b ? b : stop) - a) * weight : 0;
+        } else {
+            append("for i in %d..%d:do{sum=sum+%d;}", a, b, weight);
+            expected = (b - a) * weight;
+        }
+        if (form != 4) append("return sum;");
+        append("};");
+        ++nix_range_programs; semantic_case(expected, 0);
+    }
+    if (nix_range_forms != 255) failed("range loop model missed a form");
+}
+static void nix_range_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("invalid range loop was accepted"); }
+    if (ctx->status != 65) failed("range loop rejection returned an unexpected status");
+    ++nix_range_rejections;
+}
+static void nix_range_recovery(void) {
+    static const char *const invalid[] = {
+        "main:()->int;main=do{for i in 0..3:do{}return i;};",
+        "main:()->int;main=do{for i in true..3:do{}return 0;};",
+        "main:()->int;main=do{for i in 0..3 do{}return 0;};",
+        "main:()->int;main=do{for i in 0..3:other return 0;};",
+        "int main(){for i in 0..3:do{}return 0;}"
+    };
+    Context *ctx = context("nix-range-recovery");
+    for (volatile unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (volatile unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            nix_range_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("range loop rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "nix-range-recovery";
+            if (!setjmp(ctx->failure)) {
+                Program *p = compile(ctx, "main:()->int;main=do{var sum=0;for i in 0..3:do{sum=sum+14;}return sum;};");
+                run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+            } else failed("cleaned range loop context rejected valid source");
+            cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
 /* Independent shared-state model, with repeated runs of each source/bytecode program. */
 static void static_cases(void) {
     for (unsigned test = 0; test < MODEL_CASES; ++test) {
@@ -2257,6 +2325,8 @@ int main(void) {
     nix_function_recovery();
     nix_binding_cases();
     nix_binding_recovery();
+    nix_range_cases();
+    nix_range_recovery();
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=divide visits++;"
         "recover:()->int;recover=if visits==0 then 42 else 1/0;divide:int->int;divide=x:42/x;");
@@ -2295,5 +2365,7 @@ int main(void) {
     printf("fuzz: %zu Nix function rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", nix_function_rejections);
     printf("fuzz: %zu name-first local binding programs matched inferred/annotated, loop and shadowing models\n", nix_binding_programs);
     printf("fuzz: %zu name-first local binding rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", nix_binding_rejections);
+    printf("fuzz: %zu range loop programs matched independent half-open iteration, break/continue and nested models\n", nix_range_programs);
+    printf("fuzz: %zu range loop rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", nix_range_rejections);
     return 0;
 }

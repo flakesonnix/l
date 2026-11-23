@@ -122,6 +122,7 @@ Token *lex(Context *ctx, const char *source, size_t length, size_t *count) {
                 else if (c == '-' && next == '-') token.kind = TK_DEC;
                 else if (c == '-' && next == '>') token.kind = TK_ARROW;
                 else if (c == ':' && next == ':') token.kind = TK_SCOPE;
+                else if (c == '.' && next == '.') token.kind = TK_RANGE;
                 if (token.kind >= TK_EQ) { ++at; token.length = 2; }
             }
             if (token.kind < 256 && !strchr("{}()[];:,.+-*/%!<>=", c))

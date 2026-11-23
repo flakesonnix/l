@@ -1,6 +1,8 @@
 #include "l.h"
 
-typedef struct { Context *ctx; Token *tokens; size_t at, count; bool nix_calls; } Parser;
+#include <string.h>
+
+typedef struct { Context *ctx; Token *tokens; size_t at, count; bool nix_calls; unsigned hidden; } Parser;
 static Token peek(Parser *p) { return p->tokens[p->at]; }
 static bool take(Parser *p, int kind) {
     if (peek(p).kind != kind) return false;
@@ -61,6 +63,14 @@ static Stmt *new_stmt(Parser *p, StmtKind kind, Token token) {
     Stmt *s = allocate(p->ctx, sizeof(*s));
     s->kind = kind; s->token = token;
     return s;
+}
+/* Hidden cells use a name the lexer cannot produce, so source cannot collide with them. */
+static Token hidden_name(Parser *p, Token at, const char *prefix) {
+    char buffer[64];
+    (void)snprintf(buffer, sizeof(buffer), "@%s%u", prefix, p->hidden++);
+    size_t length = strlen(buffer);
+    return (Token){ .text = copy_text(p->ctx, buffer, length), .length = length,
+        .line = at.line, .column = at.column, .kind = TK_NAME };
 }
 static int precedence(int op) {
     switch (op) {
@@ -221,6 +231,44 @@ static Expr *expression(Parser *p, int minimum) {
     leave(p->ctx);
     return left;
 }
+/* for i in a..b: do { ... } reuses the existing mutable local and counting-loop AST.
+   Both bounds are int expressions, evaluated once left to right before i is bound. */
+static Stmt *range_for(Parser *p, Token token) {
+    Token name = expect(p, TK_NAME, "expected loop variable name after 'for'");
+    expect(p, TK_IN, "expected 'in' after range loop variable");
+    Expr *start = expression(p, 1);
+    expect(p, TK_RANGE, "expected '..' between range bounds");
+    Expr *end = expression(p, 1);
+    expect(p, ':', "expected ':' after range bounds");
+    if (peek(p).kind != TK_NAME || !token_equal(peek(p), (Token){.text = "do", .length = 2}))
+        token_fail(p->ctx, peek(p), "expected 'do' after range bounds");
+    ++p->at;
+    Stmt *body = statement(p);
+    Token lower = hidden_name(p, token, "range_lower_"), upper = hidden_name(p, token, "range_upper_");
+    Stmt *root = new_stmt(p, ST_BLOCK, token);
+    Stmt **tail = &root->body;
+    Decl *first = allocate(p->ctx, sizeof(*first));
+    *first = (Decl){ .name = lower, .type = TY_INT, .value = start };
+    *tail = new_stmt(p, ST_DECL, token); (*tail)->decl = first; tail = &(*tail)->next;
+    Decl *last = allocate(p->ctx, sizeof(*last));
+    *last = (Decl){ .name = upper, .type = TY_INT, .value = end };
+    *tail = new_stmt(p, ST_DECL, token); (*tail)->decl = last; tail = &(*tail)->next;
+    Stmt *loop = new_stmt(p, ST_FOR, token);
+    Decl *counter = allocate(p->ctx, sizeof(*counter));
+    *counter = (Decl){ .name = name, .type = TY_INT, .value = new_expr(p, EX_NAME, lower) };
+    loop->init = new_stmt(p, ST_DECL, token); loop->init->decl = counter;
+    Expr *condition = new_expr(p, EX_BINARY, token);
+    condition->op = '<';
+    condition->left = new_expr(p, EX_NAME, name);
+    condition->right = new_expr(p, EX_NAME, upper);
+    loop->condition = condition;
+    Expr *step = new_expr(p, EX_POSTFIX, token);
+    step->op = TK_INC; step->left = new_expr(p, EX_NAME, name);
+    loop->step = step;
+    loop->body = body;
+    *tail = loop;
+    return root;
+}
 static Decl *declaration(Parser *p, bool parameter) {
     Decl *decl = allocate(p->ctx, sizeof(*decl));
     bool var_first = take(p, TK_VAR);
@@ -274,21 +322,25 @@ static Stmt *statement(Parser *p) {
     } else if (take(p, TK_WHILE)) {
         s = new_stmt(p, ST_WHILE, token); s->condition = condition(p); s->body = statement(p);
     } else if (take(p, TK_FOR)) {
-        s = new_stmt(p, ST_FOR, token);
-        expect(p, '(', "expected '(' after for");
-        if (starts_decl(p)) {
-            s->init = new_stmt(p, ST_DECL, peek(p)); s->init->decl = declaration(p, false);
-        } else if (!take(p, ';')) {
-            s->init = new_stmt(p, ST_EXPR, peek(p)); s->init->expr = expression(p, 1);
-            expect(p, ';', "expected ';' after for initializer");
+        if (p->nix_calls && peek(p).kind == TK_NAME && p->tokens[p->at + 1].kind == TK_IN) {
+            s = range_for(p, token);
+        } else {
+            s = new_stmt(p, ST_FOR, token);
+            expect(p, '(', "expected '(' after for");
+            if (starts_decl(p)) {
+                s->init = new_stmt(p, ST_DECL, peek(p)); s->init->decl = declaration(p, false);
+            } else if (!take(p, ';')) {
+                s->init = new_stmt(p, ST_EXPR, peek(p)); s->init->expr = expression(p, 1);
+                expect(p, ';', "expected ';' after for initializer");
+            }
+            if (!take(p, ';')) {
+                s->condition = expression(p, 1); expect(p, ';', "expected ';' after for condition");
+            }
+            if (!take(p, ')')) {
+                s->step = expression(p, 1); expect(p, ')', "expected ')' after for step");
+            }
+            s->body = statement(p);
         }
-        if (!take(p, ';')) {
-            s->condition = expression(p, 1); expect(p, ';', "expected ';' after for condition");
-        }
-        if (!take(p, ')')) {
-            s->step = expression(p, 1); expect(p, ')', "expected ')' after for step");
-        }
-        s->body = statement(p);
     } else if (take(p, TK_RETURN)) {
         s = new_stmt(p, ST_RETURN, token);
         if (!take(p, ';')) { s->expr = expression(p, 1); expect(p, ';', "expected ';' after return"); }
@@ -552,7 +604,7 @@ static void declarations(Parser *p, Ast *ast, Token scope, bool nested) {
     else expect(p, TK_EOF, "unexpected '}' at module scope");
 }
 Ast *parse(Context *ctx, Token *tokens, size_t count) {
-    Parser p = { ctx, tokens, 0, count, false };
+    Parser p = { ctx, tokens, 0, count, false, 0 };
     Ast *ast = allocate(ctx, sizeof(*ast));
     ast->entry = ast->modules = allocate(ctx, sizeof(*ast->entry));
     ast->entry->path = ctx->filename; ast->entry->package = "";
