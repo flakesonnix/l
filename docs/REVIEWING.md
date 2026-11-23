@@ -228,6 +228,9 @@ separately; passing a feature-head run does not prove that run passed.
   counter and C-body rejection. There is no step/iterator/lazy-sequence feature.
   Nix `while` must re-evaluate the bool condition, reuse ordinary loop scope and
   break/continue lowering, and keep C `while(cond)` valid in both body styles.
+  A parenthesized whole condition must still accept `: do` in a Nix body;
+  parentheses alone do not choose the C body grammar. Check calls/`let` inside
+  groups and preserve C single-statement bodies when no colon follows.
   Contextual `do {` is never a call argument.
 - **Evidence:** coverage measures Stage 0 C only. Arbitrary bytecode mutants and
   cyclic verifier graphs must never execute. Local results and hosted check runs

@@ -37,6 +37,8 @@ static size_t nix_function_programs, nix_function_rejections;
 static size_t nix_binding_programs, nix_binding_rejections;
 static size_t nix_range_programs, nix_range_rejections;
 static size_t nix_while_programs, nix_while_rejections;
+static size_t grouped_while_programs, grouped_while_rejections;
+static uint32_t grouped_while_forms;
 static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms, nix_while_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
@@ -1453,6 +1455,71 @@ static void nix_while_recovery(void) {
     }
     dispose(ctx);
 }
+/* Grouping must preserve condition effects and both Nix/C loop-body spellings. */
+static void grouped_while_cases(void) {
+    random_state = UINT32_C(0x47525057);
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        unsigned form = test % 8, limit = random_number(7), skip = random_number(limit + 2), stop = random_number(limit + 2);
+        int32_t weight = (int32_t)random_number(20) + 1, expected = 0;
+        unsigned final = 0; bool stopped = false;
+        for (unsigned value = 1; value <= limit; ++value) {
+            final = value;
+            if (value == skip) continue;
+            expected += (int32_t)value * weight;
+            if (value == stop) { stopped = true; break; }
+        }
+        unsigned calls = final + !stopped;
+        grouped_while_forms |= 1u << form;
+        source_length = 0;
+        append("static int calls=0;");
+        if (form == 7) {
+            append("bool check(int n,int bound){calls++;return n<bound;}int main(){int n=0;int sum=0;while(check(n,%u))", limit);
+        } else {
+            append("check:int->int->bool;check=n:bound:do{calls++;return n<bound;};"
+                "main:()->int;main=do{var n=0;var sum=0;while ");
+            if (form == 0 || form == 6) append("(check n %u)", limit);
+            else if (form == 1) append("((check n %u))", limit);
+            else if (form == 2) append("(let current=n;in check current %u)", limit);
+            else if (form == 3) append("(if check n %u then true else false)", limit);
+            else if (form == 4) append("(false||check n %u)", limit);
+            else append("(true&&check n %u)", limit);
+            if (form != 6) append(":do");
+        }
+        append("{n++;if(n==%u)continue;sum=sum+n*%d;if(n==%u)break;}"
+            "if(n!=%u||calls!=%u)1/0;return sum;}", skip, weight, stop, final, calls);
+        if (form != 7) append(";");
+        ++grouped_while_programs; semantic_case(expected, 0);
+    }
+    if (grouped_while_forms != 255) failed("grouped while model missed a condition or body spelling");
+}
+static void grouped_while_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("invalid grouped while was accepted"); }
+    if (ctx->status != 65) failed("grouped while rejection returned an unexpected status");
+    ++grouped_while_rejections;
+}
+static void grouped_while_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned grouped while context rejected valid source");
+    Program *p = compile(ctx, "main:()->int;main=do{var n=0;while (let current=n;in current<3):do{n++;}return n+39;};");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void grouped_while_recovery(void) {
+    static const char *const invalid[] = {
+        "main:()->int;main=do{while (1):do{}return 0;};",
+        "main:()->int;main=do{while (false):return 0;};",
+        "main:()->int;main=do{while (false):other return 0;};",
+        "main:()->int;main=do{while ((false):do{}return 0;};"
+    };
+    Context *ctx = context("grouped-while-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            grouped_while_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("grouped while rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "grouped-while-recovery";
+            grouped_while_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
 /* Independent shared-state model, with repeated runs of each source/bytecode program. */
 static void static_cases(void) {
     for (unsigned test = 0; test < MODEL_CASES; ++test) {
@@ -2392,6 +2459,12 @@ int main(void) {
     nix_range_recovery();
     nix_while_cases();
     nix_while_recovery();
+    grouped_while_cases();
+    grouped_while_recovery();
+    scoped_lifecycle(
+        "static int visits=0;main:()->int;main=do{var n=0;while ((n<1)):do{n++;visits++;1/0;}return 42;};"
+        "recover:()->int;recover=do{var n=0;while (let current=n;in current<3):do{n++;}"
+        "return if visits==0 then n+39 else 1/0;};");
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=divide visits++;"
         "recover:()->int;recover=if visits==0 then 42 else 1/0;divide:int->int;divide=x:42/x;");
@@ -2434,5 +2507,7 @@ int main(void) {
     printf("fuzz: %zu range loop rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", nix_range_rejections);
     printf("fuzz: %zu Nix while programs matched independent bounded-condition, break/continue and nested models\n", nix_while_programs);
     printf("fuzz: %zu Nix while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", nix_while_rejections);
+    printf("fuzz: %zu grouped while programs preserved condition effects and Nix/C loop-body spellings\n", grouped_while_programs);
+    printf("fuzz: %zu grouped while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", grouped_while_rejections);
     return 0;
 }

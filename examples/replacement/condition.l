@@ -4,7 +4,7 @@ countdown : int -> int;
 countdown = start: do {
     var n = start;
     var steps = 0;
-    while n > 0: do {
+    while (n > 0): do {
         n = n - 1;
         steps++;
     }

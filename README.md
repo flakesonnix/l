@@ -189,6 +189,13 @@ runs the body while it holds. It is the same loop AST, slot scope and `break`/
 `continue` behavior as `while (condition) { ... }`; the C spelling still works in
 both body styles. Only the Nix spelling uses `:` and `do`.
 
+The whole condition can be parenthesized: `while (n < 3): do { ... }`.
+Nested groups, calls such as `(check n)` and scoped expressions such as
+`(let current = n; in current < 3)` keep their usual meaning. In a Nix function,
+the `:` after the closing parenthesis selects the Nix body spelling; without it,
+`while (condition) statement` keeps the existing C behavior. Grouping does not
+evaluate the condition an extra time or change `break`, `continue` or scope.
+
 [`examples/replacement/condition.l`](examples/replacement/condition.l) counts a bounded
 countdown and returns 42:
 
@@ -1609,7 +1616,10 @@ models (nested loops, `break`/`continue`, bound effects and empty ranges), 32
 package DAGs in both import orders and 16 rejection/cleanup/recompile cycles.
 Nix `while` tests add 128 bounded-condition, break/continue, nested and
 early-return models, 32 package DAGs in both import orders and 16
-rejection/cleanup/recompile cycles. None replaces the earlier suites, and no
+rejection/cleanup/recompile cycles. Grouped-while regressions add 128 models of
+condition effects and Nix/C body spellings, grouped variants of those same 32
+package DAGs in both orders, and 16 cleanup/recompile cycles with trap recovery.
+None replaces the earlier suites, and no
 arbitrary bytecode mutants are executed.
 
 </details>

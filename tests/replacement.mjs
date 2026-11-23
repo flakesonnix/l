@@ -205,6 +205,40 @@ program(rangeMain('var n=0;while n++<3:do{}return n+38;'));
 program(rangeMain('var n=0;while n<3:do{n=n+2;}return n+38;'));
 program(rangeMain('var n=0;while(n<3){n++;}return n+39;'));
 program('int main(){int n=0;while(n<3)n++;return n+39;}');
+// A grouped condition does not force the C body spelling: ':' selects ': do'.
+program(rangeMain('var n=0;while (n<3):do{n++;}return n+39;'));
+program(rangeMain('var n=0;while ((n<3)):do{n++;}return n+39;'));
+program(rangeMain('var n=0;while (let k=n;in k<3):do{n++;}return n+39;'));
+program('f:int->bool;f=x:x<3;' + rangeMain('var n=0;while (f n):do{n++;}return n+39;'));
+program(rangeMain('var n=0;while (if n<3 then true else false):do{n++;}return n+39;'));
+program(rangeMain('var n=0;while (!(n>=3)&&true):do{n++;}return n+39;'));
+program(rangeMain('while (false):do{return 1/0;}return 42;'));
+program(rangeMain('var n=0;while (n++<3):do{}return n+38;'));
+program(rangeMain('var n=0;var total=0;while (n<3):do{n++;if(n==2)continue;total=total+21;}return total;'));
+program(rangeMain('var n=0;while (true):do{n++;if(n==3)break;}return n+39;'));
+program(rangeMain('var n=0;var total=0;while (n<2):do{var m=0;while (m<3):do{total=total+7;m++;}n++;}return total;'));
+program(rangeMain('var total=0;for i in 0..2:do{var n=0;while (n<3):do{total=total+7;n++;}}return total;'));
+program(rangeMain('var n=0;while /* group */ (n<3) /* body */ : /* do */ do{n++;}return n+39;'));
+program(rangeMain('var n=0;while (n<3):do{return 42;}return 0;'));
+program(rangeMain('var n=0;while(n<3)n++;return n+39;'));
+program(rangeMain('var n=0;while(n<3)if(n<2)n++;else n++;return n+39;'));
+program(rangeMain('var n=0;while(n<3){while(n<3)n++;}return n+39;'));
+program(rangeMain('var n=0;while(n<3)let ignored=n++;in 0;return n+39;'));
+program('static int calls=0;check:int->bool;check=n:do{calls++;return n<3;};'
+  + rangeMain('var n=0;while (check n):do{n++;}return if calls==4 then n+39 else 0;'));
+program(rangeMain('var n=0;while ((n=n+1)<3):do{}return n+39;'));
+program(rangeMain('var n=0;while (n<3):do{n++;if(n==2)1/0;}return 42;'), 70, {}, /division by zero/);
+program(rangeMain('while (1/0<3):do{}return 42;'), 70, {}, /division by zero/);
+for (const [body, message] of [
+  [rangeMain('while (1):do{}return 0;'), /expected bool, got int/],
+  [rangeMain('while ("text"):do{}return 0;'), /expected bool, got string/],
+  [rangeMain('while (false):return 0;'), /expected 'do'/],
+  [rangeMain('while (false):other return 0;'), /expected 'do'/],
+  [rangeMain('while ((false):do{}return 0;'), /expected '\)' after condition/],
+  [rangeMain('while ():do{}return 0;'), /expected expression/],
+  [rangeMain('while (missing):do{}return 0;'), /unknown local variable or constant/],
+  ['int main(){while(false):do{}return 0;}', /expected expression/],
+]) rejected(body, message);
 for (const [body, message] of [
   ['main:()->int;main=do{var n=0;while n<3 do{n++;}return 0;};', /expected ':'/],
   ['main:()->int;main=do{var n=0;while n<3:return 0;return 0;};', /expected 'do'/],

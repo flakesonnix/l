@@ -108,6 +108,10 @@ bindings in both new and legacy body spellings; readonly statements stay out of
 scope. Range models check half-open iteration, nested loops, `break`/`continue`,
 single evaluation of call bounds and empty ranges. Nix `while` models check
 bounded conditions, break/continue, nesting, counter effects and early returns.
+Grouped-condition regressions also check `while (condition): do { ... }`,
+including nested groups, calls and `let`, without losing C-style loop bodies or
+changing how often the condition runs. The module suite runs the same while
+DAGs with bare and grouped conditions in both import/root orders.
 
 ## Nix workflow
 
