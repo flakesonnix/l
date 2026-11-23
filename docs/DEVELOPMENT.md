@@ -1,32 +1,24 @@
 # Building and testing Stage 0
 
-Stage 0 is the C11 compiler and verified bytecode VM described in the
-[README](../README.md). It is not yet a self-hosted compiler or a complete
-implementation of L 0.1. The module rules follow
-[module-system specification 0.1.1](../spec/module-system-v0.1.1.md).
+Stage 0 is the C11 compiler and bytecode VM. Stage 1 is the L-written frontend
+work in progress. If you want to run a program today, use Stage 0; piping that
+program into the Stage 1 binding driver only checks its syntax.
 
-The Stage 1 implementation sources and original executable examples retain
-**legacy bootstrap syntax**. The approved replacement combines C-style functions
-and control flow with selected Nix-inspired features, superseding the earlier
-arrow-function proposal. Syntax-only bindings, C bodies, conditional expressions,
-records, enums, structs, aliases, namespaces, C-style `const` parameters and
-static/extern declarations are implemented, but the full grammar and executable
-source migration are not complete. The CLI now executes the first scalar
-function/local, eager `let/in`, selected-branch conditional and typed name-first
-file-constant/transparent-alias/namespace/nominal-enum/named-record subset via the existing C pipeline,
-scope/type resolver and compile-time evaluator. See
-[source syntax status](../README.md#source-syntax-status). Static typing, eager
-left-to-right evaluation, explicit module semantics and IR/bytecode **1.9** remain
-unchanged. Source compilation extends the bootstrap grammar with that bounded
-executable subset; the `build/stage1-binding.lbc` stdin driver still checks
-replacement syntax without executing it.
+`main` now includes the executable replacement stack through **#37**, merged at
+`e2ca42a3`. That means C-style functions/control flow, scalar `let` and conditionals,
+typed name-first constants, aliases, namespaces, enums and named-field records.
+The [README](../README.md#source-syntax-status) spells out the supported subset and
+what is still missing. The bootstrap sources keep their old spelling for now.
+
+The important bits have not changed: static types, eager left-to-right evaluation,
+explicit manifests, [module rules](../spec/module-system-v0.1.1.md), and bytecode
+**1.9**. This is not a self-hosted compiler or a complete L 0.1 implementation.
 
 ## Checkout and prerequisites
 
-Run commands from the repository root. The review stack is documented in
-[REVIEWING.md](REVIEWING.md). `main` includes the byte-I/O/static-array baseline,
-observers, Nix/CI support and the syntax-only Stage 1 frontend through global
-storage. The original 1.7 baseline is historical, not the current checkout.
+Run these commands from the repository root. The old 1.7 baseline is history,
+not the current checkout. For the merged commits and their CI evidence, see
+[REVIEWING.md](REVIEWING.md).
 
 Native builds need a C11 compiler and GNU Make. Tests also need Node.js 22 or
 newer and a POSIX shell. Coverage needs GCC and its matching gcov. The fault tests
@@ -46,55 +38,57 @@ make coverage
 make
 ```
 
-`make test` already includes deterministic fuzz/model tests; `make fuzz` is useful
-when working on those tests alone. `make sanitize` rebuilds the normal binary with
-sanitizer flags. Use `make clean` before returning to a normal build: Make does not
-track changed compiler flags as dependencies. Coverage has its own compiler under
+`make test` already runs the deterministic fuzz/model suite. Use `make fuzz` when
+that is the part you are working on.
+
+One easy mistake: `make sanitize` changes the normal binary's compiler flags,
+and Make does not track flag changes as dependencies. Run `make clean` before
+going back to a normal build. Coverage uses a separate compiler under
 `build/coverage/`.
 
-Do not run test, sanitizer, coverage or fuzz suites concurrently in the same
-checkout: they share `build/` artifacts and temporary serialization paths. Separate
-CI jobs and Nix derivations use isolated workspaces and may run independently.
+Do not run these native suites at the same time in one checkout. They share
+`build/` artifacts and temporary serialization paths. Separate CI jobs and Nix
+derivations have isolated workspaces, so those can run in parallel.
 
-Expected compiler errors and VM traps appear during negative tests. The command
-exit status and final suite summaries determine success, not the absence of
-diagnostics. Coverage fails unless **every Stage 0 C line, function and branch** is
-covered; there are no production-source exclusions. The report is
-`build/coverage/report.json`, and fuzz diagnostics are in `build/fuzz.log`.
-Arbitrary bytecode mutants and potentially cyclic verifier graphs are verified,
-never executed. Executed models have independently known results, traps or
-explicit resource-limit expectations.
+The negative tests are supposed to print compiler errors and VM traps. Read the
+exit status and final summaries before concluding that a wall of diagnostics is
+a failure.
 
-`tests/replacement.mjs` checks actual CLI semantics, deterministic bytecode 1.9,
-source/serialized execution agreement, scopes, diagnostics, visibility and
-transactional rejection. `tests/fuzz.c` adds independent full-width lexical-cell
-and expression models, including independent selected-branch state/trap and
-forward constant-DAG models, plus repeated execution after traps and cleanup.
-`tests/modules.mjs` checks name-first and legacy constants against the same
-independent BigInt oracle and tests mixed-spelling cross-package DAGs in both
-import/root orders. Rejected constants must preserve existing output, and cleanup
-must permit fresh compilation/execution. Replacement aliases also have four-scalar
-cross-package/import-order DAGs, full-width execution/recovery models and bytecode
-erasure checks against legacy aliases and primitives. New namespace tests cover
-mixed-spelling reopening, relative lookup and shared cells with cross-package DAGs,
-full-width models and rejection/trap recovery. Replacement enums have independent
-nominal-state DAGs and full-width value/dispatch/copy models, mixed-spelling
-bytecode equality checks and rejection/trap recovery. Named-record tests independently
-model written-order effects, six-field permutations and copies across calls/imports,
-including nested call vectors, distinct runtime traps and cleanup/recompilation.
-The compiler must validate labels without sorting the initializer expressions. These
-are compiler/VM tests, not evidence of L-source coverage or self-hosting.
-Scalar-expression models independently track byte values, string content IDs,
-full-width enum payloads, eager lexical-cell effects and selected-branch state.
-Cross-package scalar DAGs check alias erasure, shared nominal enum identity and
-import/root ordering. Aggregate/void results and compile-time expression use remain
-rejected; runtime scalar support does not relax constant initializer rules.
+Coverage fails unless **every Stage 0 C line, function and branch** is hit. There
+are no production-source exclusions. The report is `build/coverage/report.json`;
+fuzz diagnostics and generated inputs go to `build/fuzz.log`. Arbitrary bytecode
+mutants and possibly cyclic verifier graphs are checked, never executed. Programs
+that do run have independently known results, traps or resource-limit expectations.
+
+The three main places to look when adding a regression test are:
+
+| Suite | What it gives you |
+| --- | --- |
+| `tests/replacement.mjs` | Real CLI checks, source/bytecode agreement, exact types, scopes, diagnostics, visibility, deterministic output and rejection without clobbering an existing file. |
+| `tests/modules.mjs` | Cross-package DAGs, import/root reordering, shared nominal/storage identity and independent BigInt models. |
+| `tests/fuzz.c` | Full-width value/effect models, lexical cells, selected branches, copies, traps, cleanup and successful retries. |
+
+Keep the oracle separate from the compiler. Constants use host-side arithmetic;
+scalar expressions track bytes, string content IDs and enum payloads; record
+models track field order and copies. In particular, validating named fields must
+not sort their initializer expressions. Alias erasure, reopened namespaces and
+shared imports get their own checks rather than being inferred from one example.
+
+At compiler snapshot `e2ca42a3`, the replacement suite passes **620 fixtures / 3458
+CLI checks**, modules pass **12671 checks**, and the bounded semantic suite passes
+**4396 programs / 13091 VM executions**. Coverage is **2722 lines / 165 functions /
+2804 branches, all 100%, across 11 Stage 0 C files**. None of those numbers is
+L-source coverage or evidence of self-hosting.
+
+Runtime scalar support does not make aggregates or void valid expression results,
+and it does not turn `let` or conditionals into compile-time expressions. Keep
+those rejection tests too.
 
 ## Nix workflow
 
-`flake.lock` pins nixpkgs. Linux outputs are available for `x86_64-linux` and
-`aarch64-linux`. Validation has built and tested x86_64 Linux; aarch64 outputs
-have been evaluated only, not built or tested on that machine.
+`flake.lock` pins nixpkgs. Outputs exist for `x86_64-linux` and `aarch64-linux`.
+So far, x86_64 has been built and tested locally; aarch64 has only been evaluated.
+Evaluation is useful, but it is not a test run on that architecture.
 
 ```sh
 nix develop
@@ -108,12 +102,14 @@ nix flake check --all-systems --no-build
 nix fmt flake.nix
 ```
 
-The development shell supplies the compiler, Make, Node.js, Git, GitHub CLI,
-nixfmt and actionlint. `nix flake check` runs the package's regular tests and
-installation checks, separate sanitizer and coverage builds, Nix formatting, and
-workflow lint. The coverage derivation and development shell disable glibc
-fortification because coverage compiles instrumented C sources at `-O0`. The
-installed compiler package retains the standard Nix hardening settings.
+The shell supplies the compiler, Make, Node.js, Git, GitHub CLI, nixfmt and
+actionlint. `nix flake check` runs regular package and installation tests, separate
+sanitizer/coverage builds, Nix formatting and workflow lint. Installed tests run
+all eight replacement examples from source and bytecode.
+
+Coverage builds at `-O0`, so its derivation and the development shell disable
+glibc fortification. The installed compiler keeps the standard Nix hardening
+settings; the exception is for instrumentation, not the shipped package.
 
 `nix build` creates `result/bin/l` and installs the examples, standard library,
 specification, README, development/review guides and Stage 1 sources under
@@ -136,10 +132,10 @@ explicit manifest; compiled bytecode does not.
 ./build/l run build/answer.lbc
 ```
 
-The last command intentionally exits with 42: program results are reduced modulo
-256. Usage errors are 64, compilation/format errors 65, VM traps 70, startup
-allocation failure 71, and file errors 74. Program results can overlap those codes;
-read the diagnostics too.
+The last command intentionally exits with 42. Program results are reduced modulo
+256. Errors use 64 for usage, 65 for compilation/format errors, 70 for VM traps,
+71 for startup allocation failure and 74 for file errors. A program can return one
+of those numbers too, so read stderr rather than guessing from the status alone.
 
 For binary-safe input/output through shared static storage:
 
@@ -169,9 +165,10 @@ bytes, including NUL and values above 127; they do not perform text conversion.
 | Executable named-field records | 1.9 | Existing nominal value-struct metadata/VM; validate field names and map written-order results to declaration indexes, no new runtime representation. |
 | Scalar `let`/conditional expressions | 1.9 | Extend runtime values to byte/string/nominal enums and primitive aliases; exact types, existing slots/branches/VM, no aggregate or compile-time expression expansion. |
 
-The loader accepts only the current exact version, including for programs that do
-not use the new feature. The C observer API and its callback contract are described
-in the [README](../README.md#vm-execution-observation); it adds no trace file format.
+The version table is history, not a list of formats the loader still accepts.
+Only the exact current version loads, even when a program does not use the newest
+feature. Recompile old artifacts. The [C observer API](../README.md#vm-execution-observation)
+does not add a trace file format.
 
 ## Continuous integration
 
@@ -187,6 +184,7 @@ checkout credentials are not persisted. Coverage reports and failure diagnostics
 are retained briefly as artifacts. No publishing credentials or repository
 secrets are needed.
 
-Local validation is not a hosted CI result. Check the run's exact commit and
-conclusion before merging; a successful earlier head is not evidence for a later
-change. See [REVIEWING.md](REVIEWING.md) for the review and merge gates.
+A local pass is not a GitHub pass. Check the hosted run's exact commit and
+conclusion; an earlier green head says nothing about a later change. Check
+resulting-main CI separately after merging. The [review guide](REVIEWING.md) has
+the full merge procedure and evidence for the completed stack.

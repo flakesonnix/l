@@ -1,24 +1,60 @@
 # Reviewing the GitHub stack
 
-The repository is [flakesonnix/l](https://github.com/flakesonnix/l). The original
-GitHub baseline was `e081fb3` (literal-backed strings, IR/bytecode 1.7), not the
-current `main`. Earlier compiler history, including the array reference `f9284b1`,
-remains unchanged and reachable. Current IR/bytecode is **1.9**.
+This is the review record for [flakesonnix/l](https://github.com/flakesonnix/l),
+not another language specification. It tells you what reached `main`, which
+commits were kept, and where to check the results.
+
+The original GitHub baseline was `e081fb3` (literal-backed strings, bytecode 1.7).
+It is not today's `main`. That history, including the array reference `f9284b1`,
+is still reachable. Current IR/bytecode is **1.9**.
 
 ## Review status
 
-The initial stack and Stage 1 PRs through **#28 are merged**. The latest reviewed
-feature merge is `7ac48d4`, integrating static/extern parser head `a0214f8`.
-GitHub COMMENT self-reviews are recorded as such; they are **not independent
-approvals**. Later documentation or syntax changes need their own review.
-The syntax-status documentation in [#19](https://github.com/flakesonnix/l/pull/19)
-is also reviewed and merged at `a0d33e3`; its resulting main CI passed.
+The executable replacement stack through **#37 is merged**, ending at
+**`e2ca42a3`**. Constants, aliases, namespaces, enums, named-field records and
+scalar `let`/conditional values now run through the existing C compiler.
+The L-written frontend still checks syntax; merging these features did not make
+it a self-hosted compiler.
+
+| Review | Preserved head branch | Original head | Merge / resulting-main CI |
+| --- | --- | --- | --- |
+| [Execution #30](https://github.com/flakesonnix/l/pull/30) | `review/replacement-execution` | `02d7dc2` | [`ac49375`](https://github.com/flakesonnix/l/actions/runs/43605162891) |
+| [Conditionals #31](https://github.com/flakesonnix/l/pull/31) | `review/replacement-conditionals` | `c34893b` | [`8c847bc`](https://github.com/flakesonnix/l/actions/runs/43607890204) |
+| [Constants #32](https://github.com/flakesonnix/l/pull/32) | `review/replacement-constants` | `4e747bb` | [`2c437e6`](https://github.com/flakesonnix/l/actions/runs/44479913164) |
+| [Aliases #33](https://github.com/flakesonnix/l/pull/33) | `review/replacement-aliases` | `9dfd9a4` | [`79aa8aa`](https://github.com/flakesonnix/l/actions/runs/44483954259) |
+| [Namespaces #34](https://github.com/flakesonnix/l/pull/34) | `review/replacement-namespaces` | `674fea3` | [`af9cd51`](https://github.com/flakesonnix/l/actions/runs/44490180822) |
+| [Enums #35](https://github.com/flakesonnix/l/pull/35) | `review/replacement-enums` | `c2c14f0` | [`ec7eeb0`](https://github.com/flakesonnix/l/actions/runs/44539250861) |
+| [Records #36](https://github.com/flakesonnix/l/pull/36) | `review/replacement-records` | `e98b7a0` | [`a69851c`](https://github.com/flakesonnix/l/actions/runs/44545187924) |
+| [Scalar expressions #37](https://github.com/flakesonnix/l/pull/37) | `review/replacement-scalar-expressions` | `21bd204` | [`e2ca42a`](https://github.com/flakesonnix/l/actions/runs/44551718137) |
+
+For #32–#37, each merge had fresh native test, fuzz, sanitizer, coverage and
+rebuild checks, full Nix checks, and a four-job hosted merge-gate run. After each
+merge, its four resulting-main jobs passed **before the next PR was retargeted**.
+That is 48 passing hosted jobs across the six fresh gates and six main runs,
+separate from the earlier push/PR checks.
+
+The prospective, feature and actual merge trees matched at every step. Original
+commits and all six review branches were kept; there was no force push, squash,
+rebase, branch deletion or protection bypass.
+
+Final coverage at `e2ca42a3` is **2722/2722 C lines, 165/165 functions and
+2804/2804 branches**, across all **11 Stage 0 C files**, with no missing entries
+or source exclusions. Downloaded main artifact `14543317010` exactly matches the
+fresh native, local Nix and hosted merge-gate reports. This is not L-source
+coverage, and a green percentage is not a correctness proof.
+
+These merges were explicitly authorized despite absent independent approval.
+The [author COMMENT merge-gate review](https://github.com/flakesonnix/l/pull/37#pullrequestreview-5977622963)
+and [final main verification](https://github.com/flakesonnix/l/pull/37#issuecomment-7013511070)
+record that distinction. Author self-reviews and separate-agent audits are useful,
+but neither counts as independent GitHub approval. The authorization covered
+these PRs, not whatever comes next.
 
 ### Initial stack (merged)
 
-The initial bases below explain the review order, not today's merge targets.
-Original feature commits were retained in repository history; review-only merge
-commits carried the CI foundation forward without rewriting those commits.
+The bases here explain the original order. They are not instructions to merge
+new work into those feature branches. Review-only merge commits carried the CI
+foundation forward without rewriting the implementation commits.
 
 | Order | Review | Head branch | Initial base | Original implementation |
 | --- | --- | --- | --- | --- |
@@ -55,123 +91,78 @@ commits carried the CI foundation forward without rewriting those commits.
 | [Enums and structs #27](https://github.com/flakesonnix/l/pull/27) | `review/stage1-enum-struct` | `9d22966` |
 | [Static/extern declarations #28](https://github.com/flakesonnix/l/pull/28) | `review/stage1-static-extern` | `7ac48d4` |
 
-PRs #13–#18 received GitHub COMMENT reviews before merging in dependency order.
-Each prospective merge tree and actual merge tree matched its already-tested PR
-head; the original commits and review branches were preserved. Fresh `make test`
-and `make coverage` reruns passed at #18's merge gate, retaining **100% Stage 0 C
-line/function/branch coverage**. Its eight hosted push/PR jobs also passed.
-The resulting `main` run is [CI at `20881dc`](https://github.com/flakesonnix/l/actions/runs/43041429246);
-check its conclusion separately from the PR-head checks.
+<details>
+<summary>Earlier parser merge-gate evidence</summary>
 
-PR #20 also received a fresh COMMENT merge-gate review and 178-fixture model
-rerun. Its prospective and actual merge trees exactly matched tested head
-`9da4083`; original history and the review branch were retained. All eight PR-head
-checks and the resulting [main CI at `c98fb6f`](https://github.com/flakesonnix/l/actions/runs/43280312128)
-passed. Main CI was checked directly after its local watcher timed out; a watcher
-timeout is not a failed hosted run.
+PRs #13–#18 received COMMENT reviews and merged in dependency order with original
+heads and tested trees preserved. Fresh test/coverage runs and all eight PR-head
+jobs passed at #18; its [resulting-main run](https://github.com/flakesonnix/l/actions/runs/43041429246)
+was checked separately.
 
-PR #21 received a fresh COMMENT merge-gate review and 285-fixture model rerun.
-The prospective and actual merge trees exactly matched tested head `cb3ea2f`,
-with history and branch preserved. Its eight PR-head checks and resulting
-[main CI at `6af87d9`](https://github.com/flakesonnix/l/actions/runs/43292967995)
-passed, retaining the same Stage 0 C coverage gate.
+The later replacement-parser gates recorded these snapshots:
 
-PR #22 received a fresh COMMENT merge-gate review and 389-fixture model rerun.
-Its prospective and actual merge trees exactly matched tested head `637e67b`;
-the original history and review branch were preserved. All eight PR-head checks
-passed. All four jobs in the resulting
-[main run at `b54f278`](https://github.com/flakesonnix/l/actions/runs/43403721928)
-also passed, checked separately from that PR-head evidence.
+| PR | Tested head | Replacement-parser fixtures | Resulting-main CI |
+| --- | --- | --- | --- |
+| #20 | `9da4083` | 178 | [passed](https://github.com/flakesonnix/l/actions/runs/43280312128) |
+| #21 | `cb3ea2f` | 285 | [passed](https://github.com/flakesonnix/l/actions/runs/43292967995) |
+| #22 | `637e67b` | 389 | [passed](https://github.com/flakesonnix/l/actions/runs/43403721928) |
+| #23 | `e3ff752` | 467 | [passed](https://github.com/flakesonnix/l/actions/runs/43407994500) |
+| #24 | `45a7f60` | 572 | [passed](https://github.com/flakesonnix/l/actions/runs/43425640628) |
+| #25 | `75dcab8` | 659 | [passed](https://github.com/flakesonnix/l/actions/runs/43438650628) |
+| #26 | `0c123d2` | 738 | [passed](https://github.com/flakesonnix/l/actions/runs/43457333621) |
+| #27 | `510beb1` | 856 | [passed](https://github.com/flakesonnix/l/actions/runs/43459608292) |
+| #28 | `a0214f8` | 1043 | [passed](https://github.com/flakesonnix/l/actions/runs/43462349847) |
 
-PR #23 received a fresh COMMENT merge-gate review and 467-fixture model rerun.
-Its prospective and actual merge trees exactly matched tested head `e3ff752`;
-the original history and review branch were preserved. All eight PR-head checks
-passed. All four jobs in the resulting
-[main run at `3655330`](https://github.com/flakesonnix/l/actions/runs/43407994500)
-also passed, checked separately from that PR-head evidence.
+Each had an author COMMENT merge-gate review, passing PR-head checks and matching
+prospective/actual/tested trees. #27 and #28 were retargeted only after their
+dependencies merged; their [#27 retarget run](https://github.com/flakesonnix/l/actions/runs/43457488482)
+and [#28 retarget run](https://github.com/flakesonnix/l/actions/runs/43459673707)
+also passed. At #28, the binding suite made 366266 modeled checks, and native /
+installed six-driver checks and README examples passed.
 
-PR #24 received a fresh COMMENT merge-gate review and 572-fixture model rerun.
-Its prospective and actual merge trees exactly matched tested head `45a7f60`;
-the original history and review branch were preserved. All eight PR-head checks
-and all four resulting [main CI jobs at `b2f53ea`](https://github.com/flakesonnix/l/actions/runs/43425640628)
-passed, checked separately from one another.
+The old **2596 lines / 163 functions / 2660 branches** coverage figure belongs to
+that #28 snapshot, not the current compiler. All were hit, across 11 C files,
+with no missing entries. The original commits, `f9284b1`/`e081fb3` ancestry and
+remote review heads were retained. No force push, branch deletion or protection
+bypass was used.
 
-PR #25 received a fresh COMMENT merge-gate review and 659-fixture model rerun.
-Its prospective and actual merge trees exactly matched tested head `75dcab8`;
-the original history and review branch were preserved. All eight PR-head checks
-passed. All four jobs in the resulting
-[main run at `730ded9`](https://github.com/flakesonnix/l/actions/runs/43438650628)
-also passed, checked separately from that PR-head evidence.
+One useful detail from #20: the local watcher timed out, but the hosted run
+succeeded. A watcher timeout is not a failed CI run. Check the run itself.
 
-PR #26 received a fresh COMMENT merge-gate review and 738-fixture model rerun.
-Its prospective and actual merge trees exactly matched tested head `0c123d2`;
-the original history and review branch were preserved. All eight PR-head checks
-and all four resulting [main CI jobs at `559e535`](https://github.com/flakesonnix/l/actions/runs/43457333621)
-passed, verified separately from one another.
+</details>
 
-PR #27 was retargeted to `main` after #26 merged, without rewriting head `510beb1`.
-Its fresh COMMENT merge-gate review and 856-fixture model rerun found no blockers;
-the prospective and actual merge trees exactly matched that tested head.
-All eight PR-head checks, all four
-[retarget-workflow jobs](https://github.com/flakesonnix/l/actions/runs/43457488482)
-and all four resulting [main CI jobs at `9d22966`](https://github.com/flakesonnix/l/actions/runs/43459608292)
-passed, checked separately. The original commits and review branch were retained.
+The early L-written parsers handle bootstrap syntax. They record declarations,
+bodies and metadata, not resolved programs. The replacement parser adds enums,
+structs and static/extern syntax, but still does not evaluate initializers,
+allocate the input's storage or generate code. The executable features above use
+the C frontend instead. Keep those two claims separate.
 
-PR #28 was likewise retargeted to `main` after #27 merged, preserving head `a0214f8`.
-Fresh COMMENT merge-gate review, full `make test`/`make coverage` reruns and
-1043 replacement fixtures / 366266 modeled checks passed. Its prospective and
-actual merge trees exactly matched the tested head. All eight PR-head checks,
-all four [retarget-workflow jobs](https://github.com/flakesonnix/l/actions/runs/43459673707)
-and all four resulting [main CI jobs at `7ac48d4`](https://github.com/flakesonnix/l/actions/runs/43462349847)
-passed, verified separately. The downloaded main coverage artifact confirms all
-11 Stage 0 C files: **2596/2596 lines, 163/163 functions and 2660/2660 branches
-(100%)**, with no missing entries. These are not L-source coverage measurements.
-
-All three merges used merge commits after explicit user authorization. Their
-parents, tested trees, historical `f9284b1`/`e081fb3` ancestry and original remote
-review-branch heads were verified. No force push, branch deletion or protection
-bypass was used. Native/installed six-driver checks and README examples passed;
-the replacement parser remains syntax-only and artifacts remain **1.9**.
-
-The completed initial Stage 1 slices parse **legacy bootstrap syntax**. They do not resolve
-modules/names, check types, evaluate initializers, allocate input storage, generate
-code or self-host. Struct/enum declarations remain unsupported by the legacy
-Stage 1 file parser, although Stage 0 already implements them.
-The replacement binding parser separately records enums, structs and static/extern
-declarations as syntax-only migration slices through #28; bootstrap implementation
-sources retain legacy syntax.
-
-The subsequent executable milestone extends the existing C frontend with bounded
-scalar `let/in` and typed selected-branch conditional expressions, reusing its
-semantic analysis, LIR, verified bytecode 1.9
-and VM. It does not make the L-written parsers executable compilers or migrate
-all replacement declarations. Source commands still require explicit manifests.
-Review this compiler change separately from the historical syntax-only PRs above.
-
-The byte I/O and static-buffer slices change the artifact version and need
-recompilation of older bytecode. The observer is an approved optional C embedding
-API, not a new L intrinsic or serialized trace format. See
-[DEVELOPMENT.md](DEVELOPMENT.md#artifact-compatibility) for the migration table.
+Byte I/O and static arrays did change artifact versions, so older bytecode needs
+recompilation. The observer is an optional C embedding API, not an L intrinsic or
+trace file format. See the [compatibility table](DEVELOPMENT.md#artifact-compatibility).
 
 ## Merge procedure
 
-1. Record the exact PR head, inspect its diff and review conversations, and post
-   actual GitHub review comments. Fix blocking findings before proceeding.
-2. Wait for every dependency to reach `main`, then retarget the next PR to `main`.
-   Recheck the resulting diff and all checks on its exact current head.
-3. Compute `git merge-tree --write-tree origin/main <head>` and compare it with
-   `<head>^{tree}`. Equality means the proposed merge uses the tested source tree.
-   If it differs, validate the combined tree before merging; do not assume the
-   head's successful checks cover it.
-4. Use **Create a merge commit**, matching the reviewed head. Do not bypass branch
-   protection or treat a self-review as an independent approval.
-5. Fetch the result, verify its parents/tree and retained original history, then
-   check the new `main` CI run. Keep the review branches; do not delete them.
+A green PR is the start of the merge check, not the end of it.
 
-Do not blindly merge a stacked PR into its feature-branch base. Squash/rebase
-merges require deliberate restacking and do not retain the original commit IDs on
-`main`. No force-push, reset, unattended auto-merge or branch-protection change is
-part of publishing this stack.
+1. Record the exact head. Read the diff and review conversations, post actual
+   GitHub review comments, and fix blocking findings. Do not count an author
+   self-review or agent audit as independent approval.
+2. Wait for dependencies to reach `main`. Then retarget this PR to `main` and
+   check the new diff and exact-head results. Merge permission must cover this
+   PR; an earlier authorization is not permission to merge future work.
+3. Run `git merge-tree --write-tree origin/main <head>` and compare the tree with
+   `<head>^{tree}`. If they differ, test the combined tree. The branch's old green
+   checks do not cover a different merge result.
+4. Use **Create a merge commit**, matching the reviewed head. Do not bypass branch
+   protection, squash/rebase the stack, or enable unattended auto-merge.
+5. Fetch the result. Check both parents, the actual tree, retained original
+   commits and the new `main` CI run. Keep the review branches. Only then move to
+   the next PR.
+
+Do not merge a stacked PR into its feature-branch base just because GitHub offers
+the button. Do not force-push, reset history or change protection to make the gate
+go away. If a required independent review is missing, that is a blocker.
 
 For a new stack, substitute the actual PR number and head branch:
 
@@ -181,90 +172,73 @@ gh workflow run ci.yml --repo flakesonnix/l --ref <head-branch>
 gh pr checks <number> --repo flakesonnix/l
 ```
 
-Repeat with each next head branch after its prerequisite is merged. The workflow
-also runs on pushes to `main` and `review/**`, and on pull requests. It is already
-present on the default branch, so manual dispatch is available.
+Manual dispatch gives the retargeted slice a fresh run rather than relying on
+old push/PR results. The workflow is already on the default branch and also runs
+on `main`, `review/**` pushes and pull requests. Check the resulting-main run
+separately; passing a feature-head run does not prove that run passed.
 
 ## What to check
 
-- Keep the normative module rules, exact typing and left-to-right evaluation.
-- Check EOF, byte preservation and reported stream failures in the I/O slice.
-- Check shared array identity across imports, bounds, limits and fresh storage
-  after success or trap in the buffer slices.
-- Check event order, arm identities, NULL-observer behavior and unchanged
-  execution budgets in the observer slice.
-- Check pinned inputs, installed manifests, Linux platform scope, sanitizer and
-  100% coverage gates in the Nix/CI slices.
-- Check Stage 1 arena ownership, first-error rollback, exact shared budgets,
-  source/bytecode model agreement and the boundary between syntax and semantics.
-- Check executable name-first constants against legacy folding, int/bool typing,
-  forward dependencies, cycles, readonly/import rules and shared resource limits.
-  No VM storage or runtime module initialization may be added. The L-written
-  parser remains syntax-only; keep its status distinct from the executable C path.
-- Check executable aliases for transparent primitive identity, forward/imported
-  targets, cycles, duplicate signatures and legacy interoperability. Verify
-  bytecode erasure, shared budgets and contextual `alias` identifier compatibility.
-- Check executable namespace bindings against legacy scopes for nesting/reopening,
-  relative/qualified lookup, member-specific visibility and shared cell identity.
-  Reject namespace-level `pub`, runtime namespace values and hidden initialization.
-- Check executable name-first enums for required member semicolons, nonempty
-  nominal types, checked explicit/implicit values, equal-valued aliases, visibility,
-   duplicate cases and shared old/new budgets. Keep int/bool-only name-first
-   constant restrictions and runtime-only expression rules intact.
-- Check named records for nominal identity, complete/exact field sets, scalar types,
-  by-value copies and readonly writes. Initializers must execute in written order,
-  including nested calls and unused fields; map registers afterward, never reorder
-  the AST. Preserve legacy positional assignments and require named new-record literals.
-- Check scalar `let`/conditional values for exact byte/string/enum types, same-enum
-  nominal identity, alias transparency, readonly writes, eager lexical effects and
-  selected branches. Reuse existing typed slots/registers; preserve aggregate/void
+- **Core behavior:** exact types, eager left-to-right evaluation and the normative
+  module rules. No silent laziness, dynamic lookup or implicit module discovery.
+- **I/O and buffers:** EOF, every byte value, reported stream failures, shared
+  array identity, bounds and fresh storage after traps or successful runs.
+- **Observers:** event order and arm identity, NULL-observer behavior and unchanged
+  execution budgets. Observing a program must not change its result.
+- **Nix and CI:** pinned inputs, installed manifests, actual platform coverage,
+  sanitizer results and the 100% C coverage gate.
+- **Stage 1:** arena ownership, first-error rollback, shared budgets and
+  source/bytecode model agreement. Parsing syntax is not checking semantics.
+- **Constants:** legacy/name-first folding agreement, int/bool-only name-first
+  types, forward references, cycles, readonly/import rules and shared limits.
+  Constants must not add VM storage or hidden runtime initialization.
+- **Aliases:** primitive identity, forward/imported targets, cycles, duplicate
+  signatures, erasure and contextual `alias` compatibility.
+- **Namespaces:** nesting/reopening, relative and qualified lookup, member `pub`
+  and shared cells. Reject namespace-level `pub` and runtime namespace values.
+- **Enums:** required semicolons, nonempty nominal types, checked int32 values,
+  equal-valued members, duplicate switch cases, visibility and shared budgets.
+- **Records:** complete/exact field sets, scalar types, nominal identity, copies
+  and readonly writes. Run initializers in written order, including unused fields
+  and nested calls. Map the resulting registers; do not sort the AST. Preserve
+  legacy positional assignments and require named literals for new records.
+- **Scalar expressions:** exact byte/string/enum types, same-enum identity, alias
+  transparency, lexical effects and selected branches. Keep aggregate/void
   rejection, explicit conversions and compile-time restrictions.
-- The coverage gate measures **Stage 0 C only**, not L-source coverage. Arbitrary
-  bytecode mutants and cyclic verifier graphs must never be executed.
-- Treat local command results and hosted GitHub status checks as separate evidence.
+- **Evidence:** coverage measures Stage 0 C only. Arbitrary bytecode mutants and
+  cyclic verifier graphs must never execute. Local results and hosted check runs
+  are separate evidence; record the exact commit for each.
 
 ## Approved syntax replacement
 
-The user approved a **typed hybrid: C-style functions/control flow plus selected
-Nix-inspired features**, not a permanent parallel grammar. The explicit choice
-of `pub int add(int a, int b) { return a + b; }` supersedes the earlier name-first
-arrow-function proposal; that former function form is rejected by the replacement
-parser. C locals are mutable by default, with `const` readonly intent. Eager,
-sequential `let/in` retains immutable bindings and explicit `var` mutability.
-C-style parameters may carry leading `const`, recording readonly intent separately
-from their type. Write checking and signature/overload identity remain deferred;
-no new runtime semantics or C pointer/reference forms are introduced.
-Mandatory-else `if condition then value else value` expressions are approved too,
-with intended bool conditions, matching result types and selected-branch evaluation.
-Records use approved `Name = record { field: Type; };` declarations and
-`Name { field = value; }` literals, retaining intended nominal/by-value semantics
-and written-order value evaluation. The executable C frontend checks named fields
-and maps evaluated registers through existing struct construction; the L-written
-parser itself remains syntax-only.
-Enums use `Name = enum { Member; Member = expr; };`, with semicolon-terminated
-members. C-style `struct Name { Type field; };` is the approved second aggregate
-declaration spelling alongside records. Static scalar/array declarations and
-external functions keep their legacy spellings, including leading `const` on
-extern parameters. The executable C frontend checks name-first enum values and
-nominal identities through existing analysis. The L-written parser still defers
-enum-value checks, storage allocation/initialization, length evaluation and extern
-implementation resolution.
-Transparent aliases use approved `Name = alias Type;` spelling, preserving the
-existing scalar-alias meaning rather than introducing nominal/runtime types.
-The executable C frontend resolves scalar targets, cycles and visibility through
-the existing analyzer. The L-written parser still records targets without expansion
-or cycle/type checking.
-Namespaces use approved `Name = namespace { declarations };` bindings, retaining
-intended compile-time scopes, nesting/reopening and member-specific visibility.
-Namespace-level `pub` is rejected. The executable C frontend reuses logical scope
-merging, lookup, duplicate and visibility checks; the L-written parser still records
-syntax only and defers those checks.
-The first replacement parser records these forms without implementing their
-semantics or completing the source migration; the remaining grammar is unfinished.
-Existing executable examples and legacy parser contracts still use bootstrap syntax. Expanding that
-grammar with Stage 1 enum/struct declarations is deferred behind replacement.
+The syntax is a typed hybrid: C-style functions and control flow, with selected
+Nix-inspired bindings and expressions. The function form is
+`pub int add(int a, int b) { return a + b; }`, not the old arrow proposal.
+C locals are mutable unless `const`; `let` bindings are immutable unless `var`.
+Leading parameter `const` records readonly intent without creating a new type or
+overload signature. Stage 0 enforces writes and type identity; the L-written
+parser only records them.
 
-Review source migration separately from the completed parser slices. Preserve
-static types, eager left-to-right evaluation and the normative module semantics;
-do not silently add laziness, dynamic typing, implicit module discovery or change
-IR/bytecode **1.9**. See [source syntax status](../README.md#source-syntax-status).
+Conditionals use `if condition then value else value`, with a mandatory `else`,
+bool condition and matching scalar results. Only the selected branch runs.
+Records use `Name = record { field: Type; };` and named literals
+`Name { field = value; }`. They are nominal, copied by value, and evaluate fields
+in written order. `struct Name { Type field; };` is the other approved aggregate
+declaration spelling.
+
+Enums use `Name = enum { Member; Member = expr; };`, with semicolon-terminated
+members. Aliases use `Name = alias Type;` and stay transparent scalar aliases.
+Namespaces use `Name = namespace { declarations };`; export each member, not the
+namespace itself. Static scalars/arrays and extern functions keep their C-style
+spellings, including leading `const` on extern parameters.
+
+The C frontend implements the supported semantics. The L-written parser records
+the broader grammar without resolving names, expanding aliases, merging scopes,
+checking enum values, allocating storage or binding extern implementations. Old
+sources and parser contracts still use bootstrap syntax while migration is in
+progress. Adding enum/struct declarations to the legacy Stage 1 grammar remains
+deferred behind replacement work.
+
+Review source migration separately from parser work. Keep static types, eager
+evaluation, explicit module semantics and IR/bytecode **1.9** intact. For the
+current executable boundary, use the [README](../README.md#source-syntax-status).

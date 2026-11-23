@@ -6,17 +6,18 @@
 
 This document replaces sections 2.2 and 2.3 of Language L Specification 0.1.0.
 
-> **Repository status (non-normative):** Source examples here use the currently
-> implemented legacy bootstrap syntax. A typed, Nix-inspired source replacement
-> is approved, with a broader syntax-only function/binding parser and a first
-> executable C-function/local, scalar `let/in`/conditional, typed name-first constant,
-> transparent scalar-alias, namespace, nominal-enum and named-record
-> subset in the existing C compiler. The complete replacement grammar and executable-source migration
-> remain unfinished. This note
-> does not amend any rule below: module identity, explicit imports, resolution,
-> visibility and dependency-cycle semantics remain normative. See the
-> [source syntax status](../README.md#source-syntax-status) for the distinction
-> between the implemented grammar and the replacement direction.
+> **Implementation note (not normative):** The examples below use the old
+> bootstrap spelling. The executable replacement stack through #37 is merged:
+> the C compiler also accepts supported C-style functions, scalar `let` and
+> conditionals, name-first constants, aliases, namespaces, enums and named-field
+> records. The L-written frontend still checks syntax only, and the full source
+> migration is unfinished.
+>
+> This document defines module behavior, not parser progress. Changing a
+> declaration's spelling does not change module identity, explicit imports,
+> resolution, visibility or dependency-cycle rules. Everything below remains
+> normative. For what the compiler actually runs today, see the
+> [source syntax status](../README.md#source-syntax-status).
 
 ## 1. Module model
 
