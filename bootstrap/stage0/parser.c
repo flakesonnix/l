@@ -325,13 +325,16 @@ static Stmt *statement(Parser *p) {
         if (take(p, TK_ELSE)) s->other = statement(p);
     } else if (take(p, TK_WHILE)) {
         s = new_stmt(p, ST_WHILE, token);
-        if (p->nix_calls && peek(p).kind != '(') {
-            /* Nix spelling: while condition: do { ... }; condition is re-evaluated each pass. */
-            s->condition = expression(p, 1);
-            expect(p, ':', "expected ':' after while condition");
-            if (peek(p).kind != TK_NAME || !token_equal(peek(p), (Token){.text = "do", .length = 2}))
-                token_fail(p->ctx, peek(p), "expected 'do' after while condition");
-            ++p->at;
+        if (p->nix_calls) {
+            bool grouped = peek(p).kind == '(';
+            s->condition = grouped ? condition(p) : expression(p, 1);
+            /* A closing ')' does not select C syntax: ':' still introduces a Nix body. */
+            if (!grouped || peek(p).kind == ':') {
+                expect(p, ':', "expected ':' after while condition");
+                if (peek(p).kind != TK_NAME || !token_equal(peek(p), (Token){.text = "do", .length = 2}))
+                    token_fail(p->ctx, peek(p), "expected 'do' after while condition");
+                ++p->at;
+            }
         } else s->condition = condition(p);
         s->body = statement(p);
     } else if (take(p, TK_FOR)) {
