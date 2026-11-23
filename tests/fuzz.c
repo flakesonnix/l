@@ -39,6 +39,7 @@ static size_t nix_range_programs, nix_range_rejections;
 static size_t nix_while_programs, nix_while_rejections;
 static size_t grouped_while_programs, grouped_while_rejections;
 static uint32_t grouped_while_forms;
+static size_t nix_loop_block_rejections;
 static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms, nix_while_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
@@ -1520,6 +1521,39 @@ static void grouped_while_recovery(void) {
     }
     dispose(ctx);
 }
+static void nix_loop_block_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("Nix loop body without a block was accepted"); }
+    if (ctx->status != 65) failed("Nix loop block rejection returned an unexpected status");
+    ++nix_loop_block_rejections;
+}
+static void nix_loop_block_success(Context *ctx, const char *text) {
+    if (setjmp(ctx->failure)) failed("cleaned loop block context rejected valid source");
+    Program *p = compile(ctx, text);
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void nix_loop_block_recovery(void) {
+    static const char *const headers[] = { "while false", "while (false)", "for i in 0..0" };
+    static const char *const bodies[] = { "return 0;", ";", "if(false)return 0;", "for(var j=0;j<0;j++);" };
+    static const char *const valid[] = {
+        "main:()->int;main=do{var n=0;var sum=0;while n<3:do{{sum=sum+14;n++;}}return sum;};",
+        "main:()->int;main=do{var n=0;while (n<3):do{{n++;}}return n+39;};",
+        "main:()->int;main=do{var sum=0;for i in 0..3:do{{var part=i+13;sum=sum+part;}}return sum;};"
+    };
+    Context *ctx = context("nix-loop-block-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned header = 0; header < sizeof(headers) / sizeof(*headers); ++header) {
+            for (unsigned body = 0; body < sizeof(bodies) / sizeof(*bodies); ++body) {
+                source_length = 0;
+                append("main:()->int;main=do{%s:do %sreturn 42;};", headers[header], bodies[body]);
+                nix_loop_block_reject(ctx, source); cleanup(ctx);
+                if (ctx->allocated || ctx->allocations) failed("loop block rejection could not be cleaned up");
+                memset(ctx, 0, sizeof(*ctx)); ctx->filename = "nix-loop-block-recovery";
+                nix_loop_block_success(ctx, valid[header]); cleanup(ctx);
+            }
+        }
+    }
+    dispose(ctx);
+}
 /* Independent shared-state model, with repeated runs of each source/bytecode program. */
 static void static_cases(void) {
     for (unsigned test = 0; test < MODEL_CASES; ++test) {
@@ -2461,6 +2495,7 @@ int main(void) {
     nix_while_recovery();
     grouped_while_cases();
     grouped_while_recovery();
+    nix_loop_block_recovery();
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=do{var n=0;while ((n<1)):do{n++;visits++;1/0;}return 42;};"
         "recover:()->int;recover=do{var n=0;while (let current=n;in current<3):do{n++;}"
@@ -2509,5 +2544,6 @@ int main(void) {
     printf("fuzz: %zu Nix while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", nix_while_rejections);
     printf("fuzz: %zu grouped while programs preserved condition effects and Nix/C loop-body spellings\n", grouped_while_programs);
     printf("fuzz: %zu grouped while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", grouped_while_rejections);
+    printf("fuzz: %zu Nix loop block rejection/cleanup/recompile cycles passed; valid nested blocks preserved source/bytecode results\n", nix_loop_block_rejections);
     return 0;
 }

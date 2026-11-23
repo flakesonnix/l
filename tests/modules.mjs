@@ -1109,6 +1109,22 @@ try {
     }
   }
 
+  // Imported Nix loops require real blocks, independent of source-root order.
+  for (const header of ['while false', 'while (false)', 'for i in 0..0']) {
+    for (const reverse of [false, true]) {
+      const settings = config(); if (reverse) settings.module_roots.reverse();
+      const imported = body => ({
+        'app/main.l': 'module app.main;import std.blocks as b;main:()->int;main=b::run ();',
+        'std/blocks.l': `module std.blocks;pub run:()->int;run=do{${header}:do ${body}return 42;};`,
+      });
+      for (const body of ['return 0;', ';']) {
+        const f = rejected(imported(body), /expected '\{' after 'do'/, settings);
+        assert.match(source(f, 65).stderr, /blocks\.l:/, 'report the imported loop body location');
+      }
+      program(imported('{}'), 42, settings);
+    }
+  }
+
   // Nix while conditions share mutable cells across package DAGs and both import orders.
   state = 0x4e495748;
   for (let test = 0; test < 32; ++test) {

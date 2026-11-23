@@ -112,6 +112,10 @@ Grouped-condition regressions also check `while (condition): do { ... }`,
 including nested groups, calls and `let`, without losing C-style loop bodies or
 changing how often the condition runs. The module suite runs the same while
 DAGs with bare and grouped conditions in both import/root orders.
+Loop-body regressions reject non-block bodies after `: do` for bare/grouped
+`while` and range loops, including imported modules in both source-root orders.
+Forty-eight rejection/cleanup/recompile cycles then verify valid nested blocks
+from source and serialized bytecode; C-style single-statement loops stay valid.
 
 ## Nix workflow
 

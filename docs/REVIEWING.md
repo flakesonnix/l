@@ -231,6 +231,8 @@ separately; passing a feature-head run does not prove that run passed.
   A parenthesized whole condition must still accept `: do` in a Nix body;
   parentheses alone do not choose the C body grammar. Check calls/`let` inside
   groups and preserve C single-statement bodies when no colon follows.
+  After `: do`, both Nix loop forms require `{ ... }`, including empty bodies;
+  do not accept `do ;`, a declaration or another unbraced statement instead.
   Contextual `do {` is never a call argument.
 - **Evidence:** coverage measures Stage 0 C only. Arbitrary bytecode mutants and
   cyclic verifier graphs must never execute. Local results and hosted check runs
