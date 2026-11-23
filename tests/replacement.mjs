@@ -304,6 +304,59 @@ for (const [body, message] of [
   ['int main(){int n=0;while(n)+1<4:do{n++;}return 42;}', /expected ';'/],
   [rangeMain('var n=0;while (let k=n;in k)+1<4:do{n++;}return k;'), /unknown local variable/],
 ]) rejected(body, message);
+// Existing postfix operations also continue a grouped Nix condition operand.
+const postfixBox = 'Box=record{x:int;ready:bool;text:string;};';
+program(postfixBox + rangeMain('var b=Box{x=0;ready=true;text="abc";};while (b).ready:do{b.ready=false;}return 42;'));
+for (const condition of ['(b).x<3', '((b)).x<3', '(b).x+1<4', '(b).x*2<6',
+  '(b).x<3&&true', '(let snap=b;in snap).x<3', '(if true then b else b).x<3']) {
+  program(postfixBox + rangeMain(`var b=Box{x=0;ready=true;text="abc";};while ${condition}:do{b.x++;}return b.x+39;`));
+}
+program(postfixBox + rangeMain('var b=Box{x=0;ready=true;text="abc";};var n=0;while (b).text.length>n:do{n++;}return n+39;'));
+program(postfixBox + rangeMain('var a=Box{x=0;ready=true;text="";};var b=a;while (a).x<3:do{a.x++;}return if b.x==0 then a.x+39 else 0;'));
+program(postfixBox + rangeMain('var b=Box{x=0;ready=true;text="";};while (b).x++<3:do{}return b.x+38;'));
+program(postfixBox + rangeMain('var b=Box{x=3;ready=true;text="";};while (b).x-- >0:do{}return b.x+43;'));
+program(rangeMain('var n=0;while (n)++<3:do{}return n+38;'));
+program(rangeMain('var n=3;while (n)-- >0:do{}return n+43;'));
+for (const array of ['(flags)', '((flags))']) {
+  program(rangeMain(`bool flags[4];for(int i=0;i<3;i++)flags[i]=true;var n=0;while ${array}[n]:do{n++;}return n+39;`));
+}
+program(rangeMain('int a[4];a[3]=3;var n=0;while (a)[n]<3:do{n++;}return n+39;'));
+program(rangeMain('int a[1];while (a)[0]++<3:do{}return a[0]+38;'));
+program(rangeMain('int a[1];a[0]=3;while (a)[0]-- >0:do{}return a[0]+43;'));
+program(rangeMain('bool flags[4];for(int i=0;i<3;i++)flags[i]=true;var n=0;while (flags)[n++]:do{}return n+38;'));
+program('static int reads=0;pick:int->int;pick=n:do{reads++;return n;};'
+  + rangeMain('bool flags[4];for(int i=0;i<3;i++)flags[i]=true;var n=0;while (flags)[pick n]:do{n++;}return if reads==4 then n+39 else 0;'));
+program('Box=record{ready:bool;};static int calls=0;next:()->Box;next=do{calls++;return Box{ready=calls<4;};};'
+  + rangeMain('var n=0;while (next ()).ready:do{n++;}return if calls==4 then n+39 else 0;'));
+program(rangeMain('var text="abc";var n=0;while (text).length>n:do{n++;}return n+39;'));
+program(rangeMain('var n=0;while ("abc").length>n:do{n++;}return n+39;'));
+program(rangeMain('while ("x")[0]!=byte(0):do{return 42;}return 0;'));
+program(rangeMain('var n=0;while ("abc")[n]!=byte(0):do{n++;if(n==3)break;}return n+39;'));
+program(rangeMain('var n=0;var total=0;while (n)++<5:do{if(n==2)continue;if(n==4)break;total=total+14;}return total+14;'));
+program(rangeMain('var total=0;for i in 0..2:do{var n=0;while (n)++<3:do{total=total+7;}}return total;'));
+program(rangeMain('int a[1];while (a)[-1]<3:do{}return 42;'), 70, {}, /out of bounds/);
+program(rangeMain('while ("x")[1]!=byte(0):do{}return 42;'), 70, {}, /out of bounds/);
+program(rangeMain('var n=2147483647;while (n)++<3:do{}return 42;'), 70, {}, /integer overflow/);
+program(rangeMain('var n=0;while(n<3){n++;}return n+39;'));
+program(rangeMain('var n=0;while(n<3)(n=n+1);return n+39;'));
+program('static int n=0;step:()->int;step=n++;' + rangeMain('while(n<3)step ();return n+39;'));
+program('static int n=0;step:()->int;step=n++;int main(){while(n<3)step();return n+39;}');
+for (const [body, message] of [
+  [postfixBox + rangeMain('const Box b=Box{x=0;ready=true;text="";};while (b).x++<3:do{}return 42;'), /cannot modify const binding/],
+  [rangeMain('const int n=0;while (n)++<3:do{}return 42;'), /cannot modify const binding/],
+  [postfixBox + rangeMain('while (Box{x=0;ready=true;text="";}).x++<3:do{}return 42;'), /field mutation requires a local struct binding/],
+  [postfixBox + rangeMain('var b=Box{x=0;ready=true;text="";};while (b).missing:do{}return 42;'), /unknown struct field/],
+  [postfixBox + rangeMain('var b=Box{x=0;ready=true;text="";};while (b).x:do{}return 42;'), /expected bool, got int/],
+  [rangeMain('var n=0;while (n)++:do{}return 42;'), /expected bool, got int/],
+  [rangeMain('int a[1];while (a)[true]<3:do{}return 42;'), /expected int, got bool/],
+  [rangeMain('int a[1];while (a)[]<3:do{}return 42;'), /expected expression/],
+  [rangeMain('int a[1];while (a)[0<3:do{}return 42;'), /expected '\]'/],
+  [postfixBox + rangeMain('var b=Box{x=0;ready=true;text="";};while (b).:do{}return 42;'), /expected field name/],
+  [rangeMain('var n=0;while (n)++<3 do{}return 42;'), /expected ':'/],
+  [rangeMain('var n=0;while (n)++<3:do ;return 42;'), /expected '\{' after 'do'/],
+  [rangeMain('int a[1];while (a):do{}return 42;'), /array used without an index/],
+  ['int main(){int a[1];while(a)[0]<3:do{}return 42;}', /expected expression/],
+]) rejected(body, message);
 // Nix loop bodies require blocks; C loop bodies still accept individual statements.
 for (const header of ['while false', 'while (false)', 'for i in 0..0']) {
   for (const body of ['return 0;', ';', 'var x=0;', 'n++;', 'if(false)return 0;',
