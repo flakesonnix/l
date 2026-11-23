@@ -219,6 +219,10 @@ separately; passing a feature-head run does not prove that run passed.
   cross-spelling/imported/overloaded calls. `do` is only a contextual whole-body
   marker; preserve C-body parsing and shared function/parameter budgets. No
   first-class functions, partial application, closures or new runtime metadata.
++  Name-first local `var` declarations must remain contextual to Nix bodies,
++  require an initializer, infer or check the written type, and reuse ordinary
++  mutable slots/scopes including `for` initializers and shadowing. C declarations
++  and `let var` must keep working.
 - **Evidence:** coverage measures Stage 0 C only. Arbitrary bytecode mutants and
   cyclic verifier graphs must never execute. Local results and hosted check runs
   are separate evidence; record the exact commit for each.
