@@ -28,11 +28,14 @@ is in the **C frontend**, not these L modules:
 | Evaluate constants, allocate input storage and generate code | Yes | No |
 | Run the supplied program | Yes | No; successful syntax checks return 0 |
 
-Stage 0 supports scalar `let`/conditional values, int/bool name-first constants,
-transparent primitive aliases, reopened namespaces, checked nominal enums and
-named-field value records. Record values run in written field order. Scalar
-expressions accept int/bool/byte/string/enums, not aggregate or void results, and
-remain runtime-only. Aggregate globals and nested aggregate fields are still
+Stage 0 supports scalar and nominal aggregate `let`/conditional values, int/bool
+name-first constants, transparent primitive aliases, reopened namespaces, checked
+nominal enums and named-field value records. Record values run in written field
+order. Value expressions accept int/bool/byte/string/enums and records/structs, not void or
+whole-array results, and remain runtime-only. Aggregates use existing by-value
+slots and branch temporaries, not references to lexical cells. This extends the
+merged #37 snapshot; it does not change the L parser contracts below.
+Aggregate globals, aggregate arrays and nested aggregate fields are still
 unsupported. The [executable contract](../../README.md#first-executable-replacement-subset)
 has the details; this file documents how the parsers record syntax.
 
@@ -632,9 +635,9 @@ places `b + c` in the negative branch. Use `(if p then a else b) + c` to apply t
 operator outside the conditional. Call commas, binding semicolons and closing
 delimiters bound bare conditional expressions as usual.
 
-Stage 0 requires a bool condition and matching scalar results, evaluates the
-condition once and runs only the selected branch. **This parser does none of that
-checking or execution.** Even
+Stage 0 requires a bool condition and matching scalar or nominal aggregate
+results, evaluates the condition once and runs only the selected branch.
+**This parser does none of that checking or execution.** Even
 `if 1 then "wrong" else false` can be syntax-valid. Both branch trees and their
 strings are retained; malformed syntax or lexical errors in either branch still
 fail parsing, even for a literal condition. `ExpectedThen`/`ExpectedElse` preserve
@@ -1058,8 +1061,8 @@ statement, header and file suites still pass. The executable C-frontend tests
 are a different set: 620 replacement fixtures / 3458 CLI checks, plus the module
 and bounded semantic models described in the root README.
 
-Current **Stage 0 C** coverage is **2722/2722 lines, 165/165 functions and
-2804/2804 branches**, all 100%, across 11 files. The
+For that merged snapshot, **Stage 0 C** coverage is **2722/2722 lines,
+165/165 functions and 2804/2804 branches**, all 100%, across 11 files. The
 [resulting-main run](https://github.com/flakesonnix/l/actions/runs/44551718137)
 passed, and its downloaded report matches native, local Nix and merge-gate
 reports. None of this is L-source coverage or a self-hosting result. For older

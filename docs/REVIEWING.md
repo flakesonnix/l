@@ -202,8 +202,10 @@ separately; passing a feature-head run does not prove that run passed.
   and readonly writes. Run initializers in written order, including unused fields
   and nested calls. Map the resulting registers; do not sort the AST. Preserve
   legacy positional assignments and require named literals for new records.
-- **Scalar expressions:** exact byte/string/enum types, same-enum identity, alias
-  transparency, lexical effects and selected branches. Keep aggregate/void
+- **Value expressions:** exact scalar types and same-nominal aggregate types,
+  alias transparency, lexical effects and selected branches. Aggregate bindings
+  and branch temporaries must copy values, not alias cells; snapshots must survive
+  later field or whole-value writes. Preserve readonly checks, whole-array/void
   rejection, explicit conversions and compile-time restrictions.
 - **Evidence:** coverage measures Stage 0 C only. Arbitrary bytecode mutants and
   cyclic verifier graphs must never execute. Local results and hosted check runs
@@ -220,7 +222,8 @@ overload signature. Stage 0 enforces writes and type identity; the L-written
 parser only records them.
 
 Conditionals use `if condition then value else value`, with a mandatory `else`,
-bool condition and matching scalar results. Only the selected branch runs.
+bool condition and matching scalar or same-nominal aggregate results. Only the
+selected branch runs.
 Records use `Name = record { field: Type; };` and named literals
 `Name { field = value; }`. They are nominal, copied by value, and evaluate fields
 in written order. `struct Name { Type field; };` is the other approved aggregate
