@@ -202,9 +202,7 @@ static bool application_argument(Parser *p) {
     return kind == TK_NAME || kind == TK_INTEGER || kind == TK_TEXT || kind == TK_TRUE ||
         kind == TK_FALSE || kind == '(' || kind == TK_INT || kind == TK_BYTE;
 }
-static Expr *expression(Parser *p, int minimum) {
-    enter(p->ctx, peek(p));
-    Expr *left = primary(p);
+static Expr *expression_tail(Parser *p, Expr *left, int minimum) {
     for (;;) {
         Token op = peek(p);
         /* Application binds above infix operators. Arguments are atoms/postfixes;
@@ -232,8 +230,13 @@ static Expr *expression(Parser *p, int minimum) {
         e->right = expression(p, prec + (op.kind != '='));
         left = e;
     }
-    leave(p->ctx);
     return left;
+}
+static Expr *expression(Parser *p, int minimum) {
+    enter(p->ctx, peek(p));
+    Expr *e = expression_tail(p, primary(p), minimum);
+    leave(p->ctx);
+    return e;
 }
 /* for i in a..b: do { ... } reuses the existing mutable local and counting-loop AST.
    Both bounds are int expressions, evaluated once left to right before i is bound. */
@@ -310,6 +313,29 @@ static Expr *condition(Parser *p) {
     expect(p, ')', "expected ')' after condition");
     return e;
 }
+static bool while_infix_condition(Parser *p) {
+    int first = peek(p).kind;
+    if (!precedence(first)) return false;
+    if (first != '+' && first != '-') return true;
+    /* A sign can also start a C unary statement. Find its expression delimiter
+       without constructing a second AST; let bindings and nested literals own ';'. */
+    size_t groups = 0, bindings = 0;
+    for (size_t at = p->at + 1;; ++at) {
+        int kind = p->tokens[at].kind;
+        if (kind == TK_EOF) return false;
+        if (kind == '(' || kind == '[' || kind == '{') { ++groups; continue; }
+        if (kind == ')' || kind == ']' || kind == '}') {
+            if (!groups) return false;
+            --groups; continue;
+        }
+        if (kind == TK_LET) { ++bindings; continue; }
+        if (kind == TK_IN && bindings) { --bindings; continue; }
+        if (!groups && !bindings) {
+            if (kind == ':') return true;
+            if (kind == ';') return false;
+        }
+    }
+}
 static Stmt *statement(Parser *p) {
     Token token = peek(p);
     enter(p->ctx, token);
@@ -329,6 +355,10 @@ static Stmt *statement(Parser *p) {
         if (p->nix_calls) {
             bool grouped = peek(p).kind == '(';
             s->condition = grouped ? condition(p) : expression(p, 1);
+            if (grouped && while_infix_condition(p)) {
+                s->condition = expression_tail(p, s->condition, 1);
+                grouped = false;
+            }
             /* A closing ')' does not select C syntax: ':' still introduces a Nix body. */
             if (!grouped || peek(p).kind == ':') {
                 expect(p, ':', "expected ':' after while condition");

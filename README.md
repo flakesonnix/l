@@ -196,6 +196,14 @@ the `:` after the closing parenthesis selects the Nix body spelling; without it,
 `while (condition) statement` keeps the existing C behavior. Grouping does not
 evaluate the condition an extra time or change `break`, `continue` or scope.
 
+A group can also be the left operand of a longer Nix condition, for example
+`while (n + 1) < 4: do { ... }` or `while (check n) && ready: do { ... }`.
+These use the ordinary expression precedence and evaluate each operand normally.
+Without the condition colon, `while (condition) +n++;` and its unary-minus
+counterpart still mean C-style single-statement loop bodies, not extra condition
+operands. Typed `let` bindings, nested literals and punctuation inside strings
+do not confuse that distinction.
+
 Both Nix loop forms require the block after `do`, even for an empty body:
 write `while false: do { }`, not `while false: do ;` or `: do return 0;`.
 The same rule applies to `for i in start..end: do { ... }`. Ordinary C-style

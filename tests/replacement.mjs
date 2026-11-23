@@ -247,6 +247,63 @@ for (const [body, message] of [
   ['main:()->int;main=do{while 1:do{}return 0;};', /expected bool, got int/],
 ]) rejected(body, message);
 program(rangeMain('var n=0;while 1/0<3:do{n++;}return 42;'), 70, {}, /division by zero/);
+// A leading group can be the left operand of a complete Nix while condition.
+for (const condition of ['(n+1)<4', '((n))+1<4', '(n)-1<2', '(n)*2<6', '(n)<3',
+  '(n)<=2', '(3)>n', '(2)>=n', '(n)!=3', '(n)%4!=3', '(n<3)&&true', '(n<3)||false',
+  '(n)+2*3<9', '(n)+10-7<6', '(n)-4+1<0', '(n)<3==true',
+  '(let k=n;in k)+1<4', '(if n<3 then n else 3)+1<4',
+  '(n)+(let bias:int=1;in bias)<4', '(n)+";:".length<5']) {
+  program(rangeMain(`var n=0;while ${condition}:do{n++;}return n+39;`));
+}
+program(rangeMain('var n=0;while (n)/2<2:do{n++;}return n+38;'));
+program(rangeMain('var n=0;while (n)==0:do{n=3;}return n+39;'));
+program(rangeMain('var n=0;var keep=true;while (keep)=n<3:do{n++;}return if !keep then n+39 else 0;'));
+program(rangeMain('var n=0;var a=true;var b=true;while (a)=b=n<3:do{n++;}return if !a&&!b then n+39 else 0;'));
+program('id:int->int;id=x:x;' + rangeMain('var n=0;while (id n)+1<4:do{n++;}return n+39;'));
+program('one:()->int;one=1;' + rangeMain('var n=0;while (n)+one ()<4:do{n++;}return n+39;'));
+program('Pair=record{x:int;};' + rangeMain('var n=0;while (n)+Pair{x=1;}.x<4:do{n++;}return n+39;'));
+program(rangeMain('int a[1];var n=0;while (n)+a[0]<3:do{n++;}return n+39;'));
+program(rangeMain('var n=0;while (n)/* left */+/* right */1<4/* body */:do{n++;}return n+39;'));
+program(rangeMain('var n=0;while (n++)<3:do{}return n+38;'));
+program('static int left=0;static int right=0;check:int->bool;check=n:do{left++;return n<3;};'
+  + 'other:()->bool;other=do{right++;return true;};'
+  + rangeMain('var n=0;while (check n)&&other ():do{n++;}return if left==4&&right==3 then 42 else 0;'));
+program(rangeMain('var n=0;var sum=0;while (n)+1<6:do{n++;if(n==2)continue;if(n==4)break;sum=sum+14;}return sum+14;'));
+program(rangeMain('var sum=0;for i in 0..2:do{var n=0;while (n)+1<4:do{n++;sum=sum+7;}}return sum;'));
+program(rangeMain('while (false)&&1/0<3:do{}return 42;'));
+program(rangeMain('while (true)||1/0<3:do{return 42;}return 0;'));
+program(rangeMain('while (1/0)<3:do{}return 42;'), 70, {}, /division by zero/);
+program(rangeMain('while (2147483647)+1<4:do{}return 42;'), 70, {}, /integer overflow/);
+// Without a condition colon, '+'/'-' still introduce ordinary C unary bodies.
+for (const body of ['+42', '-42', '-2147483648', '+(let k:int=42;in k)', '+let k:int=42;in k',
+  '-(if true then 42 else 0)', '+Pair{x=42;}.x', '+a[0]', '+";:".length', '+one ()', '-(1/0)', '!false', '(42)']) {
+  const declarations = 'Pair=record{x:int;};int one(){return 1;}';
+  program(declarations + rangeMain(`int a[1];while(false)${body};return 42;`));
+  program(declarations + `int main(){int a[1];while(false)${body};return 42;}`);
+}
+for (const sign of ['+', '-']) {
+  program(rangeMain(`var n=0;while(n<3)${sign}n++;return n+39;`));
+  program(`int main(){int n=0;while(n<3)${sign}n++;return n+39;}`);
+}
+program(rangeMain('var n=0;if(true)while(n<3)+n++;else return 0;return n+39;'));
+for (const [body, message] of [
+  [rangeMain('var n=0;while (n)<3 do{n++;}return 42;'), /expected ':'/],
+  [rangeMain('var n=0;while (n)+1<4:return 0;return 42;'), /expected 'do'/],
+  [rangeMain('var n=0;while (n)+1<4:do ;return 42;'), /expected '\{' after 'do'/],
+  [rangeMain('var n=0;while (n)+1:do{}return 42;'), /expected bool, got int/],
+  [rangeMain('while (true)+1<3:do{}return 42;'), /expected int, got bool/],
+  [rangeMain('var n=0;while (n)+true<3:do{}return 42;'), /expected int, got bool/],
+  [rangeMain('var n=0;while (n)<true:do{}return 42;'), /expected int, got bool/],
+  [rangeMain('var n=0;while (n)<:do{}return 42;'), /expected expression/],
+  [rangeMain('var n=0;while (n)+():do{}return 42;'), /expected expression/],
+  [rangeMain('while(false)+in;return 42;'), /expected expression/],
+  ['main:()->int;main=do{while(false)+42}', /expected ';'/],
+  ['main:()->int;main=do{while(false)+42', /expected ';'/],
+  [rangeMain('while(false)+42]return 42;'), /expected ';'/],
+  [rangeMain('var n=0;while (n)+(1<4:do{n++;}return 42;'), /expected '\)'/],
+  ['int main(){int n=0;while(n)+1<4:do{n++;}return 42;}', /expected ';'/],
+  [rangeMain('var n=0;while (let k=n;in k)+1<4:do{n++;}return k;'), /unknown local variable/],
+]) rejected(body, message);
 // Nix loop bodies require blocks; C loop bodies still accept individual statements.
 for (const header of ['while false', 'while (false)', 'for i in 0..0']) {
   for (const body of ['return 0;', ';', 'var x=0;', 'n++;', 'if(false)return 0;',
