@@ -16,6 +16,12 @@ scalar `let`/conditional values now run through the existing C compiler.
 The L-written frontend still checks syntax; merging these features did not make
 it a self-hosted compiler.
 
+The docs refresh (#38) and aggregate-expression extension (#39) remain separate,
+open reviews. The Nix-function slice builds on #39 without merging either one.
+It moves the surface syntax toward Nix-style definitions/application, with
+imperative loops/mutation, while retaining direct calls and the existing backend.
+No merge authorization beyond the completed #32–#37 sequence is implied.
+
 | Review | Preserved head branch | Original head | Merge / resulting-main CI |
 | --- | --- | --- | --- |
 | [Execution #30](https://github.com/flakesonnix/l/pull/30) | `review/replacement-execution` | `02d7dc2` | [`ac49375`](https://github.com/flakesonnix/l/actions/runs/43605162891) |
@@ -207,6 +213,12 @@ separately; passing a feature-head run does not prove that run passed.
   and branch temporaries must copy values, not alias cells; snapshots must survive
   later field or whole-value writes. Preserve readonly checks, whole-array/void
   rejection, explicit conversions and compile-time restrictions.
+- **Nix-style functions:** adjacent matching signatures/definitions, exact
+  parameter/result types, full direct-call arity and left-to-right arguments.
+  Check application precedence/grouping and zero-argument `f ()`, including
+  cross-spelling/imported/overloaded calls. `do` is only a contextual whole-body
+  marker; preserve C-body parsing and shared function/parameter budgets. No
+  first-class functions, partial application, closures or new runtime metadata.
 - **Evidence:** coverage measures Stage 0 C only. Arbitrary bytecode mutants and
   cyclic verifier graphs must never execute. Local results and hosted check runs
   are separate evidence; record the exact commit for each.

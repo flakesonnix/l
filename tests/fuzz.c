@@ -33,6 +33,8 @@ static size_t record_programs, record_rejections;
 static size_t scalar_expression_programs, scalar_expression_rejections;
 static size_t aggregate_expression_programs, aggregate_expression_rejections;
 static uint32_t aggregate_expression_forms, aggregate_expression_mutations, aggregate_expression_branches;
+static size_t nix_function_programs, nix_function_rejections;
+static uint32_t nix_function_forms, nix_function_branches;
 static char source[MAX_INPUT];
 static size_t source_length;
 
@@ -1158,6 +1160,98 @@ static void aggregate_expression_recovery(void) {
     }
     dispose(ctx);
 }
+typedef struct { int32_t counter; } NixFunctionModel;
+/* Model eager direct calls independently of parameter slots and call argument vectors. */
+static int32_t nix_function_model(NixFunctionModel *model, unsigned depth) {
+    unsigned form = random_number(depth ? 10 : 2);
+    nix_function_forms |= 1u << form;
+    if (!form) {
+        int32_t value = (int32_t)random_number(41) - 20;
+        append("(%d)", value); return value;
+    }
+    if (form == 1) { append("(step ())"); return model->counter++; }
+    if (form == 2) {
+        append("(id ("); int32_t value = nix_function_model(model, depth - 1); append("))"); return value;
+    }
+    if (form >= 3 && form <= 5) {
+        append("(%s(", form == 3 ? "add" : form == 4 ? "first" : "last");
+        int32_t a = nix_function_model(model, depth - 1); append(")(");
+        int32_t b = nix_function_model(model, depth - 1); append("))");
+        return form == 3 ? a + b : form == 4 ? a : b;
+    }
+    if (form == 6) {
+        append("(if step ()%%2==0 then "); bool yes = model->counter++ % 2 == 0;
+        nix_function_branches |= 1u << yes;
+        NixFunctionModel a = *model, b = *model;
+        int32_t left = nix_function_model(&a, depth - 1); append(" else ");
+        int32_t right = nix_function_model(&b, depth - 1); append(")");
+        *model = yes ? a : b; return yes ? left : right;
+    }
+    if (form == 7) {
+        append("(let snapshot=step ();in add snapshot ("); int32_t before = model->counter++;
+        int32_t value = nix_function_model(model, depth - 1); append("))"); return before + value;
+    }
+    if (form == 8) {
+        append("(legacy ("); int32_t a = nix_function_model(model, depth - 1); append(") (");
+        int32_t b = nix_function_model(model, depth - 1); append("))"); return a - b;
+    }
+    unsigned length = random_number(6); int32_t total = 2;
+    append("(loop %u)", length);
+    for (unsigned n = 0; n < length; ++n) if (n != 1) total += model->counter++;
+    return total;
+}
+static void nix_function_cases(void) {
+    random_state = UINT32_C(0x4e495846);
+    for (unsigned spelling = 0; spelling < 2; ++spelling) {
+        for (unsigned test = 0; test < MODEL_CASES; ++test) {
+            NixFunctionModel model = {.counter = (int32_t)random_number(11)};
+            source_length = 0;
+            append("static int counter=%d;", model.counter);
+            append(spelling ? "int id(int x){return x;}int add(int a,int b){return a+b;}"
+                "int first(int a,int b){return a;}int last(int a,int b){return b;}int step(){return counter++;}"
+                : "id:int->int;id=x:x;add:int->int->int;add=a:b:a+b;"
+                "first:int->int->int;first=a:b:a;last:int->int->int;last=a:b:b;step:()->int;step=counter++;");
+            append("int legacy(int a,int b){return a-b;}loop:int->int;loop=n:do{int sum=0;"
+                "for(int i=0;i<n;i++){if(i==1)continue;sum=add sum (step ());}"
+                "int j=0;while(j<2){j++;sum++;}return sum;};main:()->int;main=do{int result=");
+            int32_t value = nix_function_model(&model, 1 + random_number(4));
+            append(";if(counter!=%d)1/0;return result;};", model.counter);
+            ++nix_function_programs; semantic_case(value, 0);
+        }
+    }
+    if (nix_function_forms != 1023 || nix_function_branches != 3)
+        failed("Nix function model missed a call form or selected branch");
+}
+static void nix_function_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("invalid Nix function was accepted"); }
+    if (ctx->status != 65) failed("Nix function rejection returned an unexpected status");
+    ++nix_function_rejections;
+}
+static void nix_function_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned Nix function context rejected valid source");
+    Program *p = compile(ctx, "add:int->int->int;add=a:b:a+b;"
+        "main:()->int;main=do{int total=0;for(int i=0;i<3;i++)total=add total 14;return total;};");
+    if (p->global_count || p->struct_count || p->enum_count) failed("Nix syntax added unexpected runtime metadata");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void nix_function_recovery(void) {
+    static const char *const invalid[] = {
+        "f:int->int;g=x:x;main:()->int;main=0;",
+        "f:int->int;f=x:x;main:()->int;main=f ();",
+        "f:int->int->int;f=a:b:a+b;main:()->int;main=(f 20) 22;",
+        "f:int->int;f=x:true;main:()->int;main=0;"
+    };
+    Context *ctx = context("nix-function-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            nix_function_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("Nix function rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "nix-function-recovery";
+            nix_function_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
 /* Independent shared-state model, with repeated runs of each source/bytecode program. */
 static void static_cases(void) {
     for (unsigned test = 0; test < MODEL_CASES; ++test) {
@@ -2089,6 +2183,11 @@ int main(void) {
         "P=record{x:int;};static int visits=0;int main(){return (let p=if true then P{x=1/visits++;} else P{x=42;};in p).x;}"
         "int recover(){return (let var p=if visits==0 then P{x=42;} else P{x=1/0;};"
         "snapshot=p;changed=(p.x=0);in snapshot).x;}");
+    nix_function_cases();
+    nix_function_recovery();
+    scoped_lifecycle(
+        "static int visits=0;main:()->int;main=divide visits++;"
+        "recover:()->int;recover=if visits==0 then 42 else 1/0;divide:int->int;divide=x:42/x;");
     remove("build/fuzz-roundtrip.lbc");
     printf("fuzz: %zu bytecode inputs (%zu accepted, %zu rejected); %zu semantic programs, %zu VM executions passed\n",
            inputs, accepted, rejected, programs, executions);
@@ -2120,5 +2219,7 @@ int main(void) {
     printf("fuzz: %zu scalar expression rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", scalar_expression_rejections);
     printf("fuzz: %zu aggregate expression programs matched six-field lexical-copy, effect and selected-branch models\n", aggregate_expression_programs);
     printf("fuzz: %zu aggregate expression rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", aggregate_expression_rejections);
+    printf("fuzz: %zu Nix function programs matched independent eager-call, branch and bounded-loop models\n", nix_function_programs);
+    printf("fuzz: %zu Nix function rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", nix_function_rejections);
     return 0;
 }
