@@ -116,6 +116,18 @@ reserved identifier or a general block expression. Locals and parameters retain
 the existing by-value/mutability rules; plain `let` bindings are still readonly,
 and `var` makes a `let` binding mutable.
 
+An existing Nix conditional can also be used as an expression statement inside
+`do`: `if ready then count = count + 1 else count = 0;`. It evaluates the
+condition and only the selected value branch, then discards the result; it does
+not return from the function. Conditions keep ordinary grouping, application and
+operator precedence. Both branches must have the same supported non-void value
+type, `else` is required, and the whole expression ends with `;`. This is not a
+block expression or a new block-style `if`; use the existing C-style
+`if (ready) statement; else statement;` for statement branches. That spelling,
+its optional `else` and its nearest-`if` association stay unchanged in both body
+styles. Nested conditional/`let` expressions and record literals in a C body do
+not turn it into a Nix conditional statement.
+
 Inside a `do` body, local mutable bindings can also use the name-first form:
 
 ```l

@@ -144,6 +144,13 @@ The same typed-function DAGs also return their tick through one shared imported
 record, retaining the independent arithmetic/counter oracle in both import/root
 orders. Only complete `()` calls take result postfixes directly; nonempty calls
 keep their argument tails, overload selection and full-arity restrictions.
+Conditional-expression statements add 128 bounded condition/selected-branch
+effect models, 16 rejection/cleanup/recompile cycles and discarded-result trap
+recovery. Typed-function DAGs also branch their tick expressions without changing
+the independent arithmetic/counter oracle. Non-void branch types, required `else`
+and `;`, and explicit returns stay required. Token-only lookahead distinguishes
+the outer `then` from nested expression-owned tokens and preserves C bodies,
+optional/dangling `else` and following statement boundaries without a second AST.
 
 ## Nix workflow
 

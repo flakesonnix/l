@@ -145,6 +145,73 @@ for (const [body, message] of [
   ['text:()->string;text="*";main:()->int;main=int(text ()[', /expected expression/],
   ['text:()->string;text="*";' + nixMain('int(text ()[0)'), /expected '\]'/],
 ]) rejected(body, message);
+// Discarding a Nix conditional expression does not turn it into a C if statement.
+const conditionalStatementMain = body => `main:()->int;main=do{${body}};`;
+const conditionalStatementTypes = 'Box=record{ready:bool;x:int;text:string;};'
+  + 'check:int->bool;check=n:n==0;next:()->bool;next=true;get:()->Box;get=Box{ready=true;x=0;text="";};';
+for (const condition of ['true', '(true)', '((true))', '0==0', '(0)==0', '(0)+1==1',
+  '(0)+(let k:int=1;in k)==1', '(let k:bool=true;in k)', 'let k:bool=true;in k',
+  '(if true then true else false)', '(b).ready', '(flags)[0]', '(check) 0', '(next) ()', 'next ()', 'get ().ready', '(get) ().ready',
+  '(Box){ready=true;x=0;text="";}.ready', '(ready)=true', '(n)++==0', '(n)-- ==0']) {
+  program(conditionalStatementTypes + conditionalStatementMain('var out=0;var n=0;var ready=false;'
+    + 'var b=Box{ready=true;x=0;text="";};bool flags[1];flags[0]=true;'
+    + `if ${condition} then out=42 else out=0;return out;`));
+}
+program(conditionalStatementMain('var n=0;if true then if false then n=1 else n=42 else n=0;return n;'));
+program(conditionalStatementMain('var n=0;if false then n=0 else if true then n=42 else n=1;return n;'));
+program(conditionalStatementMain('var n=0;if (0)+(if true then 1 else 2)==1 then n=42 else n=0;return n;'));
+program('q=namespace{pub check:int->bool;check=n:n==0;};'
+  + conditionalStatementMain('var n=0;if (q::check) 0 then n=42 else n=0;return n;'));
+program(conditionalStatementMain('var n=0;if false then 1/0 else n=42;return n;'));
+program(conditionalStatementMain('var n=0;if true then byte(n=42) else byte(1/0);return n;'));
+program(conditionalStatementMain('if true then "*" else "";if false then false else true;return 42;'));
+program('Kind=enum{Off;On;};' + conditionalStatementMain('if true then Kind::On else Kind::Off;return 42;'));
+program('Box=record{x:int;};' + conditionalStatementMain('var n=0;if true then Box{x=n++;} else Box{x=1/0;};return n+41;'));
+program(conditionalStatementMain('var n=0;var out=0;if n++==0 then out=n+41 else out=0;return if n==1 then out else 0;'));
+program(conditionalStatementMain('var sum=0;for i in 0..3:do{if (i)<2 then sum=sum+14 else sum=sum+14;}return sum;'));
+program(conditionalStatementMain('var n=0;var sum=0;while(n<3){if n==1 then sum=sum+14 else sum=sum+14;n++;}return sum;'));
+program(conditionalStatementMain('var n=0;if(true)if true then n=42 else n=0;else n=1;return n;'));
+program(conditionalStatementMain('var n=0;if(false)if true then n=1 else n=2;else n=42;return n;'));
+// Nested expression-owned then tokens must not reclassify a legacy C body.
+const conditionalCDeclarations = 'Box=record{x:int;};take:int->int;take=x:x;';
+for (const body of ['{}', '{if(true){}}', 'n=1;', '+if true then 1 else 0;', '-if true then 1 else 0;',
+  'int x=if true then 1 else 0;', '(if true then 1 else 0);', 'let x:int=42;in x;',
+  '(let x:int=42;in x);', '!false;', 'Box{x=42;};', 'take (if true then 1 else 0);',
+  'switch(1){case 1:;default:;}', 'while(false){}', 'for(int i=0;i<0;i++){}', 'if(true)n=1;else n=2;',
+  '"then if { ;";', 'n=1/* then if */;', 'Box{x=if true then 42 else 0;};', '+let x:int=if true then 42 else 0;in x;']) {
+  program(conditionalCDeclarations + conditionalStatementMain(`var n=0;if(false)${body}return 42;`));
+  program(conditionalCDeclarations + `int main(){int n=0;if(false)${body}return 42;}`);
+}
+program(conditionalStatementMain('if(false)var x:int=if true then 1 else 0;return 42;'));
+program(conditionalStatementMain('var n=0;if(false){}if true then n=42 else n=0;return n;'));
+program(conditionalStatementMain('var n=0;if(false){}if(false){}if true then n=42 else n=0;return n;'));
+program(conditionalStatementMain('if(false){}var x:int=if true then 42 else 0;return x;'));
+for (const body of ['if(true)if(false)n=0;else n=42;', 'if(false)n=0;else if(true)n=42;else n=1;']) {
+  program(conditionalStatementMain(`var n=0;${body}return n;`));
+  program(`int main(){int n=0;${body}return n;}`);
+}
+for (const [body, message] of [
+  [conditionalStatementMain('if 1 then 42 else 0;return 42;'), /expected bool, got int/],
+  [conditionalStatementMain('if true then 42 else false;return 42;'), /expected int, got bool/],
+  [conditionalStatementMain('if true then 42;return 42;'), /expected 'else'/],
+  [conditionalStatementMain('if true 42 else 0;return 42;'), /expected 'then'/],
+  [conditionalStatementMain('if true then 1 else 0 return 42;'), /expected ';'/],
+  [conditionalStatementMain('if true then 42 else 0;'), /not all control-flow paths return a value/],
+  [conditionalStatementMain('const int n=42;if false then n=0 else n=42;return n;'), /cannot modify const/],
+  [conditionalStatementMain('int a[1];if true then a else a;return 42;'), /array used without an index/],
+  ['nop:()->void;nop=do{};' + conditionalStatementMain('if true then nop () else nop ();return 42;'), /conditional branches must have scalar or struct type/],
+  ['A=record{x:int;};B=record{x:int;};' + conditionalStatementMain('if true then A{x=0;} else B{x=0;};return 42;'), /expected struct, got struct/],
+  [conditionalStatementMain('if (let k:bool=true;in k) then 42 else 0;return k;'), /unknown local variable/],
+  ['main:()->int;main=do{if (', /expected expression/],
+  ['main:()->int;main=do{if (true', /expected '\)'/],
+  ['main:()->int;main=do{if(false){', /expected '}'/],
+  ['ping:()->int;ping=42;main:()->int;main=do{if(false)ping (', /expected expression/],
+  [conditionalStatementMain('if(false)+42]return 42;'), /expected ';'/],
+  [conditionalStatementMain('if(false)+in;return 42;'), /expected expression/],
+  [conditionalStatementMain('if(false)(then);return 42;'), /expected expression/],
+  [conditionalStatementMain('if(false)+let x=then;in x;return 42;'), /expected expression/],
+  ['int main(){if true then 42 else 0;return 42;}', /expected '\('/],
+]) rejected(body, message);
 program('int old(int x,int y){return x+y;}' + nixMain('old 20 22'));
 program(nixAdd + 'int main(){return add(20,22);}');
 program('void old(){}nop:()->void;nop=old ();main:()->int;main=do{nop ();return 42;};');

@@ -359,6 +359,45 @@ static bool while_record_condition(Parser *p) {
     return (next == ':' || next == '.' || next == '[' || next == TK_INC || next == TK_DEC || precedence(next)) &&
         while_condition_colon(p, at);
 }
+static bool if_expression_statement(Parser *p) {
+    size_t at = p->at + 1;
+    if (p->tokens[at].kind != '(') return true;
+    /* Skip the first condition group and optional constructor/C block. A block
+       cannot borrow 'then' from a later statement; no speculative AST is built. */
+    for (unsigned part = 0; part < 2; ++part) {
+        int open = part ? '{' : '(', close = part ? '}' : ')';
+        if (p->tokens[at].kind != open) break;
+        size_t depth = 0;
+        do {
+            int kind = p->tokens[at++].kind;
+            if (kind == TK_EOF) return false;
+            if (kind == open) ++depth;
+            if (kind == close) --depth;
+        } while (depth);
+    }
+    Parser tail = *p; tail.at = at;
+    int next = peek(&tail).kind;
+    bool postfix = next == '.' || next == '[' || next == TK_INC || next == TK_DEC;
+    if (next != TK_THEN && !postfix && !precedence(next) && !application_argument(&tail)) return false;
+    size_t groups = 0, bindings = 0, conditions = 0;
+    for (;; ++at) {
+        int kind = p->tokens[at].kind;
+        if (kind == TK_EOF) return false;
+        if (kind == '(' || kind == '[' || kind == '{') { ++groups; continue; }
+        if (kind == ')' || kind == ']' || kind == '}') {
+            if (!groups) return false;
+            --groups; continue;
+        }
+        if (kind == TK_LET) { ++bindings; continue; }
+        if (kind == TK_IN && bindings) { --bindings; continue; }
+        if (kind == TK_IF) { ++conditions; continue; }
+        if (kind == TK_THEN) {
+            if (conditions) { --conditions; continue; }
+            if (!groups && !bindings) return true;
+        }
+        if (kind == ';' && !groups && !bindings) return false;
+    }
+}
 static Stmt *statement(Parser *p) {
     Token token = peek(p);
     enter(p->ctx, token);
@@ -370,6 +409,9 @@ static Stmt *statement(Parser *p) {
             if (peek(p).kind == TK_EOF) token_fail(p->ctx, peek(p), "expected '}' before end of file");
             *tail = statement(p); tail = &(*tail)->next;
         }
+    } else if (p->nix_calls && token.kind == TK_IF && if_expression_statement(p)) {
+        s = new_stmt(p, ST_EXPR, token); s->expr = expression(p, 1);
+        expect(p, ';', "expected ';' after expression");
     } else if (take(p, TK_IF)) {
         s = new_stmt(p, ST_IF, token); s->condition = condition(p); s->body = statement(p);
         if (take(p, TK_ELSE)) s->other = statement(p);

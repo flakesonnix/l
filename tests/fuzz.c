@@ -50,6 +50,8 @@ static size_t record_while_programs, record_while_rejections;
 static uint32_t record_while_forms;
 static size_t unit_postfix_programs, unit_postfix_rejections;
 static uint32_t unit_postfix_forms;
+static size_t conditional_statement_programs, conditional_statement_rejections;
+static uint32_t conditional_statement_forms;
 static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms, nix_while_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
@@ -1873,6 +1875,75 @@ static void unit_postfix_recovery(void) {
     }
     dispose(ctx);
 }
+/* Discarded conditionals still evaluate their condition and exactly one branch. */
+static void conditional_statement_cases(void) {
+    random_state = UINT32_C(0x49465354);
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        unsigned form = test % 8, bound = random_number(7), parity = random_number(2);
+        bool selected = random_number(2) != 0;
+        int32_t yes = (int32_t)random_number(41) - 20, no = (int32_t)random_number(41) - 20;
+        int32_t expected = selected ? yes : no;
+        unsigned checks = 1, left = selected, right = !selected, order = selected ? 12 : 13;
+        conditional_statement_forms |= 1u << form; source_length = 0;
+        append("Box=record{ready:bool;};static int checks=0;static int left=0;static int right=0;static int seq=0;"
+            "check:bool->bool;check=flag:do{checks++;seq=seq*10+1;return flag;};"
+            "yes:int->int;yes=value:do{left++;seq=seq*10+2;return value;};"
+            "no:int->int;no=value:do{right++;seq=seq*10+3;return value;};"
+            "text:()->string;text=do{checks++;seq=seq*10+1;return if %s then \"*\" else \"\";};"
+            "main:()->int;main=do{var out=0;var flag=false;", selected ? "true" : "false");
+        if (form == 6) {
+            expected = 0; left = right = 0; checks = bound; order = 0;
+            for (unsigned i = 0; i < bound; ++i) {
+                if (i % 2 == parity) { expected += yes; ++left; } else { expected += no; ++right; }
+            }
+            append("for i in 0..%u:do{if (check) (i%%2==%u) then out=out+yes (%d) else out=out+no (%d);"
+                "if(seq!=(if i%%2==%u then 12 else 13))1/0;seq=0;}", bound, parity, yes, no, parity);
+        } else {
+            append("if ");
+            if (form == 0) append("check %s", selected ? "true" : "false");
+            else if (form == 1 || form == 7) append("(check) %s", selected ? "true" : "false");
+            else if (form == 2) append("(let decision:bool=%s;in check decision)", selected ? "true" : "false");
+            else if (form == 3) append("(Box){ready=check %s;}.ready", selected ? "true" : "false");
+            else if (form == 4) append("(text ()).length==1");
+            else append("(flag)=check %s", selected ? "true" : "false");
+            if (form == 7) append(" then Box{ready=(out=yes (%d))==%d;} else Box{ready=(out=no (%d))==%d;};", yes, yes, no, no);
+            else append(" then out=yes (%d) else out=no (%d);", yes, no);
+            if (form == 5) append("if(flag!=%s)1/0;", selected ? "true" : "false");
+        }
+        append("if(checks!=%u||left!=%u||right!=%u||seq!=%u)1/0;return out;};", checks, left, right, order);
+        ++conditional_statement_programs; semantic_case(expected, 0);
+    }
+    if (conditional_statement_forms != 255) failed("conditional statement model missed a condition or branch form");
+}
+static void conditional_statement_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("invalid conditional statement was accepted"); }
+    if (ctx->status != 65) failed("conditional statement rejection returned an unexpected status");
+    ++conditional_statement_rejections;
+}
+static void conditional_statement_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned conditional statement context rejected valid source");
+    Program *p = compile(ctx, "main:()->int;main=do{var n=0;if(false)+if true then 1 else 0;"
+        "if (n)+1==1 then n=42 else n=0;return n;};");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void conditional_statement_recovery(void) {
+    static const char *const invalid[] = {
+        "main:()->int;main=do{if true then 42;return 42;};",
+        "main:()->int;main=do{if true then 42 else false;return 42;};",
+        "main:()->int;main=do{const int n=42;if false then n=0 else n=42;return n;};",
+        "main:()->int;main=do{if(false){"
+    };
+    Context *ctx = context("conditional-statement-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            conditional_statement_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("conditional statement rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "conditional-statement-recovery";
+            conditional_statement_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
 static void nix_loop_block_reject(Context *ctx, const char *text) {
     if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("Nix loop body without a block was accepted"); }
     if (ctx->status != 65) failed("Nix loop block rejection returned an unexpected status");
@@ -2877,6 +2948,11 @@ int main(void) {
         "Box=record{x:int;};static int visits=0;main:()->int;main=do{return int(text ()[visits++]);};"
         "recover:()->int;recover=if visits==0 then answer ().x else 1/0;"
         "text:()->string;text=do{visits++;return \"\";};answer:()->Box;answer=Box{x=42;};");
+    conditional_statement_cases();
+    conditional_statement_recovery();
+    scoped_lifecycle(
+        "static int visits=0;main:()->int;main=do{if (visits++==0) then 42/(visits-1) else 0;return 42;};"
+        "recover:()->int;recover=do{if (visits)==0 then visits=42 else visits=0;return visits;};");
     nix_loop_block_recovery();
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=do{var n=0;while ((n<1)):do{n++;visits++;1/0;}return 42;};"
@@ -2937,5 +3013,7 @@ int main(void) {
     printf("fuzz: %zu record while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", record_while_rejections);
     printf("fuzz: %zu unit-call postfix programs preserved result/index effects and bounded loop results\n", unit_postfix_programs);
     printf("fuzz: %zu unit-call postfix rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", unit_postfix_rejections);
+    printf("fuzz: %zu conditional statement programs preserved condition/branch effects and bounded loop results\n", conditional_statement_programs);
+    printf("fuzz: %zu conditional statement rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", conditional_statement_rejections);
     return 0;
 }
