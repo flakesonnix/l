@@ -243,6 +243,10 @@ separately; passing a feature-head run does not prove that run passed.
   condition colon. Preserve eager left-to-right arguments, full arity, overloads
   and the ban on function values. Without that colon, declarations, conversions,
   literals and named calls still belong to the C body; `::` is not a delimiter.
+  Grouped record/struct constructors can continue through the existing postfix
+  parser when their own expression reaches the condition colon. Preserve written
+  field order, nominal types, copies and temporary-field mutation rejection.
+  A completed C block must not scan into a later Nix loop or typed declaration.
   After `: do`, both Nix loop forms require `{ ... }`, including empty bodies;
   do not accept `do ;`, a declaration or another unbraced statement instead.
   Contextual `do {` is never a call argument.

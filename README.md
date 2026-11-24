@@ -222,6 +222,14 @@ colon, `while (condition) step ();` remains a C-style loop with a call as its bo
 Typed `let` arguments, record literals, qualified `::` names and punctuation in
 strings do not change where the actual condition ends.
 
+A grouped record/struct type name can also keep its constructor tail:
+`while (Flag){ready = n < 3;}.ready: do { ... }`. Field initializers run in
+written order on every condition check, including the final false check, just as
+in an ordinary record expression. The colon must follow that same expression;
+`while (condition) { ... }` stays a C-style block even when a Nix loop or a typed
+declaration comes next. This does not make temporary record fields writable or
+change nominal types and value copies.
+
 Both Nix loop forms require the block after `do`, even for an empty body:
 write `while false: do { }`, not `while false: do ;` or `: do return 0;`.
 The same rule applies to `for i in start..end: do { ... }`. Ordinary C-style
