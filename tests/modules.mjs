@@ -1030,6 +1030,7 @@ try {
   for (let test = 0; test < 32; ++test) {
     const unitTails = {};
     const conditionalStatements = {};
+    const indexedStatements = {};
     const project = { 'std/calls.l': 'module std.calls;pub Count=alias int;pub static int ticks=0;'
       + 'pub tick:()->Count;tick=ticks++;' }, nodes = [];
     for (let n = 0; n < 8; ++n) {
@@ -1053,6 +1054,11 @@ try {
         .replaceAll('value=(value+t::tick ())%1009;', 'if (i)%2==0 then value=(value+t::tick ())%1009 else value=(t::tick ()+value)%1009;');
       assert.notEqual(conditionalStatements[`${name.replaceAll('.', '/')}.l`], project[`${name.replaceAll('.', '/')}.l`],
         'conditional statement variant must change the generated tick expression');
+      indexedStatements[`${name.replaceAll('.', '/')}.l`] = project[`${name.replaceAll('.', '/')}.l`]
+        .replaceAll('value=(value+t::tick ())%1009;', '{t::Count previous[1];previous[0]=t::ticks;'
+          + 't::advance previous[0];value=(value+previous[0])%1009;}');
+      assert.notEqual(indexedStatements[`${name.replaceAll('.', '/')}.l`], project[`${name.replaceAll('.', '/')}.l`],
+        'indexed-call variant must change the generated tick expression');
       nodes.push({ name, parents, delta, iterations });
     }
     let ticks = 0n;
@@ -1071,7 +1077,8 @@ try {
       const settings = config(); if (reverse) settings.module_roots.reverse();
       for (const [variant, types] of [[project, 0], [{ ...project, ...unitTails,
         'std/calls.l': project['std/calls.l'] + 'pub Tick=record{value:Count;};pub next:()->Tick;next=Tick{value=ticks++;};' }, 1],
-        [{ ...project, ...conditionalStatements }, 0]]) {
+        [{ ...project, ...conditionalStatements }, 0], [{ ...project, ...indexedStatements,
+          'std/calls.l': project['std/calls.l'] + 'pub advance:Count->void;advance=previous:do{if(previous!=ticks)1/0;ticks++;};' }, 0]]) {
         const f = program(variant, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
         assert.equal(bytes.readUInt32LE(16), 1, 'Nix functions add no implicit global storage');
         assert.equal(bytes.readUInt32LE(20), types, 'only the unit-result variant adds its shared nominal type');

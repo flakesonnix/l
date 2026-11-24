@@ -256,6 +256,11 @@ separately; passing a feature-head run does not prove that run passed.
   branch and preserve its effects/traps. Do not turn this into implicit return,
   void values or block expressions. Preserve C `if` bodies and nearest-`if`
   `else` association; nested `then` tokens must not reclassify a C body.
+  Resolve ambiguous `Name value[index];` statements by the existing declaration
+  kind, not parser arity. Preserve actual named array declarations, constant
+  extents and scope, including `for` initializers. Calls must reuse the ordinary
+  argument/overload/privacy checks, evaluate indices once before calling and add
+  no implicit array binding. C calls and whole-array rejection remain unchanged.
   After `: do`, both Nix loop forms require `{ ... }`, including empty bodies;
   do not accept `do ;`, a declaration or another unbraced statement instead.
   Contextual `do {` is never a call argument.

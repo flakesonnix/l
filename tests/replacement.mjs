@@ -212,6 +212,83 @@ for (const [body, message] of [
   [conditionalStatementMain('if(false)+let x=then;in x;return 42;'), /expected expression/],
   ['int main(){if true then 42 else 0;return 42;}', /expected '\('/],
 ]) rejected(body, message);
+// Named indexed arguments and named array declarations share a token prefix.
+const indexedStatementMain = body => `main:()->int;main=do{${body}};`;
+const indexedDeclarations = 'Count=alias int;Byte=alias byte;Flag=alias bool;static int seen=0;static int calls=0;static int sequence=0;'
+  + 'consume:int->int;consume=value:do{calls++;sequence=sequence*10+2;seen=seen+value;return value;};'
+  + 'consume:byte->int;consume=value:do{calls++;sequence=sequence*10+2;seen=seen+int(value);return int(value);};'
+  + 'consume:bool->int;consume=value:do{calls++;sequence=sequence*10+2;seen=seen+(if value then 42 else 0);return seen;};'
+  + 'discard:int->void;discard=value:do{calls++;seen=seen+value;return;};';
+program(indexedDeclarations + indexedStatementMain('Count values[1];values[0]=42;consume values[0];return if calls==1 then seen else 0;'));
+program(indexedDeclarations + indexedStatementMain('var text="*";consume text[0];return if calls==1 then seen else 0;'));
+program(indexedDeclarations + indexedStatementMain('Byte values[1];values[0]=byte(42);consume values[0];return seen;'));
+program(indexedDeclarations + indexedStatementMain('Flag values[1];values[0]=true;consume values[0];return seen;'));
+program(indexedDeclarations + indexedStatementMain('Count values[2];values[1]=42;var index=1;consume values[index++];return if index==2&&calls==1 then seen else 0;'));
+program(indexedDeclarations + 'next:()->int;next=do{sequence=sequence*10+1;return 0;};'
+  + indexedStatementMain('Count values[1];values[0]=42;consume values[next ()];return if sequence==12&&calls==1 then seen else 0;'));
+program(indexedDeclarations + indexedStatementMain('Count values[1];values[0]=42;var index=0;consume values[index++]++;'
+  + 'return if index==1&&values[0]==43&&calls==1 then seen else 0;'));
+program(indexedDeclarations + indexedStatementMain('Count values[1];values[0]=42;consume values[0]+1;return seen;'));
+program(indexedDeclarations + 'pair:int->int->int;pair=a:b:do{calls++;seen=a*10+b;return seen;};'
+  + indexedStatementMain('Count values[2];values[0]=3;values[1]=4;var index=0;pair values[index++] values[index++];'
+    + 'return if index==2&&calls==1 then seen+8 else 0;'));
+program(indexedDeclarations + 'q=namespace{pub consume:int->void;consume=value:do{seen=seen+value;};};'
+  + indexedStatementMain('Count values[1];values[0]=42;q::consume values[0];return seen;'));
+program('static int seen=0;main:()->int;main=do{Count values[1];values[0]=42;consume values[0];return seen;};'
+  + 'Count=alias int;consume:int->void;consume=value:do{seen=seen+value;};');
+program('Count=alias int;static int seen=0;int consume(int value){seen=seen+value;return value;}'
+  + indexedStatementMain('Count values[1];values[0]=42;consume values[0];return seen;'));
+program(indexedDeclarations + indexedStatementMain('Count values[1];values[0]=42;discard values[0];return seen;'));
+program(indexedDeclarations + indexedStatementMain('Count values[1];values[0]=42;for(discard values[0];false;){}return seen;'));
+program(indexedDeclarations + indexedStatementMain('Count values[3];for(int i=0;i<3;i++)values[i]=14;var index=0;'
+  + 'while(index<3)discard values[index++];return if calls==3 then seen else 0;'));
+program(indexedDeclarations + indexedStatementMain('Count values[1];values[0]=42;if(true)consume values[0];else consume values[0];return seen;'));
+program(indexedDeclarations + indexedStatementMain('Count values[1];values[0]=42;switch(1){case 1:consume values[0];break;default:return 0;}return seen;'));
+// Real type names still declare arrays, including aliases and for-initializer scope.
+for (const type of ['Count', 'types::Count']) {
+  const declarations = indexedDeclarations + 'types=namespace{pub Count=alias int;};';
+  program(declarations + indexedStatementMain(`${type} values[1];values[0]=42;return values[0];`));
+  program(declarations + `int main(){${type} values[1];values[0]=42;return values[0];}`);
+  program(declarations + indexedStatementMain(`var total=0;for(${type} values[1];values[0]<3;values[0]++){total=total+14;}return total;`));
+}
+program(indexedDeclarations + indexedStatementMain('const Count values[1];consume values[0];return seen+42;'));
+program(indexedDeclarations + 'int main(){Count values[1];values[0]=42;consume(values[0]);return seen;}');
+program(indexedDeclarations + indexedStatementMain('Count values[1];values[0]=42;(consume values[0]);return seen;'));
+program(indexedDeclarations + indexedStatementMain('Count values[1];values[0]=42;(consume) values[0];return seen;'));
+program(indexedDeclarations + indexedStatementMain('consume "*"[0];return seen;'));
+const indexedLibrary = 'module app.library;pub Count=alias int;pub static int seen=0;pub static int values[1];'
+  + 'pub consume:Count->void;consume=value:do{seen=seen+value;};hidden:Count->void;hidden=value:do{};';
+program('import app.library as lib;' + indexedStatementMain('lib::Count values[1];values[0]=42;lib::consume values[0];return lib::seen;'), 42,
+  { 'library.l': indexedLibrary });
+program('import app.library::{Count as Number,consume as take,seen};'
+  + indexedStatementMain('Number values[1];values[0]=42;take values[0];return seen;'), 42, { 'library.l': indexedLibrary });
+program('import app.library as lib;' + indexedStatementMain('lib::values[0]=42;lib::consume lib::values[0];return lib::seen;'), 42,
+  { 'library.l': indexedLibrary });
+program(indexedDeclarations + indexedStatementMain('Count values[1];consume values[-1];return 42;'), 70, {}, /out of bounds/);
+program(indexedDeclarations + indexedStatementMain('Count values[1];values[0]=2147483647;consume values[0]++;return 42;'), 70, {}, /integer overflow/);
+for (const [body, message] of [
+  [indexedDeclarations + indexedStatementMain('Count values[1];consume values[true];return 42;'), /expected int, got bool/],
+  [indexedDeclarations + indexedStatementMain('Count values[1];consume values;return 42;'), /array used without an index/],
+  [indexedDeclarations + indexedStatementMain('Count values[1];consume values[0] 1;return 42;'), /no matching function overload/],
+  [indexedDeclarations + 'pair:int->int->int;pair=a:b:a+b;' + indexedStatementMain('Count values[1];pair values[0];return 42;'), /no matching function overload/],
+  [indexedDeclarations + indexedStatementMain('var text="*";consume text[0][0];return 42;'), /expected string, got byte/],
+  [indexedDeclarations + indexedStatementMain('consume missing[0];return 42;'), /unknown local variable/],
+  [indexedDeclarations + indexedStatementMain('Count values[1];var consume=0;consume values[0];return 42;'), /local binding is not callable/],
+  ['consume:int=42;' + indexedStatementMain('int values[1];consume values[0];return 42;'), /declaration is not a type alias/],
+  [indexedDeclarations + indexedStatementMain('Count values[0];return 42;'), /array length must be between/],
+  [indexedDeclarations + indexedStatementMain('var length=1;Count values[length];return 42;'), /not a compile-time constant/],
+  [indexedDeclarations + indexedStatementMain('Count values[1];Count values[1];return 42;'), /duplicate local declaration/],
+  [indexedDeclarations + indexedStatementMain('const Count values[1];consume values[0]++;return 42;'), /cannot modify const/],
+  [indexedDeclarations + indexedStatementMain('for(Count values[1];false;){}return values[0];'), /unknown local variable/],
+  [indexedDeclarations + 'main:()->int;main=do{Count values[1];consume values[', /expected expression/],
+  [indexedDeclarations + indexedStatementMain('Count values[1];consume values[];return 42;'), /expected expression/],
+  [indexedDeclarations + indexedStatementMain('Count values[1];consume values[0;return 42;'), /expected '\]'/],
+  [indexedDeclarations + 'int main(){Count values[1];consume values[0];return 42;}', /declaration is not a type alias/],
+]) rejected(body, message);
+rejected('import app.library as lib;' + indexedStatementMain('lib::Count values[1];lib::hidden values[0];return 42;'),
+  /inaccessible symbol/, { 'library.l': indexedLibrary });
+rejected('import app.library as lib;' + indexedStatementMain('int values[1];var lib=0;lib::consume values[0];return 42;'),
+  /local binding is not callable/, { 'library.l': indexedLibrary });
 program('int old(int x,int y){return x+y;}' + nixMain('old 20 22'));
 program(nixAdd + 'int main(){return add(20,22);}');
 program('void old(){}nop:()->void;nop=old ();main:()->int;main=do{nop ();return 42;};');

@@ -52,6 +52,12 @@ static bool starts_decl(Parser *p) {
     /* In Nix bodies, adjacent names can also be an application: f value. */
     return !p->nix_calls || p->tokens[at + 1].kind == '=' || p->tokens[at + 1].kind == '[';
 }
+static bool indexed_statement_start(Parser *p) {
+    if (!p->nix_calls || peek(p).kind != TK_NAME || !starts_decl(p)) return false;
+    size_t at = p->at + 1;
+    while (p->tokens[at].kind == TK_SCOPE) at += 2;
+    return p->tokens[at + 1].kind == '[';
+}
 static Expr *expression(Parser *, int);
 static Expr *postfix_tail(Parser *, Expr *);
 static Stmt *statement(Parser *);
@@ -313,6 +319,24 @@ static Decl *declaration(Parser *p, bool parameter) {
     }
     return decl;
 }
+static Stmt *indexed_statement(Parser *p) {
+    Token token = peek(p);
+    Expr *e = expression(p, 1);
+    expect(p, ';', "expected ';' after expression");
+    Stmt *s = new_stmt(p, ST_EXPR, token); s->expr = e;
+    /* The prefix guarantees a named callee and a first indexed argument. One
+       shared expression tree also describes Type name[length]; resolve its
+       declaration kind later, without parser arity lookup or a second parse. */
+    if (e->kind == EX_CALL && !e->args->next && e->args->value->kind == EX_INDEX &&
+        e->args->value->left->kind == EX_NAME) {
+        Expr *index = e->args->value;
+        Decl *d = allocate(p->ctx, sizeof(*d));
+        d->type = TY_NAMED; d->type_name = e->left->token;
+        d->name = index->left->token; d->length = index->right;
+        s->kind = ST_DECL; s->decl = d;
+    }
+    return s;
+}
 static Expr *condition(Parser *p) {
     expect(p, '(', "expected '(' before condition");
     Expr *e = expression(p, 1);
@@ -447,7 +471,8 @@ static Stmt *statement(Parser *p) {
         } else {
             s = new_stmt(p, ST_FOR, token);
             expect(p, '(', "expected '(' after for");
-            if (starts_decl(p)) {
+            if (indexed_statement_start(p)) s->init = indexed_statement(p);
+            else if (starts_decl(p)) {
                 s->init = new_stmt(p, ST_DECL, peek(p)); s->init->decl = declaration(p, false);
             } else if (!take(p, ';')) {
                 s->init = new_stmt(p, ST_EXPR, peek(p)); s->init->expr = expression(p, 1);
@@ -493,6 +518,7 @@ static Stmt *statement(Parser *p) {
         }
     } else if (token.kind == TK_CASE || token.kind == TK_DEFAULT)
         token_fail(p->ctx, token, "case/default requires an enclosing switch body");
+    else if (indexed_statement_start(p)) s = indexed_statement(p);
     else if (starts_decl(p)) {
         s = new_stmt(p, ST_DECL, token); s->decl = declaration(p, false);
     } else if (take(p, ';')) s = new_stmt(p, ST_EMPTY, token);
