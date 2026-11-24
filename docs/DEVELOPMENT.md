@@ -138,6 +138,12 @@ with initializer trap recovery. The imported record variant has exactly one
 shared nominal type; earlier variants retain zero nominal metadata. Lookahead
 stops at the first constructor/block close before checking for a condition tail,
 so a C block cannot borrow the colon of a later loop or typed declaration.
+Unit-call postfix regressions add 128 bounded result/index/loop models, 16
+rejection/cleanup/recompile cycles and source/serialized index-trap recovery.
+The same typed-function DAGs also return their tick through one shared imported
+record, retaining the independent arithmetic/counter oracle in both import/root
+orders. Only complete `()` calls take result postfixes directly; nonempty calls
+keep their argument tails, overload selection and full-arity restrictions.
 
 ## Nix workflow
 

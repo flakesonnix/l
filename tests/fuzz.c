@@ -48,6 +48,8 @@ static size_t call_while_programs, call_while_rejections;
 static uint32_t call_while_forms;
 static size_t record_while_programs, record_while_rejections;
 static uint32_t record_while_forms;
+static size_t unit_postfix_programs, unit_postfix_rejections;
+static uint32_t unit_postfix_forms;
 static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms, nix_while_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
@@ -1807,6 +1809,70 @@ static void record_while_recovery(void) {
     }
     dispose(ctx);
 }
+/* Unit calls own their result tail; nonempty applications still own argument tails. */
+static void unit_postfix_cases(void) {
+    random_state = UINT32_C(0x554e4954);
+    static const int32_t octets[] = {42, 97, 98};
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        unsigned form = test % 8, index = random_number(3), limit = random_number(7), width = random_number(7);
+        int32_t value = (int32_t)random_number(41) - 20, bias = (int32_t)random_number(21) - 10;
+        int32_t weight = (int32_t)random_number(20) + 1, expected;
+        unsigned calls = 1, indices = form == 3 || form == 4, order = form >= 3 && form <= 5 ? 12 : 1;
+        source_length = 0; unit_postfix_forms |= 1u << form;
+        append("Box=record{x:int;ready:bool;text:string;};static int calls=0;static int indices=0;static int seq=0;"
+            "make:()->Box;make=do{calls++;seq=seq*10+1;return Box{x=%d;ready=calls<=%u;text=\"*ab\";};};"
+            "text:()->string;text=do{calls++;seq=seq*10+1;return \"*ab\";};"
+            "offset:()->int;offset=do{indices++;seq=seq*10+2;return %u;};"
+            "take:int->int;take=x:do{seq=seq*10+2;return x+(%d);};"
+            "upper:()->Box;upper=do{calls++;seq=seq*10+2;return Box{x=%d;ready=false;text=\"\";};};"
+            "main:()->int;main=do{var result=0;", value, limit, index, bias, value + (int32_t)width);
+        if (form == 0) { append("result=make ().x;"); expected = value; }
+        else if (form == 1) { append("result=((make)) ().x;"); expected = value; }
+        else if (form == 2) { append("result=make ().text.length+(%d);", bias); expected = 3 + bias; }
+        else if (form == 3) { append("result=int(text ()[offset ()]);"); expected = octets[index]; }
+        else if (form == 4) { append("result=int(make ().text[offset ()]);"); expected = octets[index]; }
+        else if (form == 5) { append("result=take (make ().x);"); expected = value + bias; }
+        else if (form == 6) {
+            append("var n=0;while (make) ().ready:do{if(seq!=1)1/0;seq=0;n++;}result=n*%d;", weight);
+            expected = (int32_t)limit * weight; calls = limit + 1;
+        } else {
+            append("for i in make ().x..upper ().x:do{result=result+%d;}", weight);
+            expected = (int32_t)width * weight; calls = 2; order = 12;
+        }
+        append("if(calls!=%u||indices!=%u||seq!=%u)1/0;return result;};", calls, indices, order);
+        ++unit_postfix_programs; semantic_case(expected, 0);
+    }
+    if (unit_postfix_forms != 255) failed("unit-call postfix model missed a result or loop form");
+}
+static void unit_postfix_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("invalid unit-call postfix was accepted"); }
+    if (ctx->status != 65) failed("unit-call postfix rejection returned an unexpected status");
+    ++unit_postfix_rejections;
+}
+static void unit_postfix_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned unit-call postfix context rejected valid source");
+    Program *p = compile(ctx, "Box=record{x:int;};make:()->Box;make=Box{x=42;};"
+        "main:()->int;main=do{while(false){}while false:do{}return make ().x;};");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void unit_postfix_recovery(void) {
+    static const char *const invalid[] = {
+        "one:()->int;one=42;main:()->int;main=one ().missing;",
+        "text:()->string;text=\"*\";main:()->int;main=int(text ()[true]);",
+        "Box=record{x:int;};make:()->Box;make=Box{x=42;};main:()->int;main=make ().x++;",
+        "text:()->string;text=\"*\";main:()->int;main=int(text ()["
+    };
+    Context *ctx = context("unit-postfix-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            unit_postfix_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("unit-call postfix rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "unit-postfix-recovery";
+            unit_postfix_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
 static void nix_loop_block_reject(Context *ctx, const char *text) {
     if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("Nix loop body without a block was accepted"); }
     if (ctx->status != 65) failed("Nix loop block rejection returned an unexpected status");
@@ -2805,6 +2871,12 @@ int main(void) {
         "while (Box){ready=42/visits++>0;}.ready:do{}return 42;};"
         "recover:()->int;recover=do{var n=0;while (Box){ready=n<3;}.ready:do{n++;}"
         "return if visits==0 then n+39 else 1/0;};");
+    unit_postfix_cases();
+    unit_postfix_recovery();
+    scoped_lifecycle(
+        "Box=record{x:int;};static int visits=0;main:()->int;main=do{return int(text ()[visits++]);};"
+        "recover:()->int;recover=if visits==0 then answer ().x else 1/0;"
+        "text:()->string;text=do{visits++;return \"\";};answer:()->Box;answer=Box{x=42;};");
     nix_loop_block_recovery();
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=do{var n=0;while ((n<1)):do{n++;visits++;1/0;}return 42;};"
@@ -2863,5 +2935,7 @@ int main(void) {
     printf("fuzz: %zu grouped-call while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", call_while_rejections);
     printf("fuzz: %zu record while programs preserved constructor order and bounded loop results\n", record_while_programs);
     printf("fuzz: %zu record while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", record_while_rejections);
+    printf("fuzz: %zu unit-call postfix programs preserved result/index effects and bounded loop results\n", unit_postfix_programs);
+    printf("fuzz: %zu unit-call postfix rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", unit_postfix_rejections);
     return 0;
 }

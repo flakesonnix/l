@@ -86,6 +86,65 @@ program('id:int->int;id=x:x;' + nixMain('id int(byte(42))'));
 program(nixAdd + 'one:()->int;one=1;' + nixMain('add (one ()) 41'));
 program('one:()->int;one=42;' + nixMain('one()'));
 program('one:()->int;one=42;' + nixMain('one /* no arguments */ ()'));
+// A complete () invocation has no argument that could own its postfix tail.
+const unitBox = 'Box=record{x:int;ready:bool;text:string;};';
+const unitGet = unitBox + 'get:()->Box;get=Box{x=42;ready=true;text="abc";};';
+for (const call of ['get ()', 'get()', '(get) ()', '((get)) ()', 'get /* result */ ()']) {
+  program(unitGet + nixMain(`${call}.x`));
+  program(unitGet + nixMain(`if ${call}.ready then 42 else 0`));
+  program(unitGet + nixMain(`${call}.text.length+39`));
+  program(unitGet + nixMain(`int(${call}.text[0])-55`));
+}
+for (const call of ['text ()', 'text()', '(text) ()']) {
+  program('text:()->string;text="*";' + nixMain(`${call}.length+41`));
+  program('text:()->string;text="*";' + nixMain(`int(${call}[0])`));
+}
+program('scope=namespace{pub Box=record{x:int;};pub get:()->Box;get=Box{x=42;};};' + nixMain('scope::get ().x'));
+program('scope=namespace{pub text:()->string;text="*";};' + nixMain('int((scope::text) ()[0])'));
+program('struct Box{int x;};Box get(){return Box{42};}' + nixMain('get ().x'));
+program(unitGet + 'int main(){return get().x;}');
+program('static int calls=0;Box=record{x:int;};get:()->Box;get=do{calls++;return Box{x=21;};};'
+  + nixMain('let answer=get ().x+get ().x;in if calls==2 then answer else 0'));
+program('static int seq=0;text:()->string;text=do{seq=seq*10+1;return "*";};'
+  + 'index:()->int;index=do{seq=seq*10+2;return 0;};'
+  + nixMain('let value=int(text ()[index ()]);in if seq==12 then value else 0'));
+program('Box=record{x:int;};get:()->Box;get=Box{x=42;};'
+  + 'main:()->int;main=do{var copy=get ();copy.x=0;return get ().x;};');
+program('Box=record{ready:bool;};static int calls=0;next:()->Box;'
+  + 'next=do{calls++;return Box{ready=calls<4;};};main:()->int;main=do{var n=0;'
+  + 'while next ().ready:do{n++;}return if calls==4 then n+39 else 0;};');
+program('Box=record{ready:bool;};static int calls=0;next:()->Box;'
+  + 'next=do{calls++;return Box{ready=calls<4;};};main:()->int;main=do{var n=0;'
+  + 'while (next) ().ready:do{n++;}return if calls==4 then n+39 else 0;};');
+program('Box=record{x:int;};static int seq=0;lower:()->Box;lower=do{seq=seq*10+1;return Box{x=0;};};'
+  + 'upper:()->Box;upper=do{seq=seq*10+2;return Box{x=3;};};main:()->int;main=do{var total=0;'
+  + 'for i in lower ().x..upper ().x:do{total=total+14;}return if seq==12 then total else 0;};');
+program(unitGet + nixMain('if false then int(get ().text[999]) else 42'));
+program('text:()->string;text="";' + nixMain('int(text ()[0])'), 70, {}, /string index out of bounds/);
+program('text:()->string;text="*";' + nixMain('int(text ()[-1])'), 70, {}, /string index out of bounds/);
+// Nonempty applications keep argument postfixes, including overload selection.
+const argumentField = 'Box=record{x:int;};pick:int->int;pick=x:x+2;pick:Box->int;pick=b:b.x+100;';
+program(argumentField + 'main:()->int;main=do{var b=Box{x=40;};return pick b.x;};');
+program('text:string->int;text=s:s.length+41;main:()->int;main=do{var b="*";return text b;};');
+program('Box=record{x:int;};make:int->Box;make=x:Box{x=x;};' + nixMain('(make 42).x'));
+for (const [body, message] of [
+  [unitGet + nixMain('get ().missing'), /unknown struct field/],
+  [unitGet + nixMain('get ().x++'), /field mutation requires a local struct binding/],
+  [unitGet + nixMain('get ().x=42'), /field mutation requires a local struct binding/],
+  ['text:()->string;text="*";' + nixMain('text ()[true]'), /expected int, got bool/],
+  ['text:()->string;text="*";' + nixMain('text ()[0]=byte(42)'), /arrays must be indexed through a variable name/],
+  ['text:()->string;text="*";' + nixMain('text ().missing'), /string has only a length property/],
+  ['one:()->int;one=42;' + nixMain('one ().x'), /field access requires a struct value/],
+  ['one:()->int;one=42;' + nixMain('one ()++'), /assignment requires a local variable/],
+  [unitGet + nixMain('get ()[0]'), /expected string/],
+  [unitGet + nixMain('get ().ready ()'), /direct function calls only/],
+  [unitGet + nixMain('get (){x=42;ready=true;text="";}'), /struct literal requires a named struct type/],
+  ['make:int->int;make=n:n;' + nixMain('make ().x'), /no matching function overload/],
+  ['Box=record{x:int;};make:int->Box;make=x:Box{x=x;};' + nixMain('make 42.x'), /field access requires a struct value/],
+  [unitGet + 'main:()->int;main=get ().', /expected field name/],
+  ['text:()->string;text="*";main:()->int;main=int(text ()[', /expected expression/],
+  ['text:()->string;text="*";' + nixMain('int(text ()[0)'), /expected '\]'/],
+]) rejected(body, message);
 program('int old(int x,int y){return x+y;}' + nixMain('old 20 22'));
 program(nixAdd + 'int main(){return add(20,22);}');
 program('void old(){}nop:()->void;nop=old ();main:()->int;main=do{nop ();return 42;};');

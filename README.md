@@ -97,6 +97,13 @@ compound argument: `add (twice 10) (11 * 2)`. Parentheses need no surrounding
 spaces, so `add(20)(22)` works too. Negative/unary arguments, `let` and `if`
 arguments need parentheses. `answer ()` invokes a zero-parameter function.
 
+A complete zero-parameter call can be followed directly by a result field or
+string index: `read ().value`, `text ().length` or `text ()[i]`. The call runs
+once, before its index; ordinary postfix/infix precedence still applies. This
+rule is specific to the explicit `()` invocation. In `f value.field`, the field
+still belongs to the argument; write `(f value).field` to access a nonempty
+call's result. Returned record fields and string bytes do not become writable.
+
 This is Nix-like syntax, **not currying**: partial calls, stored/passed function
 values, anonymous lambdas and closures are not supported. `(add 20) 22` is
 rejected. Conversions keep their explicit `int(expr)` and `byte(expr)` forms.
