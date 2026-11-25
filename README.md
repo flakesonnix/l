@@ -856,6 +856,10 @@ letters/underscores initially, then letters, digits, underscores or hyphens.
 Unknown/duplicate keys, invalid UTF-8/Unicode escapes and unregistered dependency
 packages are errors. JSON strings support standard escapes, including surrogate
 pairs. The seed permits 256 root registrations and 1024 dependency registrations.
+Nonempty prefix strings must be contiguous dotted module names after JSON escape
+decoding. Spaces and source comments (`#`, `//`, `/* ... */`) are errors,
+even in unused root registrations; ordinary JSON formatting and escaped identifier
+characters still work. The explicitly empty prefix remains valid.
 
 Resolution uses the longest matching prefix; equally matching registrations are
 ambiguous. Imports across packages require a direct declared dependency, not just

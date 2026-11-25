@@ -317,6 +317,36 @@ try {
   program(files('import std.math;int main(){return std::math::answer();}'), 42, whole);
   const single = fixture({ 'main.l': 'module main;int main(){return 42;}' }, whole);
   single.input = resolve(single.directory, 'src/main.l'); source(single, 42, 'run');
+  // Prefix strings are canonical names, not source fragments with ignored trivia.
+  for (const prefix of ['ghost# ignored', 'ghost// ignored', 'ghost/* ignored */',
+    'ghost.# ignored\nbranch', 'ghost.// ignored\nbranch', 'ghost./* ignored */branch',
+    '# before\nghost', '// before\nghost', '/* before */ghost',
+    ' ghost', '\tghost', '\nghost', 'ghost ', 'ghost\t', 'ghost\r', 'ghost\n',
+    'ghost .branch', 'ghost. branch', 'ghost\r\n.branch', 'ghost/* middle */.branch']) {
+    for (const reverse of [false, true]) {
+      const settings = config();
+      settings.module_roots.push({ package: 'application', prefix, path: 'src/app' });
+      if (reverse) settings.module_roots.reverse();
+      const f = rejected({}, /invalid module manifest: invalid module path prefix/, settings);
+      assert.match(source(f, 65, 'run').stderr, /invalid module path prefix/);
+      assert.match(source(f, 65, 'check', [], { cwd: '/' }).stderr, /invalid module path prefix/);
+      const output = resolve(f.directory, 'existing.lbc'), sentinel = Buffer.from('keep existing output');
+      writeFileSync(output, sentinel);
+      assert.match(source(f, 65, 'compile', ['-o', output]).stderr, /invalid module path prefix/);
+      assert.deepEqual(readFileSync(output), sentinel, 'invalid prefixes must not replace existing output');
+    }
+  }
+  for (const prefix of ['ghost', 'ghost.branch', '_ghost.B2', 'record.alias', 'do.record']) {
+    const settings = config(); settings.module_roots.push({ package: 'application', prefix, path: 'src/app' });
+    program(files('import std.math;int main(){return std::math::answer();}'), 42, settings);
+  }
+  for (const escaped of ['ghost\\u0023 ignored', 'ghost\\u0020.branch', 'ghost\\u002f\\u002f ignored',
+    'ghost\\u002f* ignored */', 'ghost\\u000a']) {
+    const settings = config(); settings.module_roots.push({ package: 'application', prefix: 'GHOST', path: 'src/app' });
+    rejected({}, /invalid module manifest: invalid module path prefix/, JSON.stringify(settings).replace('GHOST', escaped));
+  }
+  const escapedPrefix = JSON.stringify(config()).replace('"app"', '"\\u0061pp"');
+  program(files('import std.math;int main(){return std::math::answer();}'), 42, escapedPrefix);
   for (const order of [false, true]) {
     const imports = ['import std.math;', 'import std.math.child;'];
     if (order) imports.reverse();

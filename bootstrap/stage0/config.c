@@ -109,9 +109,13 @@ static Token module_prefix(Json *j, char *text) {
     Token prefix = {.text = text, .length = strlen(text)};
     if (!*text) return prefix; /* An explicitly registered empty prefix maps a whole source root. */
     size_t count; Token *tokens = lex(j->ctx, text, strlen(text), &count);
-    for (size_t n = 0; n + 1 < count; ++n)
+    /* Source trivia is not part of a canonical manifest prefix. */
+    size_t used = 0;
+    for (size_t n = 0; n + 1 < count; ++n) {
         if (tokens[n].kind != (n % 2 ? '.' : TK_NAME)) config_error(j, "invalid module path prefix");
-    if (count % 2 != 0) config_error(j, "invalid module path prefix");
+        used += tokens[n].length;
+    }
+    if (count % 2 != 0 || used != prefix.length) config_error(j, "invalid module path prefix");
     return prefix;
 }
 char *canonical_path(Context *ctx, const char *path) {
