@@ -69,6 +69,51 @@ function rejected(body, message, files = {}, marker) {
 // Nix-style definitions are typed direct functions, not closures or partial applications.
 const nixMain = expression => `main:()->int;main=${expression};`;
 const nixAdd = 'pub add:int->int->int;add=a:b:a+b;';
+// Hash comments are source whitespace, not directives, string syntax or token paste.
+const hashMain = body => `main:()->int;main=do{${body}};`;
+for (const newline of ['\n', '\r\n']) for (const text of ['', ' if then else let in do :: -> ; } ] )',
+  ' /* unterminated block', ' "unterminated string', ' // nested-looking comment', ' UTF-8: é λ']) {
+  program(`#${text}${newline}${nixMain('42')}# final comment without LF`);
+  program(`int main(){#${text}${newline}return 42;}#`);
+}
+program('', 42, { 'main.l': '# before the real header\nmodule app.main;# header tail\nmain:()->int;main=42;# EOF' });
+program('', 42, { 'main.l': '# module ghost; import app.missing;\r\nmodule app.main;int main(){return 42;}' });
+program('int# return type boundary\nmain(){return# expression boundary\n42;}');
+program('main:()# signature boundary\n->int;main# definition boundary\n=42;');
+program('add:int-># parameter type\nint->int;add=a:# first parameter\nb:# second parameter\na+b;'
+  + nixMain('add# callee boundary\n20# first argument\n22'));
+program('int add(int a,int b){return a+b;}int main(){return add(20,# comma argument\n22);}');
+program('Count=# contextual alias\nalias int;' + hashMain('Count# declaration boundary\nvalues[1];values[0]=42;return values[0];'));
+program('Box=# contextual record\nrecord{value:# field type\nint;};' + nixMain('(Box{value=42;# field tail\n}).value'));
+program(hashMain('var total# local boundary\n:int# annotation boundary\n=0;for i in 0..# range bound\n3:do# body boundary\n{total=total+14;}return total;'));
+program('check:int->bool;check=n:n<3;' + hashMain('var n=0;while (check)# argument boundary\nn:# condition delimiter\ndo{n++;}return n+39;'));
+program(hashMain('var n=0;if (n)# infix boundary\n==0 then# selected branch\nn=42 else# other branch\nn=0;return n;'));
+program('Count=alias int;static int seen=0;consume:int->void;consume=value:do{seen=seen+value;};'
+  + hashMain('Count values[1];values[0]=42;consume# indexed argument\nvalues[# index expression\n0];return seen;'));
+program('q=namespace{pub answer:()->int;answer=42;};' + nixMain('q::# qualified name\nanswer ()'));
+for (const expression of ['"#".length+41', 'int("#"[0])+7', '"\\\"#".length+40',
+  'int("\\x23"[0])+7', '"#\\n#".length+39', 'if "a#b"=="a\\x23b" then 42 else 0']) program(nixMain(expression));
+program('/* # is block-comment data */' + nixMain('42') + '// # remains line-comment data');
+program('#if false\n' + nixMain('42') + '#endif');
+const hashLibrary = '# before imported header\nmodule app.comments;# after header\npub answer:()->int;answer=42;# EOF';
+program('import app.comments as c;# after import\n' + nixMain('c::# imported qualification\nanswer ()'), 42,
+  { 'comments.l': hashLibrary });
+for (const newline of ['\n', '\r\n']) {
+  rejected(hashMain(`# ignored ; " then${newline}  var wrong:int=true;return 42;`), /expected int, got bool/, {}, 'wrong');
+}
+rejected(hashMain('# ignored @\n  @;return 42;'), /unsupported character/, {}, '@;');
+for (const body of [nixMain('42') + '# before NUL\0 after NUL', hashMain('# before NUL\0\nreturn 42;'),
+  'int main(){return 42;}#\0']) rejected(body, /NUL byte in source/);
+rejected('main:()->int;main=do{return 42;# }', /expected '}'/);
+rejected('main:()->int;main=42# hidden semicolon ;\n', /expected ';'/);
+rejected('main:()->int;ma# split identifier\nin=42;', /function definition must match/);
+rejected('main:()-# split arrow\n>int;main=42;', /expected '->'/);
+rejected(nixMain('4# split decimal\n2'), /direct function calls only/);
+rejected('q=namespace{pub answer:()->int;answer=42;};main:()->int;main=q:# split scope\n:answer ();', /expected ';'/);
+rejected('main:()->int;main="\\#".length;', /unsupported string escape/);
+rejected('main:()->int;main="#\n".length;', /printable ASCII/);
+rejected('/* # still unterminated', /unterminated block comment/);
+rejected('', /module declaration/, { 'main.l': '# module app.main;\nmain:()->int;main=42;' });
 program(nixAdd + 'main:()->int;main=do{return add 20 22;};');
 program(nixAdd + nixMain('add 20 22'));
 for (const call of ['add(20)(22)', 'add (20) (22)', '(add) 20 22', 'add /* first */ 20\n/* second */ 22'])
