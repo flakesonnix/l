@@ -86,7 +86,12 @@ int l_main(int argc, char **argv) {
         }
         if (compile) write_bytecode(ctx, p, output);
         if (run) ctx->status = (int)((uint32_t)execute_program(ctx, p) & 255u);
-        if (dump) inspect(p, stdout);
+        if (dump) {
+            inspect(p, stdout);
+            if (ferror(stdout) || fflush(stdout)) {
+                ctx->status = 74; fail(ctx, 0, 0, "cannot write inspection output");
+            }
+        }
     }
     int status = ctx->status;
     cleanup(ctx);

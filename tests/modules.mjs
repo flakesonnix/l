@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 
@@ -57,7 +57,7 @@ const library = 'module std.math; int hidden(){return 40;} pub int answer(){retu
 const files = main => ({ 'app/main.l': `module app.main; ${main}`, 'std/math.l': library });
 const ioLibrary = readFileSync(resolve('stdlib/io.l'), 'utf8');
 const ioFiles = main => ({ 'app/main.l': `module app.main; ${main}`, 'std/io.l': ioLibrary });
-async function brokenPipe(args, stream) {
+async function brokenPipe(args, stream, expected = 70, message = /VM trap: output write failure/) {
   const child = spawn(compiler, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdio[stream].destroy();
   let diagnostic = '';
@@ -70,14 +70,45 @@ async function brokenPipe(args, stream) {
       child.on('close', (status, signal) => resolve({ status, signal }));
     });
     assert.equal(result.signal, null, 'broken pipes must trap instead of raising SIGPIPE');
-    assert.equal(result.status, 70, diagnostic);
-    if (stream === 1) assert.match(diagnostic, /VM trap: output write failure/);
+    assert.equal(result.status, expected, diagnostic);
+    if (stream === 1) assert.match(diagnostic, message);
     ++checks;
   } finally { clearTimeout(timer); }
 }
 
 try {
   const ga = body => ({ 'app/main.l': `module app.main;${body}` });
+  // Inspect never executes the input and must report both buffered and prior write errors.
+  for (const length of [0, 1, 2, 3, 7, 15, 31, 63, 127, 255, 383, 511, 4, 8, 32, 128]) {
+    const f = fixture(ga('int helper(){int n=0;' + 'n=n+1;'.repeat(length) + 'return n;}int main(){return 1/0;}'));
+    const output = resolve(f.directory, 'inspect.lbc'), again = resolve(f.directory, 'again.lbc');
+    source(f); source(f, 0, 'compile', ['-o', output]); command(0, ['check', output]);
+    const original = readFileSync(output), inputs = [f.input, f.manifest].map(file => readFileSync(file));
+    const listing = source(f, 0, 'inspect').stdout;
+    assert.equal((listing.match(/add\.checked/g) || []).length, length, 'inspection must retain every modeled instruction');
+    assert.equal(command(0, ['inspect', output]).stdout, listing);
+    for (const args of [['inspect', f.input, '--manifest', f.manifest], ['inspect', output]]) {
+      const fd = openSync('/dev/full', 'w');
+      try {
+        const result = command(74, args, { stdio: ['ignore', fd, 'pipe'] });
+        assert.match(result.stderr, /cannot write inspection output/);
+        assert.doesNotMatch(result.stderr, /VM trap/, 'inspection must not execute the division by zero');
+      } finally { closeSync(fd); }
+      assert.deepEqual(readFileSync(output), original);
+      for (const [index, file] of [f.input, f.manifest].entries()) assert.deepEqual(readFileSync(file), inputs[index]);
+    }
+    source(f, 0, 'compile', ['-o', again]); assert.deepEqual(readFileSync(again), original);
+    assert.equal(source(f, 0, 'inspect', [], { cwd: '/' }).stdout, listing);
+  }
+  const inspectPipe = fixture(ga(Array.from({ length: 16 }, (_, n) => `int helper${n}(){int n=0;${'n=n+1;'.repeat(512)}return n;}`).join('')
+    + 'int main(){return 1/0;}'));
+  const inspectPipeOutput = resolve(inspectPipe.directory, 'pipe.lbc');
+  source(inspectPipe, 0, 'compile', ['-o', inspectPipeOutput]); command(0, ['check', inspectPipeOutput]);
+  const pipeListing = source(inspectPipe, 0, 'inspect', [], { maxBuffer: 4 * 1024 * 1024 }).stdout;
+  assert.ok(Buffer.byteLength(pipeListing) > 1024 * 1024, 'broken-pipe fixture must exceed a pipe buffer');
+  assert.equal(command(0, ['inspect', inspectPipeOutput], { maxBuffer: 4 * 1024 * 1024 }).stdout, pipeListing);
+  for (const args of [['inspect', inspectPipe.input, '--manifest', inspectPipe.manifest], ['inspect', inspectPipeOutput]])
+    await brokenPipe(args, 1, 74, /cannot write inspection output/);
   for (const declaration of ['pub int answer(var value:int){return value;}',
     'int hidden(var value:int){return value;}pub int answer(){return 42;}',
     'pub int answer(int first,var value:int,int last){return value;}',

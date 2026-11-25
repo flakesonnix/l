@@ -1469,6 +1469,8 @@ The VM additionally checks bounds at each element access, so manipulated bytecod
 cannot bypass safety by omitting a preceding `bounds_check`.
 `inspect` displays the IR, including string lengths and hexadecimal contents,
 not an ABI-stable text representation.
+It does not execute the input. Output write/flush failures, including broken
+pipes, report file-error status `74`; any output already written is not rolled back.
 
 The 1.9 header is magic (4 bytes), major/minor (2 bytes each), function count,
 entry function index, global count, struct count, enum count and string count
