@@ -180,6 +180,12 @@ ASCII names and bounded arithmetic results from source/serialized programs. CLI
 fixtures reject whitespace/comments in unused roots in both registration orders,
 including JSON-escaped trivia, without replacing an existing output. Empty prefixes,
 escaped identifier characters, ordinary JSON formatting and valid resolution stay.
+Var-parameter boundary models add 128 malformed-C-parameter rejection/cleanup/
+valid-recompile cycles. Typed/readonly C parameters, Nix `var` locals and `for`
+initializers, C `let var`, declaration order and bounded results stay intact.
+Source/serialized trap recovery checks fresh state across the mixed body styles.
+The shared declaration helper gates name-first locals on the Nix-body mode, so
+that path cannot silently extend C parameter lists or imported/extern signatures.
 
 ## Nix workflow
 

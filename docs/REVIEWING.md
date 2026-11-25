@@ -271,6 +271,9 @@ separately; passing a feature-head run does not prove that run passed.
   Manifest prefix validation must account for every decoded byte, not merely the
   tokens left after source trivia is skipped. Reject whitespace/comments in any
   root registration; preserve the empty prefix, JSON escapes and valid resolution.
+  Gate the shared name-first `var` declaration path on Nix-body mode; it must not
+  accept `var name: Type` in a C parameter list. Preserve typed/readonly C params,
+  Nix locals/for initializers and the separate `let var` expression grammar.
   After `: do`, both Nix loop forms require `{ ... }`, including empty bodies;
   do not accept `do ;`, a declaration or another unbraced statement instead.
   Contextual `do {` is never a call argument.

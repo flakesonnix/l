@@ -59,6 +59,7 @@ static uint32_t hash_comment_forms;
 static size_t signature_scope_programs, signature_scope_rejections;
 static uint32_t signature_scope_forms;
 static size_t manifest_prefix_models;
+static size_t var_parameter_models;
 static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms, nix_while_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
@@ -2016,6 +2017,42 @@ static void indexed_call_recovery(void) {
     }
     dispose(ctx);
 }
+static void var_parameter_reject(Context *ctx, unsigned form) {
+    static const char *const types[] = { "int", "bool", "byte", "string", "Count", "Box", "Kind", "n::Count" };
+    source_length = 0;
+    append("Count=alias int;Box=record{x:int;};Kind=enum{On;};n=namespace{pub Count=alias int;};int bad(");
+    if (form / 8) append("int first,");
+    append("var value:%s){return 42;}int main(){return 42;}", types[form % 8]);
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, source); failed("name-first var leaked into C parameters"); }
+    if (ctx->status != 65) failed("var-parameter rejection returned an unexpected status");
+}
+static void var_parameter_success(Context *ctx, int32_t initial, int32_t delta, int32_t increment, unsigned bound, bool reverse) {
+    char helper[256], body[512];
+    (void)snprintf(helper, sizeof(helper), "int take(%sCount value){return let var copy=value;in copy+(%d);}", reverse ? "const " : "", delta);
+    (void)snprintf(body, sizeof(body), "main:()->int;main=do{var total:Count=%d;"
+        "for(var i:int=0;i<%u;i++){total=total+(%d);}return take total;};", initial, bound, increment);
+    source_length = 0; append("Count=alias int;%s%s", reverse ? body : helper, reverse ? helper : body);
+    if (setjmp(ctx->failure)) failed("cleaned var-parameter context rejected typed C parameters or Nix locals");
+    ++programs;
+    Program *p = compile(ctx, source);
+    int32_t expected = initial + (int32_t)bound * increment + delta;
+    run_expected(p, expected, 0); run_expected(roundtrip(ctx, p), expected, 0);
+}
+static void var_parameter_cases(void) {
+    random_state = UINT32_C(0x5650524d);
+    Context *ctx = context("var-parameter-recovery");
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        int32_t initial = (int32_t)random_number(101) - 50, delta = (int32_t)random_number(41) - 20;
+        int32_t increment = (int32_t)random_number(11) - 5;
+        unsigned bound = random_number(7);
+        var_parameter_reject(ctx, test % 16); cleanup(ctx);
+        if (ctx->allocated || ctx->allocations) failed("var-parameter rejection could not be cleaned up");
+        memset(ctx, 0, sizeof(*ctx)); ctx->filename = "var-parameter-recovery";
+        var_parameter_success(ctx, initial, delta, increment, bound, test % 2 != 0); cleanup(ctx);
+        ++var_parameter_models;
+    }
+    dispose(ctx);
+}
 static void manifest_prefix_write(const char *prefix) {
     FILE *file = fopen("build/fuzz-prefix-manifest.json", "w");
     if (!file) failed("cannot create manifest-prefix fixture");
@@ -3234,6 +3271,11 @@ int main(void) {
         "static int reads=0;static int seen=0;main:()->int;main=do{int a[1];consume a[reads+++1];return 42;};"
         "recover:()->int;recover=do{int a[1];a[0]=42;consume a[reads++];return if reads==1&&seen==42 then 42 else 0;};"
         "consume:int->void;consume=value:do{seen=seen+value;};");
+    var_parameter_cases();
+    scoped_lifecycle(
+        "static int visits=0;main:()->int;main=do{var value=42;visits++;return take value 0;};"
+        "recover:()->int;recover=do{var value:int=84;return if visits==0 then take value 2 else 1/0;};"
+        "int take(int value,int divisor){return let var copy=value;in copy/divisor;}");
     manifest_prefix_cases();
     signature_scope_cases();
     signature_scope_recovery();
@@ -3314,5 +3356,6 @@ int main(void) {
     printf("fuzz: %zu signature-scope programs preserved signature types, parameter shadowing and value copies\n", signature_scope_programs);
     printf("fuzz: %zu signature-scope rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", signature_scope_rejections);
     printf("fuzz: %zu manifest-prefix models rejected source trivia and preserved decoded canonical names; cleanup/recompile passed\n", manifest_prefix_models);
+    printf("fuzz: %zu var-parameter rejection/cleanup/recompile models preserved typed C parameters, Nix locals and let var; source/bytecode trap recovery passed\n", var_parameter_models);
     return 0;
 }

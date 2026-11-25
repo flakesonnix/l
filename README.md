@@ -170,6 +170,8 @@ and copy behavior as an initialized C local. There is no new name-first readonly
 statement here: keep using `let/in` or a typed local for that. `var` remains a
 contextual declaration word only in Nix bodies, so old C declarations and
 `let var` keep working.
+It is not a C parameter declaration: those lists remain type-first, including in
+imported functions and `extern` declarations.
 
 [`examples/replacement/bindings.l`](examples/replacement/bindings.l) uses a
 name-first local and a `for (var ...)` initializer to return 42:
