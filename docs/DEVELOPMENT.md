@@ -174,6 +174,12 @@ body shadowing and C parameter-list scope are unchanged. A private AST flag reco
 this distinction and is not serialized. Typed-function DAGs also route their tick
 addition through a helper whose first parameter shadows an imported type qualifier,
 retaining the same independent arithmetic/counter oracle, storage and nominal types.
+Manifest-prefix models cover 128 invalid-prefix rejection/cleanup/valid-manifest
+recompile cycles, checking decoded canonical names against independently generated
+ASCII names and bounded arithmetic results from source/serialized programs. CLI
+fixtures reject whitespace/comments in unused roots in both registration orders,
+including JSON-escaped trivia, without replacing an existing output. Empty prefixes,
+escaped identifier characters, ordinary JSON formatting and valid resolution stay.
 
 ## Nix workflow
 

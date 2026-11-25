@@ -58,6 +58,7 @@ static size_t hash_comment_programs, hash_comment_rejections, hash_comment_token
 static uint32_t hash_comment_forms;
 static size_t signature_scope_programs, signature_scope_rejections;
 static uint32_t signature_scope_forms;
+static size_t manifest_prefix_models;
 static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms, nix_while_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
@@ -2015,6 +2016,57 @@ static void indexed_call_recovery(void) {
     }
     dispose(ctx);
 }
+static void manifest_prefix_write(const char *prefix) {
+    FILE *file = fopen("build/fuzz-prefix-manifest.json", "w");
+    if (!file) failed("cannot create manifest-prefix fixture");
+    int result = fprintf(file, "{\"version\":1,\"package\":\"fuzz\",\"module_roots\":["
+        "{\"package\":\"fuzz\",\"prefix\":\"app\",\"path\":\".\"},"
+        "{\"package\":\"fuzz\",\"prefix\":\"%s\",\"path\":\".\"}],\"dependencies\":[]}", prefix);
+    if (fclose(file) || result < 0) failed("cannot write manifest-prefix fixture");
+}
+static void manifest_prefix_reject(Context *ctx, const char *prefix) {
+    manifest_prefix_write(prefix);
+    if (!setjmp(ctx->failure)) {
+        (void)read_manifest(ctx, "build/fuzz-prefix-manifest.json");
+        failed("manifest prefix accepted source trivia");
+    }
+    if (ctx->status != 65) failed("manifest-prefix rejection returned an unexpected status");
+}
+static void manifest_prefix_success(Context *ctx, unsigned test, int32_t a, int32_t b) {
+    char prefix[96], expected[96];
+    (void)snprintf(expected, sizeof(expected), "probe_%u.branch_%u", test, test + 1);
+    (void)snprintf(prefix, sizeof(prefix), test % 2 ? "\\u0070robe_%u.branch_%u" : "probe_%u.branch_%u", test, test + 1);
+    manifest_prefix_write(prefix);
+    if (setjmp(ctx->failure)) failed("cleaned manifest-prefix context rejected valid manifest/source");
+    ModuleConfig *config = read_manifest(ctx, "build/fuzz-prefix-manifest.json");
+    Token actual = config->roots->next->prefix;
+    if (actual.length != strlen(expected) || memcmp(actual.text, expected, actual.length))
+        failed("manifest prefix did not preserve its decoded canonical name");
+    source_length = 0; append("main:()->int;main=(%d)+(%d);", a, b);
+    ++programs;
+    Program *p = compile(ctx, source);
+    run_expected(p, a + b, 0); run_expected(roundtrip(ctx, p), a + b, 0);
+}
+static void manifest_prefix_cases(void) {
+    static const char *const invalid[] = {
+        "probe# ignored", "probe// ignored", "probe/* ignored */", " probe", "probe ", "probe\\t",
+        "probe\\n", "probe\\r", "probe .branch", "probe. branch", "probe.# ignored\\nbranch",
+        "probe./* ignored */branch", "probe\\u0023 ignored", "probe\\u0020.branch",
+        "probe\\u002f\\u002f ignored", "probe\\u002f* ignored */"
+    };
+    random_state = UINT32_C(0x50524658);
+    Context *ctx = context("manifest-prefix-recovery");
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        int32_t a = (int32_t)random_number(1001) - 500, b = (int32_t)random_number(1001) - 500;
+        manifest_prefix_reject(ctx, invalid[test % (sizeof(invalid) / sizeof(*invalid))]); cleanup(ctx);
+        if (ctx->allocated || ctx->allocations) failed("manifest-prefix rejection could not be cleaned up");
+        memset(ctx, 0, sizeof(*ctx)); ctx->filename = "manifest-prefix-recovery";
+        manifest_prefix_success(ctx, test, a, b); cleanup(ctx);
+        ++manifest_prefix_models;
+    }
+    dispose(ctx);
+    if (remove("build/fuzz-prefix-manifest.json")) failed("cannot remove manifest-prefix fixture");
+}
 static void signature_scope_cases(void) {
     random_state = UINT32_C(0x53494753);
     for (unsigned test = 0; test < MODEL_CASES; ++test) {
@@ -3182,6 +3234,7 @@ int main(void) {
         "static int reads=0;static int seen=0;main:()->int;main=do{int a[1];consume a[reads+++1];return 42;};"
         "recover:()->int;recover=do{int a[1];a[0]=42;consume a[reads++];return if reads==1&&seen==42 then 42 else 0;};"
         "consume:int->void;consume=value:do{seen=seen+value;};");
+    manifest_prefix_cases();
     signature_scope_cases();
     signature_scope_recovery();
     scoped_lifecycle(
@@ -3260,5 +3313,6 @@ int main(void) {
     printf("fuzz: %zu hash-comment rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", hash_comment_rejections);
     printf("fuzz: %zu signature-scope programs preserved signature types, parameter shadowing and value copies\n", signature_scope_programs);
     printf("fuzz: %zu signature-scope rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", signature_scope_rejections);
+    printf("fuzz: %zu manifest-prefix models rejected source trivia and preserved decoded canonical names; cleanup/recompile passed\n", manifest_prefix_models);
     return 0;
 }
