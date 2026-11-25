@@ -196,6 +196,11 @@ the `:` after the closing parenthesis selects the Nix body spelling; without it,
 `while (condition) statement` keeps the existing C behavior. Grouping does not
 evaluate the condition an extra time or change `break`, `continue` or scope.
 
+Both Nix loop forms require the block after `do`, even for an empty body:
+write `while false: do { }`, not `while false: do ;` or `: do return 0;`.
+The same rule applies to `for i in start..end: do { ... }`. Ordinary C-style
+loops still allow a single statement without braces in either body style.
+
 [`examples/replacement/condition.l`](examples/replacement/condition.l) counts a bounded
 countdown and returns 42:
 

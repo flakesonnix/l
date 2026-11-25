@@ -247,6 +247,7 @@ static Stmt *range_for(Parser *p, Token token) {
     if (peek(p).kind != TK_NAME || !token_equal(peek(p), (Token){.text = "do", .length = 2}))
         token_fail(p->ctx, peek(p), "expected 'do' after range bounds");
     ++p->at;
+    if (peek(p).kind != '{') token_fail(p->ctx, peek(p), "expected '{' after 'do'");
     Stmt *body = statement(p);
     Token lower = hidden_name(p, token, "range_lower_"), upper = hidden_name(p, token, "range_upper_");
     Stmt *root = new_stmt(p, ST_BLOCK, token);
@@ -334,6 +335,7 @@ static Stmt *statement(Parser *p) {
                 if (peek(p).kind != TK_NAME || !token_equal(peek(p), (Token){.text = "do", .length = 2}))
                     token_fail(p->ctx, peek(p), "expected 'do' after while condition");
                 ++p->at;
+                if (peek(p).kind != '{') token_fail(p->ctx, peek(p), "expected '{' after 'do'");
             }
         } else s->condition = condition(p);
         s->body = statement(p);

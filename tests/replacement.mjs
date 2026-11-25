@@ -247,6 +247,26 @@ for (const [body, message] of [
   ['main:()->int;main=do{while 1:do{}return 0;};', /expected bool, got int/],
 ]) rejected(body, message);
 program(rangeMain('var n=0;while 1/0<3:do{n++;}return 42;'), 70, {}, /division by zero/);
+// Nix loop bodies require blocks; C loop bodies still accept individual statements.
+for (const header of ['while false', 'while (false)', 'for i in 0..0']) {
+  for (const body of ['return 0;', ';', 'var x=0;', 'n++;', 'if(false)return 0;',
+    'while(false);', 'for(var j=0;j<0;j++);', 'break;', 'continue;', 'let k=0;in k;']) {
+    rejected(rangeMain(`var n=0;${header}:do ${body}return 42;`), /expected '\{' after 'do'/);
+  }
+  rejected(`main:()->int;main=do{${header}:do};`, /expected '\{' after 'do'/);
+}
+program(rangeMain('while false:do{}return 42;'));
+program(rangeMain('while (false):do{}return 42;'));
+program(rangeMain('for i in 0..0:do{}return 42;'));
+program(rangeMain('var n=0;while n<3:do{{n++;}}return n+39;'));
+program(rangeMain('var n=0;while (n<3):do{/* body */n++;}return n+39;'));
+program(rangeMain('var sum=0;for i in 0..3:do{{sum=sum+14;}}return sum;'));
+program(rangeMain('var n=0;while(n<3)n++;return n+39;'));
+program(rangeMain('var sum=0;for(var i=0;i<3;i++)sum=sum+14;return sum;'));
+program(rangeMain('while(false)+42;return 42;'));
+program(rangeMain('while(false)-42;return 42;'));
+program('int main(){while(false)+42;return 42;}');
+program('int main(){int sum=0;for(int i=0;i<3;i++)sum=sum+14;return sum;}');
 program('do:int->int;do=x:x;' + nixMain('do 42'));
 program('id:int->int;id=x:x;' + nixMain('let do=42;in id do'));
 program('f:int->int;f=x:do{return x;};int do(int x){return x;}int main(){return do(f(42));}');
