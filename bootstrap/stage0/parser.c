@@ -53,6 +53,7 @@ static bool starts_decl(Parser *p) {
     return !p->nix_calls || p->tokens[at + 1].kind == '=' || p->tokens[at + 1].kind == '[';
 }
 static Expr *expression(Parser *, int);
+static Expr *postfix_tail(Parser *, Expr *);
 static Stmt *statement(Parser *);
 static Expr *new_expr(Parser *p, ExprKind kind, Token token) {
     Expr *e = allocate(p->ctx, sizeof(*e));
@@ -138,6 +139,9 @@ static Expr *primary(Parser *p) {
             e->kind = EX_INT; e->integer = INT32_MIN; e->left = NULL;
         }
     } else token_fail(p->ctx, token, "expected expression");
+    return postfix_tail(p, e);
+}
+static Expr *postfix_tail(Parser *p, Expr *e) {
     for (;;) {
         if (!p->nix_calls && take(p, '(')) {
             Expr *call = new_expr(p, EX_CALL, e->token); call->left = e;
@@ -355,9 +359,14 @@ static Stmt *statement(Parser *p) {
         if (p->nix_calls) {
             bool grouped = peek(p).kind == '(';
             s->condition = grouped ? condition(p) : expression(p, 1);
-            if (grouped && while_infix_condition(p)) {
-                s->condition = expression_tail(p, s->condition, 1);
-                grouped = false;
+            if (grouped) {
+                int kind = peek(p).kind;
+                bool postfix = kind == '.' || kind == '[' || kind == TK_INC || kind == TK_DEC;
+                if (postfix || while_infix_condition(p)) {
+                    if (postfix) s->condition = postfix_tail(p, s->condition);
+                    s->condition = expression_tail(p, s->condition, 1);
+                    grouped = false;
+                }
             }
             /* A closing ')' does not select C syntax: ':' still introduces a Nix body. */
             if (!grouped || peek(p).kind == ':') {

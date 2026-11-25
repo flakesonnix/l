@@ -42,6 +42,8 @@ static uint32_t grouped_while_forms;
 static size_t nix_loop_block_rejections;
 static size_t infix_while_programs, infix_while_rejections;
 static uint32_t infix_while_forms;
+static size_t postfix_while_programs, postfix_while_rejections;
+static uint32_t postfix_while_forms;
 static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms, nix_while_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
@@ -1585,6 +1587,86 @@ static void infix_while_recovery(void) {
     }
     dispose(ctx);
 }
+/* Grouped field/index/update conditions share an independent bounded loop model. */
+static void postfix_while_cases(void) {
+    random_state = UINT32_C(0x504f5357);
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        unsigned form = test % 8, limit = random_number(7), skip = random_number(limit + 2), stop = random_number(limit + 2);
+        int32_t weight = (int32_t)random_number(20) + 1, expected = 0;
+        unsigned final = 0; bool stopped = false;
+        for (unsigned value = 1; value <= limit; ++value) {
+            final = value;
+            if (value == skip) continue;
+            expected += (int32_t)value * weight;
+            if (value == stop) { stopped = true; break; }
+        }
+        unsigned checks = final + !stopped;
+        int32_t cell = form == 3 ? (int32_t)(limit - final) - !stopped
+            : (int32_t)final + ((form == 2 || form == 4 || form == 5) && !stopped);
+        postfix_while_forms |= 1u << form;
+        source_length = 0;
+        append("Box=record{value:int;ready:bool;text:string;};static int checks=0;"
+            "peek:Box->Box;peek=b:do{checks++;return b;};index:int->int;index=n:do{checks++;return n;};"
+            "zero:()->int;zero=do{checks++;return 0;};bound:()->int;bound=do{checks++;return %u;};"
+            "text:()->string;text=do{checks++;return \"%.*s\";};main:()->int;main=do{var sum=0;",
+            form == 3 ? 0 : limit, (int)limit, "abcdef");
+        if (form == 0 || form == 4 || form == 7)
+            append("var b=Box{value=0;ready=%s;text=\"%.*s\";};", limit ? "true" : "false", (int)limit, "abcdef");
+        if (form == 1) append("bool flags[%u];for(int j=0;j<%u;j++)flags[j]=true;", limit + 1, limit);
+        if (form == 5) append("int counts[1];");
+        if (form == 1 || form == 2 || form == 3 || form == 6 || form == 7) append("var i=%u;", form == 3 ? limit : 0);
+        append("while ");
+        if (form == 0) append("(peek b).ready");
+        else if (form == 1) append("(flags)[index i]");
+        else if (form == 2) append("(i)++<bound ()");
+        else if (form == 3) append("(i)-- >bound ()");
+        else if (form == 4) append("(b).value++<bound ()");
+        else if (form == 5) append("(counts)[zero ()]++<%u", limit);
+        else if (form == 6) append("(text ()).length>i");
+        else append("(peek b).text.length>i");
+        append(":do{");
+        if (form == 0) append("b.value++;b.ready=b.value<%u;var n=b.value;", limit);
+        else if (form == 1 || form == 6 || form == 7) append("i++;var n=i;");
+        else if (form == 2) append("var n=i;");
+        else if (form == 3) append("var n=%u-i;", limit);
+        else if (form == 4) append("var n=b.value;");
+        else append("var n=counts[0];");
+        append("if(n==%u)continue;sum=sum+n*%d;if(n==%u)break;}", skip, weight, stop);
+        const char *observed = form == 0 || form == 4 ? "b.value" : form == 5 ? "counts[0]" : "i";
+        append("if(%s!=%d||checks!=%u)1/0;return sum;};", observed, cell, checks);
+        ++postfix_while_programs; semantic_case(expected, 0);
+    }
+    if (postfix_while_forms != 255) failed("postfix while model missed a field/index/update form");
+}
+static void postfix_while_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("invalid postfix while was accepted"); }
+    if (ctx->status != 65) failed("postfix while rejection returned an unexpected status");
+    ++postfix_while_rejections;
+}
+static void postfix_while_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned postfix while context rejected valid source");
+    Program *p = compile(ctx, "Box=record{value:int;};main:()->int;main=do{var b=Box{value=0;};"
+        "while (b).value++<3:do{}bool flags[1];while (flags)[0]:do{return 0;}return b.value+38;};");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void postfix_while_recovery(void) {
+    static const char *const invalid[] = {
+        "main:()->int;main=do{const int n=0;while (n)++<3:do{}return 42;};",
+        "main:()->int;main=do{int a[1];while (a)[0<3:do{}return 42;};",
+        "Box=record{ready:bool;};main:()->int;main=do{var b=Box{ready=true;};while (b).missing:do{}return 42;};",
+        "Box=record{ready:bool;};main:()->int;main=do{var b=Box{ready=true;};while (b).ready:do ;return 42;};"
+    };
+    Context *ctx = context("postfix-while-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            postfix_while_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("postfix while rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "postfix-while-recovery";
+            postfix_while_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
 static void nix_loop_block_reject(Context *ctx, const char *text) {
     if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("Nix loop body without a block was accepted"); }
     if (ctx->status != 65) failed("Nix loop block rejection returned an unexpected status");
@@ -2564,6 +2646,11 @@ int main(void) {
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=do{var n=0;while (n)+1<2:do{visits++;n++;1/0;}return 42;};"
         "recover:()->int;recover=do{var n=0;while (n)+1<4:do{n++;}return if visits==0 then n+39 else 1/0;};");
+    postfix_while_cases();
+    postfix_while_recovery();
+    scoped_lifecycle(
+        "static int visits=0;main:()->int;main=do{int a[1];while (a)[visits++]<3:do{1/0;}return 42;};"
+        "recover:()->int;recover=do{var n=0;while (n)++<3:do{}return if visits==0 then n+38 else 1/0;};");
     nix_loop_block_recovery();
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=do{var n=0;while ((n<1)):do{n++;visits++;1/0;}return 42;};"
@@ -2616,5 +2703,7 @@ int main(void) {
     printf("fuzz: %zu Nix loop block rejection/cleanup/recompile cycles passed; valid nested blocks preserved source/bytecode results\n", nix_loop_block_rejections);
     printf("fuzz: %zu infix while programs preserved precedence, condition effects and C unary bodies\n", infix_while_programs);
     printf("fuzz: %zu infix while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", infix_while_rejections);
+    printf("fuzz: %zu postfix while programs preserved field/index/update effects and bounded loop results\n", postfix_while_programs);
+    printf("fuzz: %zu postfix while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", postfix_while_rejections);
     return 0;
 }

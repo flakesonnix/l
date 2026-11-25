@@ -122,6 +122,11 @@ operators, including precedence, short-circuit effects and assignment. They add
 and 16 rejection/cleanup/recompile cycles with source/serialized trap recovery.
 Ambiguous `+`/`-` C bodies are checked without speculative AST allocation;
 delimiter lookahead respects nested groups, record/array syntax and typed `let`.
+Postfix-condition regressions continue grouped bases through existing fields,
+indexes and updates before the infix tail. They add 128 bounded effect/count models,
+postfix variants of the same while DAGs, 16 rejection/cleanup/recompile cycles and
+source/serialized trap recovery. Tests preserve record copies, readonly/lvalue
+checks, array/string bounds, final-condition updates and C block/call bodies.
 
 ## Nix workflow
 

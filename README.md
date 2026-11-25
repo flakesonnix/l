@@ -204,6 +204,15 @@ counterpart still mean C-style single-statement loop bodies, not extra condition
 operands. Typed `let` bindings, nested literals and punctuation inside strings
 do not confuse that distinction.
 
+Grouped bases also keep their ordinary field, index and postfix-update meaning:
+`while (state).ready: do { ... }`, `while (flags)[i]: do { ... }` and
+`while (n)++ < 3: do { ... }`. Each pass evaluates the base and index once;
+postfix updates still return the old value, including the final false condition.
+Records remain nominal values copied by value, readonly bindings stay readonly,
+and grouping an array name only permits the same indexing operations as before,
+not arrays as first-class values. C blocks, parenthesized expression statements
+and named calls after a complete C condition retain their existing body grammar.
+
 Both Nix loop forms require the block after `do`, even for an empty body:
 write `while false: do { }`, not `while false: do ;` or `: do return 0;`.
 The same rule applies to `for i in start..end: do { ... }`. Ordinary C-style

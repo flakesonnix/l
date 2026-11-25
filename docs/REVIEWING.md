@@ -235,6 +235,10 @@ separately; passing a feature-head run does not prove that run passed.
   ordinary precedence and single evaluation. Preserve unary `+`/`-` C bodies
   without a condition colon; typed `let` annotations and nested delimiters must
   not be mistaken for that colon. Do not build a throwaway condition AST.
+  Grouped field/index/postfix-update operands must compose identically to ordinary
+  expressions, without repeating base/index effects or weakening readonly/lvalue
+  checks. Keep C blocks, parenthesized statements and named calls as bodies;
+  do not reinterpret `{` or `(` after a complete C condition as a postfix tail.
   After `: do`, both Nix loop forms require `{ ... }`, including empty bodies;
   do not accept `do ;`, a declaration or another unbraced statement instead.
   Contextual `do {` is never a call argument.
