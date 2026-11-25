@@ -251,6 +251,11 @@ separately; passing a feature-head run does not prove that run passed.
   Keep `f value.field` as an argument-field call, require grouping for a nonempty
   call's result, evaluate result/index once in order, and retain temporary-write,
   string-bounds, direct-call and full-arity checks. C call parsing stays unchanged.
+  A Nix conditional can be a discarded expression statement, with its existing
+  matching non-void branch types and required `else`/`;`. Evaluate only the chosen
+  branch and preserve its effects/traps. Do not turn this into implicit return,
+  void values or block expressions. Preserve C `if` bodies and nearest-`if`
+  `else` association; nested `then` tokens must not reclassify a C body.
   After `: do`, both Nix loop forms require `{ ... }`, including empty bodies;
   do not accept `do ;`, a declaration or another unbraced statement instead.
   Contextual `do {` is never a call argument.

@@ -1029,6 +1029,7 @@ try {
   state = 0x4e495846;
   for (let test = 0; test < 32; ++test) {
     const unitTails = {};
+    const conditionalStatements = {};
     const project = { 'std/calls.l': 'module std.calls;pub Count=alias int;pub static int ticks=0;'
       + 'pub tick:()->Count;tick=ticks++;' }, nodes = [];
     for (let n = 0; n < 8; ++n) {
@@ -1048,6 +1049,10 @@ try {
         .replaceAll('t::tick ()', test % 2 ? '((t::next)) ().value' : 't::next ().value');
       assert.notEqual(unitTails[`${name.replaceAll('.', '/')}.l`], project[`${name.replaceAll('.', '/')}.l`],
         'unit-call postfix variant must change the generated tick expression');
+      conditionalStatements[`${name.replaceAll('.', '/')}.l`] = project[`${name.replaceAll('.', '/')}.l`]
+        .replaceAll('value=(value+t::tick ())%1009;', 'if (i)%2==0 then value=(value+t::tick ())%1009 else value=(t::tick ()+value)%1009;');
+      assert.notEqual(conditionalStatements[`${name.replaceAll('.', '/')}.l`], project[`${name.replaceAll('.', '/')}.l`],
+        'conditional statement variant must change the generated tick expression');
       nodes.push({ name, parents, delta, iterations });
     }
     let ticks = 0n;
@@ -1065,7 +1070,8 @@ try {
         + `b=next::work::run (-23);in if a==${a}&&b==${b}&&t::ticks==${ticks} then 42 else 0;`;
       const settings = config(); if (reverse) settings.module_roots.reverse();
       for (const [variant, types] of [[project, 0], [{ ...project, ...unitTails,
-        'std/calls.l': project['std/calls.l'] + 'pub Tick=record{value:Count;};pub next:()->Tick;next=Tick{value=ticks++;};' }, 1]]) {
+        'std/calls.l': project['std/calls.l'] + 'pub Tick=record{value:Count;};pub next:()->Tick;next=Tick{value=ticks++;};' }, 1],
+        [{ ...project, ...conditionalStatements }, 0]]) {
         const f = program(variant, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
         assert.equal(bytes.readUInt32LE(16), 1, 'Nix functions add no implicit global storage');
         assert.equal(bytes.readUInt32LE(20), types, 'only the unit-result variant adds its shared nominal type');
