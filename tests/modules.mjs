@@ -1028,6 +1028,7 @@ try {
   // Typed Nix-style direct calls share legacy function identity and static storage.
   state = 0x4e495846;
   for (let test = 0; test < 32; ++test) {
+    const unitTails = {};
     const project = { 'std/calls.l': 'module std.calls;pub Count=alias int;pub static int ticks=0;'
       + 'pub tick:()->Count;tick=ticks++;' }, nodes = [];
     for (let n = 0; n < 8; ++n) {
@@ -1043,6 +1044,10 @@ try {
       project[`${name.replaceAll('.', '/')}.l`] = `module ${name};${imports}work=namespace{`
         + `pub run:t::Count->t::Count;run=x:do{t::Count value=(x+(${delta}))%1009;`
         + `for(int i=0;i<${iterations};i++)value=(value+t::tick ())%1009;${calls}return value;};};`;
+      unitTails[`${name.replaceAll('.', '/')}.l`] = project[`${name.replaceAll('.', '/')}.l`]
+        .replaceAll('t::tick ()', test % 2 ? '((t::next)) ().value' : 't::next ().value');
+      assert.notEqual(unitTails[`${name.replaceAll('.', '/')}.l`], project[`${name.replaceAll('.', '/')}.l`],
+        'unit-call postfix variant must change the generated tick expression');
       nodes.push({ name, parents, delta, iterations });
     }
     let ticks = 0n;
@@ -1059,10 +1064,13 @@ try {
       project['app/main.l'] = `module app.main;${imports.join('')}main:()->int;main=let a=top::work::run 17;`
         + `b=next::work::run (-23);in if a==${a}&&b==${b}&&t::ticks==${ticks} then 42 else 0;`;
       const settings = config(); if (reverse) settings.module_roots.reverse();
-      const f = program(project, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
-      assert.equal(bytes.readUInt32LE(16), 1, 'Nix functions add no implicit global storage');
-      assert.equal(bytes.readUInt32LE(20), 0, 'Nix functions do not add nominal runtime types');
-      assert.equal(bytes.readUInt32LE(24), 0);
+      for (const [variant, types] of [[project, 0], [{ ...project, ...unitTails,
+        'std/calls.l': project['std/calls.l'] + 'pub Tick=record{value:Count;};pub next:()->Tick;next=Tick{value=ticks++;};' }, 1]]) {
+        const f = program(variant, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
+        assert.equal(bytes.readUInt32LE(16), 1, 'Nix functions add no implicit global storage');
+        assert.equal(bytes.readUInt32LE(20), types, 'only the unit-result variant adds its shared nominal type');
+        assert.equal(bytes.readUInt32LE(24), 0);
+      }
     }
   }
 

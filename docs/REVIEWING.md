@@ -247,6 +247,10 @@ separately; passing a feature-head run does not prove that run passed.
   parser when their own expression reaches the condition colon. Preserve written
   field order, nominal types, copies and temporary-field mutation rejection.
   A completed C block must not scan into a later Nix loop or typed declaration.
+  Complete `()` calls can use the existing postfix parser on their results.
+  Keep `f value.field` as an argument-field call, require grouping for a nonempty
+  call's result, evaluate result/index once in order, and retain temporary-write,
+  string-bounds, direct-call and full-arity checks. C call parsing stays unchanged.
   After `: do`, both Nix loop forms require `{ ... }`, including empty bodies;
   do not accept `do ;`, a declaration or another unbraced statement instead.
   Contextual `do {` is never a call argument.

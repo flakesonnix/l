@@ -216,6 +216,8 @@ static Expr *expression_tail(Parser *p, Expr *left, int minimum) {
             ExprList **tail = &call->args;
             if (op.kind == '(' && p->tokens[p->at + 1].kind == ')') {
                 p->at += 2; /* Explicit zero-argument invocation: f (). */
+                /* No argument can own a postfix here; it belongs to the result. */
+                call = postfix_tail(p, call);
             } else {
                 do {
                     ExprList *arg = allocate(p->ctx, sizeof(*arg));
