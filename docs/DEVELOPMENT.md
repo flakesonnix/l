@@ -151,6 +151,14 @@ the independent arithmetic/counter oracle. Non-void branch types, required `else
 and `;`, and explicit returns stay required. Token-only lookahead distinguishes
 the outer `then` from nested expression-owned tokens and preserves C bodies,
 optional/dangling `else` and following statement boundaries without a second AST.
+Indexed-call statements add 128 bounded argument/index/declaration models, 16
+rejection/cleanup/recompile cycles and source/serialized bounds-trap recovery.
+The parser keeps one shared expression tree for the ambiguous named-array prefix;
+normal name resolution chooses a declaration or a direct call before lowering.
+Both statement and `for`-initializer contexts use this path; no parser arity lookup
+or new AST kind is involved. Typed-function DAGs retain their tick oracle through
+an indexed argument to a void helper, with one explicit local array and no new
+global storage or nominal metadata. Array extents and whole-array restrictions stay.
 
 ## Nix workflow
 

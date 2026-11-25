@@ -128,6 +128,15 @@ its optional `else` and its nearest-`if` association stay unchanged in both body
 styles. Nested conditional/`let` expressions and record literals in a C body do
 not turn it into a Nix conditional statement.
 
+Direct call statements also accept named indexed arguments: `consume values[i];`
+or `io::write_byte text[i];`, including as a C-style `for` initializer. The same
+token shape can be a named array declaration, so the existing name resolver makes
+the distinction: a type name in `Count values[3];` still declares an array; a
+function name makes a normal complete call. This does not depend on arity while
+parsing. Argument indices run once at runtime before the call, whereas array
+extents remain compile-time constants. Only indexed elements are passed, not
+arrays as values. C functions retain their comma-separated call syntax.
+
 Inside a `do` body, local mutable bindings can also use the name-first form:
 
 ```l

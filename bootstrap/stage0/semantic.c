@@ -508,6 +508,18 @@ static bool analyze_sequence(Semantic *s, Stmt *first) {
     s->reachable = reachable;
     return falls;
 }
+static bool indexed_call_statement(Semantic *s, Stmt *stmt) {
+    /* Only ambiguous named-array syntax carries this shared expression tree. */
+    if (!stmt->expr) return false;
+    ResolvedName name = resolve_name(s, stmt->decl->type_name, false);
+    for (Function *fn = s->ast->functions; fn; fn = fn->next) {
+        if (!function_named(fn, name.module, name.path)) continue;
+        stmt->kind = ST_EXPR; stmt->decl = NULL;
+        (void)analyze_expr(s, stmt->expr);
+        return true;
+    }
+    return false;
+}
 static bool analyze_stmt(Semantic *s, Stmt *stmt) {
     bool falls = true;
     enter(s->ctx, stmt->token);
@@ -519,6 +531,7 @@ static bool analyze_stmt(Semantic *s, Stmt *stmt) {
         --s->depth; s->bindings = saved; break;
     }
     case ST_DECL: {
+        if (indexed_call_statement(s, stmt)) break;
         Decl *d = stmt->decl;
         d->type = resolve_type(s, d->type, d->type_name, NULL);
         if (d->length) {

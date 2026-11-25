@@ -52,6 +52,8 @@ static size_t unit_postfix_programs, unit_postfix_rejections;
 static uint32_t unit_postfix_forms;
 static size_t conditional_statement_programs, conditional_statement_rejections;
 static uint32_t conditional_statement_forms;
+static size_t indexed_call_programs, indexed_call_rejections;
+static uint32_t indexed_call_forms;
 static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms, nix_while_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
@@ -1944,6 +1946,71 @@ static void conditional_statement_recovery(void) {
     }
     dispose(ctx);
 }
+/* An indexed argument is evaluated once at runtime, never as an array extent. */
+static void indexed_call_cases(void) {
+    random_state = UINT32_C(0x494e4458);
+    static const int32_t octets[] = {42, 97, 98};
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        unsigned form = test % 8, bound = random_number(7), start = form == 1 ? random_number(3) : 0;
+        int32_t value = (int32_t)random_number(41) - 20, expected = value;
+        unsigned calls = 1, reads = form == 0, index = start + (form != 0), sequence = form == 0 ? 12 : 2;
+        source_length = 0; indexed_call_forms |= 1u << form;
+        append("Count=alias int;static int seen=0;static int calls=0;static int reads=0;static int sequence=0;"
+            "main:()->int;main=do{Count values[8];");
+        for (unsigned n = 0; n < 8; ++n) append("values[%u]=%d;", n, value + (int32_t)n);
+        append("var index=%u;", start);
+        if (form == 0) append("consume values[offset ()];");
+        else if (form == 1) { append("var text=\"*ab\";consume text[index++];"); expected = octets[start]; }
+        else if (form == 2) append("q::consume values[index++]+0;");
+        else if (form == 3) append("Count scratch[1];scratch[0]=values[0];consume scratch[index++];");
+        else if (form == 4) append("for(discard values[index++];false;){}");
+        else if (form == 5) {
+            append("while(index<%u)discard values[index++];", bound);
+            calls = index = bound; expected = 0; sequence = 0;
+            for (unsigned n = 0; n < bound; ++n) { expected += value + (int32_t)n; sequence = sequence * 10 + 2; }
+        } else if (form == 6) { append("pair values[index++] 2;"); expected += 2; }
+        else append("consume values[index++]++;");
+        append("if(calls!=%u||reads!=%u||index!=%u||sequence!=%u||values[0]!=%d)1/0;return seen;};"
+            "consume:int->int;consume=value:do{calls++;sequence=sequence*10+2;seen=seen+value;return value;};"
+            "consume:byte->int;consume=value:do{calls++;sequence=sequence*10+2;seen=seen+int(value);return int(value);};"
+            "discard:int->void;discard=value:do{calls++;sequence=sequence*10+2;seen=seen+value;};"
+            "pair:int->int->int;pair=value:bias:do{calls++;sequence=sequence*10+2;seen=seen+value+bias;return seen;};"
+            "offset:()->int;offset=do{reads++;sequence=sequence*10+1;return 0;};"
+            "q=namespace{pub consume:int->int;consume=value:do{calls++;sequence=sequence*10+2;seen=seen+value;return value;};};",
+            calls, reads, index, sequence, value + (form == 7));
+        ++indexed_call_programs; semantic_case(expected, 0);
+    }
+    if (indexed_call_forms != 255) failed("indexed-call model missed a statement or initializer form");
+}
+static void indexed_call_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("invalid indexed-call statement was accepted"); }
+    if (ctx->status != 65) failed("indexed-call rejection returned an unexpected status");
+    ++indexed_call_rejections;
+}
+static void indexed_call_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned indexed-call context rejected valid source");
+    Program *p = compile(ctx, "Count=alias int;static int seen=0;main:()->int;main=do{Count values[1];values[0]=42;"
+        "consume values[0];return seen;};consume:int->void;consume=value:do{seen=seen+value;};");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void indexed_call_recovery(void) {
+    static const char *const invalid[] = {
+        "consume:int->int->int;consume=a:b:a+b;main:()->int;main=do{int a[1];consume a[0];return 42;};",
+        "consume:int->int;consume=value:value;main:()->int;main=do{const int a[1];consume a[0]++;return 42;};",
+        "consume:int->int;consume=value:value;main:()->int;main=do{consume missing[0];return 42;};",
+        "consume:int->int;consume=value:value;main:()->int;main=do{int a[1];consume a["
+    };
+    Context *ctx = context("indexed-call-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            indexed_call_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("indexed-call rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "indexed-call-recovery";
+            indexed_call_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
 static void nix_loop_block_reject(Context *ctx, const char *text) {
     if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("Nix loop body without a block was accepted"); }
     if (ctx->status != 65) failed("Nix loop block rejection returned an unexpected status");
@@ -2953,6 +3020,12 @@ int main(void) {
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=do{if (visits++==0) then 42/(visits-1) else 0;return 42;};"
         "recover:()->int;recover=do{if (visits)==0 then visits=42 else visits=0;return visits;};");
+    indexed_call_cases();
+    indexed_call_recovery();
+    scoped_lifecycle(
+        "static int reads=0;static int seen=0;main:()->int;main=do{int a[1];consume a[reads+++1];return 42;};"
+        "recover:()->int;recover=do{int a[1];a[0]=42;consume a[reads++];return if reads==1&&seen==42 then 42 else 0;};"
+        "consume:int->void;consume=value:do{seen=seen+value;};");
     nix_loop_block_recovery();
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=do{var n=0;while ((n<1)):do{n++;visits++;1/0;}return 42;};"
@@ -3015,5 +3088,7 @@ int main(void) {
     printf("fuzz: %zu unit-call postfix rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", unit_postfix_rejections);
     printf("fuzz: %zu conditional statement programs preserved condition/branch effects and bounded loop results\n", conditional_statement_programs);
     printf("fuzz: %zu conditional statement rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", conditional_statement_rejections);
+    printf("fuzz: %zu indexed-call programs preserved argument/index effects and declaration identity\n", indexed_call_programs);
+    printf("fuzz: %zu indexed-call rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", indexed_call_rejections);
     return 0;
 }
