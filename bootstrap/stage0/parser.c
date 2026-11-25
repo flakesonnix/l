@@ -291,7 +291,7 @@ static Stmt *range_for(Parser *p, Token token) {
 }
 static Decl *declaration(Parser *p, bool parameter) {
     Decl *decl = allocate(p->ctx, sizeof(*decl));
-    bool var_first = take(p, TK_VAR);
+    bool var_first = p->nix_calls && take(p, TK_VAR);
     if (var_first) {
         decl->immutable = false;
         decl->name = expect(p, TK_NAME, "expected variable name after 'var'");

@@ -395,6 +395,21 @@ for (const [body, message] of [
   ['var x=42;int main(){return 0;}', /expected Stage 0 type|expected expression/],
 ]) rejected(body, message);
 
+// The name-first local declaration path must not leak into C parameter lists.
+const parameterBoundaryTypes = 'Count=alias int;Box=record{x:int;};Kind=enum{On;};';
+for (const type of ['int', 'bool', 'byte', 'string', 'Count', 'Box', 'Kind']) {
+  for (const parameters of [`var value:${type}`, `int before,var value:${type},int after`, `int before,var value:${type}`])
+    rejected(parameterBoundaryTypes + `int take(${parameters}){return 42;}` + nixMain('42'), /expected Stage 0 type/);
+}
+rejected('int take(var value){return 42;}' + nixMain('42'), /expected Stage 0 type/);
+rejected('one:()->int;one=1;int take(var value:int){return value;}' + nixMain('42'), /expected Stage 0 type/);
+rejected('namespace n{int take(var value:int){return value;}}' + nixMain('42'), /expected Stage 0 type/);
+program('int take(int value){value++;return value;}' + nixMain('take 41'));
+program('int take(const int value){return value;}int main(){return take(42);}');
+program('int take(int value){return let var copy=value;in copy++;}' + nixMain('take 42'));
+program('take:int->int;take=value:do{var copy:int=value;for(var i:int=0;i<2;i++)copy++;return copy;};int main(){return take(40);}');
+program(parameterBoundaryTypes + 'int take(Box value){value.x++;return value.x;}'
+  + 'main:()->int;main=do{var original=Box{x=41;};var answer=take original;return if original.x==41 then answer else 0;};');
 // Name-first range loops are half-open int ranges lowered to the existing counting loop.
 const rangeMain = body => `main:()->int;main=do{${body}};`;
 program(rangeMain('var sum=0;for i in 0..3:do{sum=sum+i;}return sum+39;'));

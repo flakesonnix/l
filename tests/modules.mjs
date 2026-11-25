@@ -78,6 +78,16 @@ async function brokenPipe(args, stream) {
 
 try {
   const ga = body => ({ 'app/main.l': `module app.main;${body}` });
+  for (const declaration of ['pub int answer(var value:int){return value;}',
+    'int hidden(var value:int){return value;}pub int answer(){return 42;}',
+    'pub int answer(int first,var value:int,int last){return value;}',
+    'pub int answer(var value:t::Count){return value;}']) {
+    rejected({ 'app/main.l': 'module app.main;import std.math;main:()->int;main=42;',
+      'std/math.l': 'module std.math;import std.types as t;' + declaration,
+      'std/types.l': 'module std.types;pub Count=alias int;' }, /expected Stage 0 type/);
+  }
+  rejected({ 'app/main.l': 'module app.main;import std.io;main:()->int;main=42;',
+    'std/io.l': 'module std.io;pub extern void write_byte(var value:byte);' }, /expected Stage 0 type/);
   program(ga('static int a[2];static bool flags[2];static byte bytes[256];'
     + 'void fill(){a[1]=40;flags[1]=true;for(int n=0;n<256;n++)bytes[n]=byte(n);}'
     + 'int main(){if(a[1]!=0||flags[1]||bytes[255]!=byte(0))return 1;fill();'
