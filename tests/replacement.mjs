@@ -762,6 +762,45 @@ program(rangeMain('while(false)+42;return 42;'));
 program(rangeMain('while(false)-42;return 42;'));
 program('int main(){while(false)+42;return 42;}');
 program('int main(){int sum=0;for(int i=0;i<3;i++)sum=sum+14;return sum;}');
+// A separate signature precedes, and cannot see, its definition's parameter names.
+for (const definition of ['sum=Count:b:Count+b;', 'sum=Count:b:do{return Count+b;};']) {
+  program('Count=alias int;sum:Count->Count->int;' + definition + nixMain('sum 20 22'));
+  program('sum:Count->Count->int;' + definition + 'Count=alias int;' + nixMain('sum 20 22'));
+}
+program('Count=alias int;sum:Count->Count->Count;sum=Count:b:Count+b;' + nixMain('sum 20 22'));
+program('Count=alias int;sum:Count->Count->int;sum=a:Count:a+Count;' + nixMain('sum 20 22'));
+program('Count=alias int;sum:Count->Count->Count->int;sum=Count:b:c:Count+b+c;' + nixMain('sum 10 12 20'));
+program('Flag=alias bool;pick:Flag->Flag->int;pick=Flag:b:if Flag&&b then 42 else 0;' + nixMain('pick true true'));
+program('Octet=alias byte;sum:Octet->Octet->int;sum=Octet:b:int(Octet)+int(b);' + nixMain('sum (byte(20)) (byte(22))'));
+program('Text=alias string;sum:Text->Text->int;sum=Text:b:Text.length+b.length+40;' + nixMain('sum "a" "b"'));
+program('Box=record{x:int;};sum:Box->Box->int;sum=Box:b:Box.x+b.x;' + nixMain('sum Box{x=20;} Box{x=22;}'));
+program('Kind=enum{On;};pick:Kind->Kind->int;pick=Kind:b:if Kind==b then 42 else 0;' + nixMain('pick Kind::On Kind::On'));
+program('types=namespace{pub Count=alias int;};sum:types::Count->types::Count->int;sum=types:b:types+b;' + nixMain('sum 20 22'));
+program('n=namespace{Count=alias int;pub sum:Count->Count->int;sum=Count:b:Count+b;};' + nixMain('n::sum 20 22'));
+program('Count=alias int;sum:Count->Count->int;sum=Count:b:Count+b;int main(){return sum(20,22);}');
+program('Count=alias int;static int sequence=0;next:()->int;next=sequence++;sum:Count->Count->int;sum=Count:b:Count*10+b;'
+  + nixMain('sum (next ()) (next ())+41'));
+const signatureLibrary = 'module app.signature;pub Count=alias int;pub Box=record{x:int;};hidden=record{x:int;};'
+  + 'pub sum:Count->Count->int;sum=Count:b:Count+b;';
+program('import app.signature as t;sum:t::Count->t::Count->int;sum=t:b:t+b;' + nixMain('sum 20 22'), 42,
+  { 'signature.l': signatureLibrary });
+program('import app.signature::{Count,sum};' + nixMain('sum 20 22'), 42, { 'signature.l': signatureLibrary });
+program('import app.signature::{Count as Number};sum:Number->Number->int;sum=Number:b:Number+b;' + nixMain('sum 20 22'), 42,
+  { 'signature.l': signatureLibrary });
+for (const [body, message] of [
+  ['Count=alias int;sum:Count->Count->int;sum=Count:Count:42;', /duplicate local declaration/],
+  ['Count=alias int;sum:Count->Missing->int;sum=Count:b:42;', /unknown local variable or constant/],
+  ['Count=alias int;sum:Count->Count->int;sum=Count:b:true;', /expected int, got bool/],
+  ['Count=alias int;sum:Count->Count->int;sum=Count:b:do{Count value=42;return value;};', /local binding is not callable/],
+  ['types=namespace{pub Count=alias int;};sum:types::Count->types::Count->int;sum=types:b:types::Count;', /local binding is not callable/],
+  ['Count=alias int;sum:Count->Count->int;sum=Count:b:Count+b;sum:int->int->int;sum=a:b:a+b;', /duplicate function signature/],
+  ['Count=alias int;sum:Count->Count->int;sum=Count:b:Count+b;' + nixMain('sum true 22'), /no matching function overload/],
+  ['using Count=int;int sum(Count Count,Count b){return Count+b;}', /local binding is not callable/],
+  ['types=namespace{pub Count=alias int;};int sum(int types,types::Count b){return types+b;}', /local binding is not callable/],
+]) rejected(body + (body.includes('main:') ? '' : nixMain('42')), message);
+rejected('import app.signature as t;sum:t::Count->t::hidden->int;sum=t:b:42;' + nixMain('42'),
+  /inaccessible symbol/, { 'signature.l': signatureLibrary });
+rejected('Box=record{x:int;};pub sum:Box->Box->int;sum=Box:b:42;' + nixMain('42'), /public signature exposes a private struct/);
 program('do:int->int;do=x:x;' + nixMain('do 42'));
 program('id:int->int;id=x:x;' + nixMain('let do=42;in id do'));
 program('f:int->int;f=x:do{return x;};int do(int x){return x;}int main(){return do(f(42));}');

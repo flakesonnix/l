@@ -767,8 +767,10 @@ void analyze(Context *ctx, Ast *ast) {
             if (fn->exported) public_type(&s, p->name, p->type);
             if (p->type == TY_VOID || p->type == TY_AUTO) token_fail(ctx, p->name, "parameter type must be int, bool, byte, string, enum or struct");
             else parameters[count++] = p->type;
-            Binding *binding = allocate(ctx, sizeof(*binding));
-            *binding = (Binding){p, 0, s.bindings}; s.bindings = binding;
+            if (!fn->separate_signature) {
+                Binding *binding = allocate(ctx, sizeof(*binding));
+                *binding = (Binding){p, 0, s.bindings}; s.bindings = binding;
+            }
         }
         for (Function *other = ast->functions; other != fn; other = other->next)
             if (other->module == fn->module && token_equal(fn->scope, other->scope) && token_equal(fn->name, other->name) && signature(other, parameters, count))

@@ -108,6 +108,11 @@ This is Nix-like syntax, **not currying**: partial calls, stored/passed function
 values, anonymous lambdas and closures are not supported. `(add 20) 22` is
 rejected. Conversions keep their explicit `int(expr)` and `byte(expr)` forms.
 
+Names in a separate Nix signature resolve before its definition's parameters
+exist. With `Count = alias int;`, `sum: Count -> Count -> int;` can be defined as
+`sum = Count: b: Count + b;`: the parameter shadows the type only in the body,
+not retroactively in the signature. C-style parameter-list scoping stays unchanged.
+
 Stage 0 also accepts Nix-style `#` line comments in either body style, including
 before a module header or between tokens. They end at LF (also in CRLF input) or
 EOF and act as whitespace, not token concatenation or preprocessor directives.
