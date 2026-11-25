@@ -317,14 +317,11 @@ static Expr *condition(Parser *p) {
     expect(p, ')', "expected ')' after condition");
     return e;
 }
-static bool while_infix_condition(Parser *p) {
-    int first = peek(p).kind;
-    if (!precedence(first)) return false;
-    if (first != '+' && first != '-') return true;
-    /* A sign can also start a C unary statement. Find its expression delimiter
-       without constructing a second AST; let bindings and nested literals own ';'. */
+static bool while_condition_colon(Parser *p, size_t at) {
+    /* Call arguments and signs can also start C bodies. Look for the condition
+       delimiter without a speculative AST; bindings and nested literals own ';'. */
     size_t groups = 0, bindings = 0;
-    for (size_t at = p->at + 1;; ++at) {
+    for (;; ++at) {
         int kind = p->tokens[at].kind;
         if (kind == TK_EOF) return false;
         if (kind == '(' || kind == '[' || kind == '{') { ++groups; continue; }
@@ -339,6 +336,12 @@ static bool while_infix_condition(Parser *p) {
             if (kind == ';') return false;
         }
     }
+}
+static bool while_infix_condition(Parser *p) {
+    int first = peek(p).kind;
+    if (!precedence(first)) return false;
+    if (first != '+' && first != '-') return true;
+    return while_condition_colon(p, p->at + 1);
 }
 static Stmt *statement(Parser *p) {
     Token token = peek(p);
@@ -362,7 +365,8 @@ static Stmt *statement(Parser *p) {
             if (grouped) {
                 int kind = peek(p).kind;
                 bool postfix = kind == '.' || kind == '[' || kind == TK_INC || kind == TK_DEC;
-                if (postfix || while_infix_condition(p)) {
+                bool application = application_argument(p) && while_condition_colon(p, p->at);
+                if (postfix || while_infix_condition(p) || application) {
                     if (postfix) s->condition = postfix_tail(p, s->condition);
                     s->condition = expression_tail(p, s->condition, 1);
                     grouped = false;

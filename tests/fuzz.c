@@ -44,6 +44,8 @@ static size_t infix_while_programs, infix_while_rejections;
 static uint32_t infix_while_forms;
 static size_t postfix_while_programs, postfix_while_rejections;
 static uint32_t postfix_while_forms;
+static size_t call_while_programs, call_while_rejections;
+static uint32_t call_while_forms;
 static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms, nix_while_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
@@ -1667,6 +1669,76 @@ static void postfix_while_recovery(void) {
     }
     dispose(ctx);
 }
+/* Grouped callees retain complete arity and eager argument/predicate effects. */
+static void call_while_cases(void) {
+    random_state = UINT32_C(0x43414c57);
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        unsigned form = test % 8, limit = random_number(7), cap = form == 5 ? 0 : limit;
+        unsigned skip = random_number(limit + 2), stop = random_number(limit + 2);
+        int32_t weight = (int32_t)random_number(20) + 1, expected = 0;
+        unsigned final = 0; bool stopped = false;
+        for (unsigned value = 1; value <= cap; ++value) {
+            final = value;
+            if (value == skip) continue;
+            expected += (int32_t)value * weight;
+            if (value == stop) { stopped = true; break; }
+        }
+        unsigned checks = final + !stopped;
+        call_while_forms |= 1u << form;
+        source_length = 0;
+        append("Box=record{ready:bool;};static int n=0;static int checks=0;static int seq=0;"
+            "left:int->int;left=value:do{seq=seq*10+1;return value;};"
+            "right:()->int;right=do{seq=seq*10+2;return %u;};"
+            "below:int->int->bool;below=value:bound:do{checks++;return value<bound;};"
+            "ordered:int->int->bool;ordered=value:bound:do{if(seq!=12)1/0;seq=0;checks++;return value<bound;};"
+            "ready:()->bool;ready=do{checks++;return n<%u;};"
+            "flag:bool->bool;flag=enabled:do{checks++;return enabled&&n<%u;};"
+            "int_ready:int->bool;int_ready=value:do{checks++;return value<%u;};"
+            "box_ready:Box->bool;box_ready=b:do{checks++;return b.ready;};"
+            "main:()->int;main=do{var sum=0;while ", limit, limit, limit, limit);
+        if (form == 0) append("(below) n %u", limit);
+        else if (form == 1) append("((ordered)) (left n) (right ())");
+        else if (form == 2) append("(ready) ()");
+        else if (form == 3) append("(flag) (let next:bool=n<%u;in next)", limit);
+        else if (form == 4) append("(flag) true");
+        else if (form == 5) append("(flag) false");
+        else if (form == 6) append("(int_ready) int(byte(n))");
+        else append("(box_ready) Box{ready=n<%u;}", limit);
+        append(":do{n++;if(n==%u)continue;sum=sum+n*%d;if(n==%u)break;}"
+            "if(n!=%u||checks!=%u||seq!=0)1/0;return sum;};", skip, weight, stop, final, checks);
+        ++call_while_programs; semantic_case(expected, 0);
+    }
+    if (call_while_forms != 255) failed("grouped-call while model missed an argument or arity form");
+}
+static void call_while_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("invalid grouped-call while was accepted"); }
+    if (ctx->status != 65) failed("grouped-call while rejection returned an unexpected status");
+    ++call_while_rejections;
+}
+static void call_while_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned grouped-call while context rejected valid source");
+    Program *p = compile(ctx, "check:int->bool;check=n:n<3;main:()->int;main=do{var n=0;"
+        "while (check) n:do{n++;}while(false)int unused=42;return n+39;};");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void call_while_recovery(void) {
+    static const char *const invalid[] = {
+        "below:int->int->bool;below=n:bound:n<bound;main:()->int;main=do{while (below) 0:do{}return 42;};",
+        "check:int->bool;check=n:n<3;main:()->int;main=do{while (if true then check else check) 0:do{}return 42;};",
+        "check:int->bool;check=n:n<3;main:()->int;main=do{while (check) 0:do ;return 42;};",
+        "ping:()->int;ping=42;main:()->int;main=do{while(false)ping ("
+    };
+    Context *ctx = context("call-while-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            call_while_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("grouped-call while rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "call-while-recovery";
+            call_while_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
 static void nix_loop_block_reject(Context *ctx, const char *text) {
     if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("Nix loop body without a block was accepted"); }
     if (ctx->status != 65) failed("Nix loop block rejection returned an unexpected status");
@@ -2651,6 +2723,13 @@ int main(void) {
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=do{int a[1];while (a)[visits++]<3:do{1/0;}return 42;};"
         "recover:()->int;recover=do{var n=0;while (n)++<3:do{}return if visits==0 then n+38 else 1/0;};");
+    call_while_cases();
+    call_while_recovery();
+    scoped_lifecycle(
+        "static int visits=0;main:()->int;main=do{"
+        "while (accept) (42/visits++):do{}return 42;};"
+        "recover:()->int;recover=do{var n=0;while (check) n:do{n++;}"
+        "return if visits==0 then n+39 else 1/0;};accept:int->bool;accept=x:false;check:int->bool;check=n:n<3;");
     nix_loop_block_recovery();
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=do{var n=0;while ((n<1)):do{n++;visits++;1/0;}return 42;};"
@@ -2705,5 +2784,7 @@ int main(void) {
     printf("fuzz: %zu infix while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", infix_while_rejections);
     printf("fuzz: %zu postfix while programs preserved field/index/update effects and bounded loop results\n", postfix_while_programs);
     printf("fuzz: %zu postfix while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", postfix_while_rejections);
+    printf("fuzz: %zu grouped-call while programs preserved complete arity and eager argument/predicate effects\n", call_while_programs);
+    printf("fuzz: %zu grouped-call while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", call_while_rejections);
     return 0;
 }

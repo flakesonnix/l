@@ -357,6 +357,76 @@ for (const [body, message] of [
   [rangeMain('int a[1];while (a):do{}return 42;'), /array used without an index/],
   ['int main(){int a[1];while(a)[0]<3:do{}return 42;}', /expected expression/],
 ]) rejected(body, message);
+// Parentheses around a direct callee do not turn it into a function value.
+const groupedCheck = 'check:int->bool;check=n:n<3;';
+for (const condition of ['(check) n', '((check)) n', '(check) (n)', '(check) ((n))', '(check) (n+0)',
+  '(check) (let k:int=n;in k)', '(check) (if true then n else 0)', '(check) n&&true']) {
+  program(groupedCheck + rangeMain(`var n=0;while ${condition}:do{n++;}return n+39;`));
+}
+program('static int n=0;below:int->bool;below=bound:n<bound;' + rangeMain('while (below) 3:do{n++;}return n+39;'));
+program('static int n=0;check:string->bool;check=text:n<text.length;'
+  + rangeMain('while (check) ";:;":do{n++;}return n+39;'));
+program('check:bool->bool;check=ready:ready;' + rangeMain('while (check) false:do{return 1/0;}return 42;'));
+program('check:bool->bool;check=ready:ready;' + rangeMain('while (check) true:do{return 42;}return 0;'));
+program('check:bool->bool;check=ready:ready;' + rangeMain('var n=0;while (check) (n<3):do{n++;}return n+39;'));
+for (const callee of ['(more)', '((more))']) {
+  program('static int n=0;more:()->bool;more=n<3;' + rangeMain(`while ${callee} ():do{n++;}return n+39;`));
+}
+program(groupedCheck + rangeMain('var b=byte(0);while (check) int(b):do{b=byte(int(b)+1);}return int(b)+39;'));
+program('check:byte->bool;check=b:int(b)<3;' + rangeMain('var n=0;while (check) byte(n):do{n++;}return n+39;'));
+const groupedOverload = groupedCheck + 'check:bool->bool;check=ready:ready;';
+program(groupedOverload + rangeMain('var n=0;while (check) n:do{n++;}return n+39;'));
+program(groupedOverload + rangeMain('while (check) false:do{}return 42;'));
+const groupedBelow = 'below:int->int->bool;below=n:bound:n<bound;';
+for (const condition of ['(below) n 3', '((below)) (n) (3)']) {
+  program(groupedBelow + rangeMain(`var n=0;while ${condition}:do{n++;}return n+39;`));
+}
+program('pred=namespace{pub below:int->int->bool;below=n:bound:n<bound;};'
+  + rangeMain('var n=0;while (pred::below) n 3:do{n++;}return n+39;'));
+program('static int seq=0;left:int->int;left=n:do{seq=seq*10+1;return n;};'
+  + 'right:()->int;right=do{seq=seq*10+2;return 3;};' + groupedBelow
+  + rangeMain('var n=0;while (below) (left n) (right ()):do{if(seq!=12)1/0;seq=0;n++;}return if n==3&&seq==12 then 42 else 0;'));
+program('static int calls=0;bool check(int n){calls++;return n<3;}'
+  + rangeMain('var n=0;while (check) n:do{n++;}return if calls==4 then n+39 else 0;'));
+program('Box=record{value:int;};' + groupedCheck
+  + rangeMain('var b=Box{value=0;};while (check) (b).value:do{b.value++;}return b.value+39;'));
+program(groupedCheck + rangeMain('int a[1];while (check) a[0]++:do{}return a[0]+38;'));
+program(groupedCheck + rangeMain('int a[4];a[3]=3;var n=0;while (check) a[n]:do{n++;}return n+39;'));
+program('Box=record{ready:bool;};static int calls=0;check:Box->bool;check=b:do{calls++;return b.ready;};'
+  + rangeMain('var n=0;while (check) Box{ready=n++<3;}:do{}return if calls==4 then n+38 else 0;'));
+program(groupedBelow + rangeMain('var n=0;var total=0;while (below) n 5:do{n++;if(n==2)continue;if(n==4)break;total=total+14;}return total+14;'));
+program(groupedCheck + rangeMain('var total=0;for i in 0..2:do{var n=0;while (check) n:do{n++;total=total+7;}}return total;'));
+program('check:int->bool;check=n:false;' + rangeMain('while (check) (1/0):do{}return 42;'), 70, {}, /division by zero/);
+program('check:int->bool;check=n:false;' + rangeMain('while (check) (2147483647+1):do{}return 42;'), 70, {}, /integer overflow/);
+// A body without the condition colon remains a C statement, not an argument list.
+const groupedBodyDeclarations = 'Count=alias int;Box=record{value:int;};do=record{value:int;};'
+  + 'int ping(){return 42;}space=namespace{pub ping:()->int;ping=42;};';
+for (const body of ['ping ()', '(let k:int=42;in k)', '"let x:int=0;in x:do"', '42', 'true', 'false',
+  'int(byte(42))', 'byte(42)', 'Box{value=42;}', 'do{value=42;}', 'int k=42', 'byte k=byte(42)',
+  'Count k=42', 'int local[2]', '(42)', 'let k:int=42;in k', 'space::ping ()']) {
+  program(groupedBodyDeclarations + rangeMain(`while(false)${body};return 42;`));
+  program(groupedBodyDeclarations + `int main(){while(false)${body};return 42;}`);
+}
+program(rangeMain('while(false)var k:int=42;return 42;'));
+for (const [body, message] of [
+  [groupedBelow + rangeMain('var n=0;while (below) n:do{}return 42;'), /no matching function overload/],
+  [groupedBelow + rangeMain('while (below) ():do{}return 42;'), /no matching function overload/],
+  [groupedCheck + rangeMain('while (check) 0 3:do{}return 42;'), /no matching function overload/],
+  [groupedCheck + rangeMain('while (check) true:do{}return 42;'), /no matching function overload/],
+  ['check:int->int;check=n:n;' + rangeMain('while (check) 0:do{}return 42;'), /expected bool, got int/],
+  [groupedCheck + rangeMain('while (if true then check else check) 0:do{}return 42;'), /direct function calls only/],
+  [groupedCheck + rangeMain('while (let f=check;in f) 0:do{}return 42;'), /direct function calls only/],
+  [groupedCheck + rangeMain('var check=true;while (check) 0:do{}return 42;'), /local binding is not callable/],
+  [rangeMain('while (missing) 0:do{}return 42;'), /unknown function/],
+  [groupedCheck + rangeMain('while (check) 0:return 42;'), /expected 'do'/],
+  [groupedCheck + rangeMain('while (check) 0:do ;return 42;'), /expected '\{' after 'do'/],
+  [groupedCheck + rangeMain('var n=0;while (check) (n:do{}return 42;'), /expected '\)'/],
+  [groupedCheck + rangeMain('int a[1];while (check) a:do{}return 42;'), /array used without an index/],
+  [groupedCheck + rangeMain('var n=0;while (check) (let k:int=n;in k):do{n++;}return k;'), /unknown local variable/],
+  ['ping:()->int;ping=42;main:()->int;main=do{while(false)ping (', /expected expression/],
+  ['main:()->int;main=do{while(false)42]', /expected ';'/],
+  ['check:int->bool;check=n:n<3;int main(){while(check) 0:do{}return 42;}', /expected ';'/],
+]) rejected(body, message);
 // Nix loop bodies require blocks; C loop bodies still accept individual statements.
 for (const header of ['while false', 'while (false)', 'for i in 0..0']) {
   for (const body of ['return 0;', ';', 'var x=0;', 'n++;', 'if(false)return 0;',

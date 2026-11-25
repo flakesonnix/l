@@ -239,6 +239,10 @@ separately; passing a feature-head run does not prove that run passed.
   expressions, without repeating base/index effects or weakening readonly/lvalue
   checks. Keep C blocks, parenthesized statements and named calls as bodies;
   do not reinterpret `{` or `(` after a complete C condition as a postfix tail.
+  Grouped direct callees may continue through a complete application before the
+  condition colon. Preserve eager left-to-right arguments, full arity, overloads
+  and the ban on function values. Without that colon, declarations, conversions,
+  literals and named calls still belong to the C body; `::` is not a delimiter.
   After `: do`, both Nix loop forms require `{ ... }`, including empty bodies;
   do not accept `do ;`, a declaration or another unbraced statement instead.
   Contextual `do {` is never a call argument.
