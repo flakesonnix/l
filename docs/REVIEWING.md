@@ -261,6 +261,10 @@ separately; passing a feature-head run does not prove that run passed.
   extents and scope, including `for` initializers. Calls must reuse the ordinary
   argument/overload/privacy checks, evaluate indices once before calling and add
   no implicit array binding. C calls and whole-array rejection remain unchanged.
+  `#` source comments share the existing line-comment path: end at LF/EOF, retain
+  byte-based positions and NUL rejection, and leave string data and C comments
+  alone. Comments are whitespace, not token paste or preprocessor instructions;
+  manifests and older L-written tokenizers keep their existing contracts.
   After `: do`, both Nix loop forms require `{ ... }`, including empty bodies;
   do not accept `do ;`, a declaration or another unbraced statement instead.
   Contextual `do {` is never a call argument.

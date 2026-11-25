@@ -54,6 +54,8 @@ static size_t conditional_statement_programs, conditional_statement_rejections;
 static uint32_t conditional_statement_forms;
 static size_t indexed_call_programs, indexed_call_rejections;
 static uint32_t indexed_call_forms;
+static size_t hash_comment_programs, hash_comment_rejections, hash_comment_token_checks;
+static uint32_t hash_comment_forms;
 static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms, nix_while_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
@@ -2011,6 +2013,94 @@ static void indexed_call_recovery(void) {
     }
     dispose(ctx);
 }
+typedef struct { size_t first, last; } CommentRange;
+static void hash_comment(CommentRange *ranges, unsigned *count, unsigned form, bool newline) {
+    static const char *const payloads[] = { "", " if then else let in do :: -> ; } ] )",
+        " /* unterminated", " \"unterminated", " // # nested-looking", " UTF-8: é λ", " \t carriage\r", " module ghost; import missing;" };
+    if (*count == 16) failed("hash-comment model range buffer exhausted");
+    ranges[*count].first = source_length;
+    append("#%s%s", payloads[form % 8], newline ? (form % 2 ? "\r\n" : "\n") : "");
+    ranges[(*count)++].last = source_length;
+}
+static void hash_comment_tokens(const CommentRange *ranges, unsigned count) {
+    char control[MAX_INPUT]; memcpy(control, source, source_length + 1);
+    for (unsigned n = 0; n < count; ++n) for (size_t at = ranges[n].first; at < ranges[n].last; ++at)
+        if (control[at] != '\n' && control[at] != '\r') control[at] = ' ';
+    Context *ctx = context("hash-comment-tokens");
+    if (setjmp(ctx->failure)) failed("hash comments or padded whitespace failed to lex");
+    size_t actual_count, expected_count;
+    Token *actual = lex(ctx, source, source_length, &actual_count), *expected = lex(ctx, control, source_length, &expected_count);
+    if (actual_count != expected_count) failed("hash comment changed token count");
+    for (size_t n = 0; n < actual_count; ++n) {
+        if (actual[n].kind != expected[n].kind || actual[n].integer != expected[n].integer ||
+            actual[n].line != expected[n].line || actual[n].column != expected[n].column ||
+            actual[n].length != expected[n].length || memcmp(actual[n].text, expected[n].text, actual[n].length))
+            failed("hash comment changed token data or byte-based source position");
+        ++hash_comment_token_checks;
+    }
+    dispose(ctx);
+}
+static void hash_comment_cases(void) {
+    random_state = UINT32_C(0x48415348);
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        unsigned form = test % 8, bound = random_number(7), parity = random_number(2), count = 0;
+        bool nix = (test / 8) % 2 != 0;
+        int32_t initial = (int32_t)random_number(41) - 20, yes = (int32_t)random_number(41) - 20;
+        int32_t no = (int32_t)random_number(41) - 20, expected = initial;
+        for (unsigned i = 0; i < bound; ++i) expected += i % 2 == parity ? yes : no;
+        CommentRange ranges[16]; source_length = 0; hash_comment_forms |= 1u << form;
+        if (form == 0) hash_comment(ranges, &count, form, true);
+        append("int"); if (form == 1) hash_comment(ranges, &count, form, true);
+        append(" pass(int value){return value;}");
+        if (nix) {
+            append("main:()"); if (form == 2) hash_comment(ranges, &count, form, true);
+            append("->int;main=do{");
+        } else {
+            append("int"); if (form == 2) hash_comment(ranges, &count, form, true);
+            append(" main(){");
+        }
+        append(nix ? "var total" : "int total"); if (form == 3) hash_comment(ranges, &count, form, true);
+        append("=%d;for(int i=0;i<", initial); if (form == 4) hash_comment(ranges, &count, form, true);
+        append("%u;i++){if(", bound); if (form == 5) hash_comment(ranges, &count, form, true);
+        append("i%%2==%u)total=total+(%d);else total=total+(%d);}", parity, yes, no);
+        append("string text=\"a#b\";if(text.length!=3||int(text[1])!=35)1/0;return pass");
+        if (form == 6) hash_comment(ranges, &count, form, true);
+        append(nix ? "(total);};" : "(total);}");
+        hash_comment(ranges, &count, form, false);
+        hash_comment_tokens(ranges, count);
+        ++hash_comment_programs; semantic_case(expected, 0);
+    }
+    if (hash_comment_forms != 255) failed("hash-comment model missed a placement form");
+}
+static void hash_comment_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("invalid hash-comment source was accepted"); }
+    if (ctx->status != 65) failed("hash-comment rejection returned an unexpected status");
+    ++hash_comment_rejections;
+}
+static void hash_comment_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned hash-comment context rejected valid source");
+    Program *p = compile(ctx, "# before definition\nmain:()# signature\n->int;main=do{# body\n"
+        "var text=\"#\";return text.length+41;};# EOF");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void hash_comment_recovery(void) {
+    static const char *const invalid[] = {
+        "main:()->int;main=do{return 42;# hidden close }",
+        "main:()->int;ma# split identifier\nin=42;",
+        "main:()->int;main=\"\\#\".length;",
+        "main:()-# split arrow\n>int;main=42;"
+    };
+    Context *ctx = context("hash-comment-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            hash_comment_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("hash-comment rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "hash-comment-recovery";
+            hash_comment_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
 static void nix_loop_block_reject(Context *ctx, const char *text) {
     if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("Nix loop body without a block was accepted"); }
     if (ctx->status != 65) failed("Nix loop block rejection returned an unexpected status");
@@ -3026,6 +3116,11 @@ int main(void) {
         "static int reads=0;static int seen=0;main:()->int;main=do{int a[1];consume a[reads+++1];return 42;};"
         "recover:()->int;recover=do{int a[1];a[0]=42;consume a[reads++];return if reads==1&&seen==42 then 42 else 0;};"
         "consume:int->void;consume=value:do{seen=seen+value;};");
+    hash_comment_cases();
+    hash_comment_recovery();
+    scoped_lifecycle(
+        "# trap source\nstatic int visits=0;main:()->int;main=do{# selected trap\nvisits++;1/0;return 42;};"
+        "recover:()->int;recover=do{# fresh execution\nreturn if visits==0 then \"#\".length+41 else 1/0;};# EOF");
     nix_loop_block_recovery();
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=do{var n=0;while ((n<1)):do{n++;visits++;1/0;}return 42;};"
@@ -3090,5 +3185,7 @@ int main(void) {
     printf("fuzz: %zu conditional statement rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", conditional_statement_rejections);
     printf("fuzz: %zu indexed-call programs preserved argument/index effects and declaration identity\n", indexed_call_programs);
     printf("fuzz: %zu indexed-call rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", indexed_call_rejections);
+    printf("fuzz: %zu hash-comment programs preserved bounded results; %zu token/data/position checks matched padded whitespace\n", hash_comment_programs, hash_comment_token_checks);
+    printf("fuzz: %zu hash-comment rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", hash_comment_rejections);
     return 0;
 }

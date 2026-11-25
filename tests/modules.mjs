@@ -1075,10 +1075,18 @@ try {
       project['app/main.l'] = `module app.main;${imports.join('')}main:()->int;main=let a=top::work::run 17;`
         + `b=next::work::run (-23);in if a==${a}&&b==${b}&&t::ticks==${ticks} then 42 else 0;`;
       const settings = config(); if (reverse) settings.module_roots.reverse();
+      const hashComments = Object.fromEntries(Object.entries(project).map(([file, text]) => {
+        const commented = '# before the actual module header: if then else :: ->\n'
+          + text.replaceAll('t::Count', 't::# qualified type boundary\nCount')
+            .replaceAll('t::tick ()', 't::tick # invocation boundary ; { }\n ()') + '\n# EOF without LF';
+        assert.notEqual(commented, text, 'hash-comment variant must change each module source');
+        return [file, commented];
+      }));
       for (const [variant, types] of [[project, 0], [{ ...project, ...unitTails,
         'std/calls.l': project['std/calls.l'] + 'pub Tick=record{value:Count;};pub next:()->Tick;next=Tick{value=ticks++;};' }, 1],
         [{ ...project, ...conditionalStatements }, 0], [{ ...project, ...indexedStatements,
-          'std/calls.l': project['std/calls.l'] + 'pub advance:Count->void;advance=previous:do{if(previous!=ticks)1/0;ticks++;};' }, 0]]) {
+          'std/calls.l': project['std/calls.l'] + 'pub advance:Count->void;advance=previous:do{if(previous!=ticks)1/0;ticks++;};' }, 0],
+        [hashComments, 0]]) {
         const f = program(variant, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
         assert.equal(bytes.readUInt32LE(16), 1, 'Nix functions add no implicit global storage');
         assert.equal(bytes.readUInt32LE(20), types, 'only the unit-result variant adds its shared nominal type');

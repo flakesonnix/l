@@ -159,6 +159,14 @@ Both statement and `for`-initializer contexts use this path; no parser arity loo
 or new AST kind is involved. Typed-function DAGs retain their tick oracle through
 an indexed argument to a void helper, with one explicit local array and no new
 global storage or nominal metadata. Array extents and whole-array restrictions stay.
+Hash-comment models add 128 bounded programs with independently padded whitespace
+controls for token kind/data and byte-based line/column positions, including EOF.
+They cover both body styles, LF/CRLF, string hashes, misleading punctuation and
+comment payload bytes. Sixteen rejection/cleanup/recompile cycles and trap recovery
+retain lexer safety and fresh execution state. Typed-function DAGs also run with
+comments before headers, between qualified names/calls and at EOF in both orders,
+without changing the independent oracle or adding storage/types. The L-written
+tokenizers keep their older comment contract; coverage remains Stage 0 C only.
 
 ## Nix workflow
 

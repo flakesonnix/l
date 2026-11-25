@@ -108,6 +108,13 @@ This is Nix-like syntax, **not currying**: partial calls, stored/passed function
 values, anonymous lambdas and closures are not supported. `(add 20) 22` is
 rejected. Conversions keep their explicit `int(expr)` and `byte(expr)` forms.
 
+Stage 0 also accepts Nix-style `#` line comments in either body style, including
+before a module header or between tokens. They end at LF (also in CRLF input) or
+EOF and act as whitespace, not token concatenation or preprocessor directives.
+`#` inside a quoted string stays data, and NUL bytes are still rejected inside
+comments. Existing `//` and non-nested `/* ... */` comments keep their behavior.
+This applies to L source only; JSON manifests retain their existing format.
+
 A plain expression body returns its value. For statements and loops, write
 `do { ... }` as the whole function body, ending the definition with `;`.
 It supports the existing `for`, `while`, `break`, `continue`, `switch`, local
@@ -293,6 +300,8 @@ parameters, application, `do` bodies, name-first local declarations, range loops
 or Nix-style `while` yet. Their older C-style contracts below
 are unchanged. This extension builds on the aggregate-expression slice, not on a
 new backend or a self-hosted compiler.
+Their older L-written tokenizers still use C comments; this Stage 0 extension
+does not add `#` comments to those standalone drivers.
 
 #### Local values and conditionals
 
@@ -721,7 +730,7 @@ Here is what Stage 0 can actually compile. This includes the bootstrap syntax an
 the merged replacement forms above; it is not the whole planned language. The
 broader syntax accepted by Stage 1 is a separate list, not a promise of execution.
 
-- ASCII identifiers, decimal literals, `//` and `/* … */` comments.
+- ASCII identifiers, decimal literals, `#`/`//` line and `/* … */` block comments.
 - Mandatory `module a.b;`, one file per module, explicitly configured source roots.
 - Module imports, aliases, selective imports, private-by-default functions and
   explicit `pub` exports; qualification uses `::`, not `.`.

@@ -76,7 +76,7 @@ Token *lex(Context *ctx, const char *source, size_t length, size_t *count) {
         }
         Token token = { source + at, 1, line, column, c, 0 };
         size_t start = at;
-        if (c == '/' && at + 1 < length && source[at + 1] == '/') {
+        if (c == '#' || (c == '/' && at + 1 < length && source[at + 1] == '/')) {
             while (at < length && source[at] != '\n') {
                 if (!source[at]) token_fail(ctx, token, "NUL byte in source");
                 ++at; ++column;
