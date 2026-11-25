@@ -132,6 +132,12 @@ grouped-call variants of the same while DAGs and 16 rejection/cleanup/recompile
 cycles with eager-argument trap recovery. They retain full arity, static overloads
 and direct named calls only. Shared delimiter lookahead avoids speculative ASTs
 and preserves declarations, conversions and named calls as legacy C bodies.
+Grouped-constructor regressions add 128 bounded field-order/count models,
+record variants of the same while DAGs and 16 rejection/cleanup/recompile cycles
+with initializer trap recovery. The imported record variant has exactly one
+shared nominal type; earlier variants retain zero nominal metadata. Lookahead
+stops at the first constructor/block close before checking for a condition tail,
+so a C block cannot borrow the colon of a later loop or typed declaration.
 
 ## Nix workflow
 

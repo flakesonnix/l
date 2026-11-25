@@ -343,6 +343,20 @@ static bool while_infix_condition(Parser *p) {
     if (first != '+' && first != '-') return true;
     return while_condition_colon(p, p->at + 1);
 }
+static bool while_record_condition(Parser *p) {
+    /* The first '{' can be a C block. Stop at its close before looking for a
+       constructor tail; never borrow a colon from a later loop or declaration. */
+    size_t at = p->at, braces = 0;
+    do {
+        int kind = p->tokens[at++].kind;
+        if (kind == TK_EOF) return false;
+        if (kind == '{') ++braces;
+        if (kind == '}') --braces;
+    } while (braces);
+    int next = p->tokens[at].kind;
+    return (next == ':' || next == '.' || next == '[' || next == TK_INC || next == TK_DEC || precedence(next)) &&
+        while_condition_colon(p, at);
+}
 static Stmt *statement(Parser *p) {
     Token token = peek(p);
     enter(p->ctx, token);
@@ -364,7 +378,8 @@ static Stmt *statement(Parser *p) {
             s->condition = grouped ? condition(p) : expression(p, 1);
             if (grouped) {
                 int kind = peek(p).kind;
-                bool postfix = kind == '.' || kind == '[' || kind == TK_INC || kind == TK_DEC;
+                bool postfix = kind == '.' || kind == '[' || kind == TK_INC || kind == TK_DEC ||
+                    (kind == '{' && while_record_condition(p));
                 bool application = application_argument(p) && while_condition_colon(p, p->at);
                 if (postfix || while_infix_condition(p) || application) {
                     if (postfix) s->condition = postfix_tail(p, s->condition);

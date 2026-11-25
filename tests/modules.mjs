@@ -1132,6 +1132,7 @@ try {
     const infixLoops = {};
     const postfixLoops = {};
     const callLoops = {};
+    const recordLoops = {};
     const project = { 'std/loops.l': 'module std.loops;pub Count=alias int;pub static int ticks=0;'
       + 'pub tick:()->Count;tick=ticks++;pub below:Count->Count->bool;below=value:bound:value<bound;' }, nodes = [];
     for (let n = 0; n < 8; ++n) {
@@ -1165,6 +1166,11 @@ try {
         .replace(`while i<${bound}:do{`, test % 2 ? `while ((t::below)) (i) (${bound}):do{` : `while (t::below) i ${bound}:do{`);
       assert.notEqual(callLoops[`${name.replaceAll('.', '/')}.l`], project[`${name.replaceAll('.', '/')}.l`],
         'grouped-call while variant must change the generated condition');
+      recordLoops[`${name.replaceAll('.', '/')}.l`] = project[`${name.replaceAll('.', '/')}.l`]
+        .replace(`while i<${bound}:do{`, test % 2 ? `while ((t::Condition)){ready=(let active:bool=i<${bound};in active);}.ready:do{`
+          : `while (t::Condition){ready=i<${bound};}.ready:do{`);
+      assert.notEqual(recordLoops[`${name.replaceAll('.', '/')}.l`], project[`${name.replaceAll('.', '/')}.l`],
+        'record while variant must change the generated condition');
       nodes.push({ name, parents, bound, delta });
     }
     let ticks = 0;
@@ -1184,10 +1190,12 @@ try {
       project['app/main.l'] = `module app.main;${imports.join('')}main:()->int;main=do{var a=top::work::run 17;`
         + `var b=next::work::run (-23);return if a==${a}&&b==${b}&&t::ticks==${ticks} then 42 else 0;};`;
       const settings = config(); if (reverse) settings.module_roots.reverse();
-      for (const variant of [project, { ...project, ...groupedLoops }, { ...project, ...infixLoops }, { ...project, ...postfixLoops }, { ...project, ...callLoops }]) {
+      for (const [variant, types] of [[project, 0], [{ ...project, ...groupedLoops }, 0], [{ ...project, ...infixLoops }, 0],
+        [{ ...project, ...postfixLoops }, 0], [{ ...project, ...callLoops }, 0],
+        [{ ...project, ...recordLoops, 'std/loops.l': project['std/loops.l'] + 'pub Condition=record{ready:bool;};' }, 1]]) {
         const f = program(variant, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
         assert.equal(bytes.readUInt32LE(16), 1, 'while loops add no implicit global storage');
-        assert.equal(bytes.readUInt32LE(20), 0, 'while loops do not add runtime nominal metadata');
+        assert.equal(bytes.readUInt32LE(20), types, 'only the record variant adds its one shared nominal type');
         assert.equal(bytes.readUInt32LE(24), 0);
       }
     }

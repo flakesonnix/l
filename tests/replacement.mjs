@@ -427,6 +427,73 @@ for (const [body, message] of [
   ['main:()->int;main=do{while(false)42]', /expected ';'/],
   ['check:int->bool;check=n:n<3;int main(){while(check) 0:do{}return 42;}', /expected ';'/],
 ]) rejected(body, message);
+// A grouped type name keeps its existing constructor/field meaning in conditions.
+const whileRecord = 'Box=record{ready:bool;};';
+for (const condition of ['(Box){ready=n<3;}.ready', '((Box)){ready=n<3;}.ready',
+  '(Box){ready=(let current:bool=n<3;in current);}.ready',
+  '(Box){ready=(if n<3 then true else false);}.ready',
+  '(Box){ready=(let inner=Box{ready=n<3;};in inner.ready);}.ready',
+  '(Box){ready=n<3;}.ready&&true', '(Box){ready=n<3;}.ready||false',
+  '(Box){ready=n<3;}.ready==true']) {
+  program(whileRecord + rangeMain(`var n=0;while ${condition}:do{n++;}return n+39;`));
+}
+program('types=namespace{pub Box=record{ready:bool;};};'
+  + rangeMain('var n=0;while (types::Box){ready=n<3;}.ready:do{n++;}return n+39;'));
+for (const fields of ['n<3', 'ready=n<3;']) {
+  program('struct Box{bool ready;};' + rangeMain(`var n=0;while (Box){${fields}}.ready:do{n++;}return n+39;`));
+}
+program(whileRecord + rangeMain('var n=0;while (Box){ready=n++<3;}.ready:do{}return n+38;'));
+program(whileRecord + rangeMain('while (Box){ready=false;}.ready:do{return 1/0;}return 42;'));
+program(whileRecord + rangeMain('while (Box){ready=true;}.ready:do{return 42;}return 0;'));
+program('Text=record{value:string;};'
+  + rangeMain('var n=0;while (Text){value="abc";}.value.length>n:do{n++;}return n+39;'));
+program('Text=record{value:string;};'
+  + rangeMain('var n=0;while (Text){value="aaa\\0";}.value[n]!=byte(0):do{n++;}return n+39;'));
+program('Text=record{value:string;};'
+  + rangeMain('var n=0;while (Text){value=";:{let in}";}.value.length>n:do{n++;}return n+32;'));
+program('Pair=record{ready:bool;x:int;};' + rangeMain('var n=0;var calls=0;'
+  + 'while (Pair){x=calls++;ready=n++<3;}.ready:do{}return if n==4&&calls==4 then 42 else 0;'));
+program('Pair=record{ready:bool;x:int;};' + rangeMain('var n=0;var calls=0;'
+  + 'while (Pair){ready=n++<3;x=calls++;}.ready:do{}return if n==4&&calls==4 then 42 else 0;'));
+program('static int calls=0;next:()->bool;next=do{calls++;return calls<4;};' + whileRecord
+  + rangeMain('var n=0;while (Box){ready=next ();}.ready:do{n++;}return if calls==4 then n+39 else 0;'));
+program(whileRecord + rangeMain('var n=0;var total=0;while (Box){ready=n<5;}.ready:do{'
+  + 'n++;if(n==2)continue;if(n==4)break;total=total+14;}return total+14;'));
+program(whileRecord + rangeMain('var total=0;for i in 0..2:do{var n=0;'
+  + 'while (Box){ready=n<3;}.ready:do{n++;total=total+7;}}return total;'));
+program(whileRecord + rangeMain('while (Box){ready=1/0==0;}.ready:do{}return 42;'), 70, {}, /division by zero/);
+// A completed C block must not borrow a colon from any following statement.
+for (const tail of ['return 42;', 'while false:do{}return 42;', 'while(false):do{}return 42;',
+  'for i in 0..0:do{}return 42;', 'var value:int=42;return value;', '{return 42;}',
+  '+let value:int=42;in value;return 42;', '-let value:int=42;in value;return 42;',
+  '(let value:int=42;in value);return 42;', 'let value:int=42;in value;return 42;',
+  'Box b=Box{ready=true;};return if b.ready then 42 else 0;']) {
+  program(whileRecord + rangeMain(`while(false){if(true){int ignored=0;}else{}}${tail}`));
+  program(whileRecord + rangeMain(`var flag=false;while(flag){}${tail}`));
+}
+program(whileRecord + rangeMain('var Box=false;while(Box){}while false:do{}return 42;'));
+program(rangeMain('var n=0;while(n<3){n++;}while false:do{}return n+39;'));
+program(rangeMain('var n=0;if(true)while(n<3){n++;}else return 0;return n+39;'));
+program('int main(){int n=0;while(n<3){n++;}return n+39;}');
+for (const [body, message] of [
+  [whileRecord + rangeMain('while (Box){ready=false;}:do{}return 42;'), /expected bool/],
+  [whileRecord + rangeMain('while (Box){ready=false;}.missing:do{}return 42;'), /unknown struct field/],
+  [whileRecord + rangeMain('while (Box){ready=42;}.ready:do{}return 42;'), /expected bool, got int/],
+  [whileRecord + rangeMain('while (Box){}.ready:do{}return 42;'), /missing record initializer field/],
+  [whileRecord + rangeMain('while (Box){ready=false;ready=true;}.ready:do{}return 42;'), /duplicate record initializer field/],
+  [whileRecord + rangeMain('while (Box){unknown=false;}.ready:do{}return 42;'), /unknown record initializer field/],
+  [whileRecord + rangeMain('while (Box){false}.ready:do{}return 42;'), /record literals require named/],
+  [whileRecord + rangeMain('while (Box){ready=false;}.ready++:do{}return 42;'), /field mutation requires a local struct binding/],
+  [whileRecord + rangeMain('while (Box){ready=false;}++:do{}return 42;'), /assignment requires a local variable/],
+  [whileRecord + rangeMain('while (Box){ready=false;}--:do{}return 42;'), /assignment requires a local variable/],
+  [whileRecord + rangeMain('while (Box){ready=false;}[0]:do{}return 42;'), /expected string/],
+  [whileRecord + rangeMain('while (Box){ready=false;}+1:do{}return 42;'), /expected int/],
+  [whileRecord + rangeMain('while (Box){ready=false;}.ready:do ;return 42;'), /expected '\{' after 'do'/],
+  ['Box=record{ready:bool;};main:()->int;main=do{while (Box){ready=false;', /expected '}'/],
+  [whileRecord + rangeMain('while (Box){ready=false;}.:do{}return 42;'), /expected field name/],
+  [whileRecord + rangeMain('while (Box){ready=(let k:bool=false;in k);}.ready:do{}return k;'), /unknown local variable/],
+  [whileRecord + 'int main(){while (Box){ready=false;}.ready:do{}return 42;}', /expected expression/],
+]) rejected(body, message);
 // Nix loop bodies require blocks; C loop bodies still accept individual statements.
 for (const header of ['while false', 'while (false)', 'for i in 0..0']) {
   for (const body of ['return 0;', ';', 'var x=0;', 'n++;', 'if(false)return 0;',

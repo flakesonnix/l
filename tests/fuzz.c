@@ -46,6 +46,8 @@ static size_t postfix_while_programs, postfix_while_rejections;
 static uint32_t postfix_while_forms;
 static size_t call_while_programs, call_while_rejections;
 static uint32_t call_while_forms;
+static size_t record_while_programs, record_while_rejections;
+static uint32_t record_while_forms;
 static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms, nix_while_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
@@ -1739,6 +1741,72 @@ static void call_while_recovery(void) {
     }
     dispose(ctx);
 }
+/* Constructor fields run in written order, including the final false condition. */
+static void record_while_cases(void) {
+    random_state = UINT32_C(0x52454357);
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        unsigned form = test % 8, limit = random_number(7);
+        unsigned skip = random_number(limit + 2), stop = random_number(limit + 2);
+        int32_t weight = (int32_t)random_number(20) + 1, expected = 0;
+        unsigned final = 0; bool stopped = false;
+        for (unsigned value = 1; value <= limit; ++value) {
+            final = value;
+            if (value == skip) continue;
+            expected += (int32_t)value * weight;
+            if (value == stop) { stopped = true; break; }
+        }
+        unsigned checks = final + !stopped, order = form == 1 || form == 5 ? 21 : 12;
+        record_while_forms |= 1u << form;
+        source_length = 0;
+        append("Box=record{count:int;ready:bool;};struct Legacy{int count;bool ready;};"
+            "Text=record{count:int;value:string;};static int calls=0;static int seq=0;"
+            "mark:int->int;mark=tag:do{calls++;seq=seq*10+tag;return tag;};"
+            "main:()->int;main=do{var n=0;var sum=0;while ");
+        if (form == 0) append("(Box){count=mark 1;ready=(mark 2)==2&&n<%u;}.ready", limit);
+        else if (form == 1) append("(Box){ready=(mark 2)==2&&n<%u;count=mark 1;}.ready", limit);
+        else if (form == 2) append("((Box)){count=mark 1;ready=(let value:bool=(mark 2)==2&&n<%u;in value);}.ready", limit);
+        else if (form == 3) append("(Box){count=0;ready=(let inner=Box{count=mark 1;ready=(mark 2)==2&&n<%u;};in inner.ready);}.ready", limit);
+        else if (form == 4) append("(Legacy){mark 1,(mark 2)==2&&n<%u}.ready", limit);
+        else if (form == 5) append("(Legacy){ready=(mark 2)==2&&n<%u;count=mark 1;}.ready", limit);
+        else if (form == 6) append("(Text){count=mark 1;value=(if (mark 2)==2&&n<%u then \"*\" else \"\");}.value.length>0", limit);
+        else append("(Text){count=mark 1;value=(if (mark 2)==2&&n<%u then \"*\" else \"\\0\");}.value[0]!=byte(0)", limit);
+        append(":do{if(seq!=%u)1/0;seq=0;n++;if(n==%u)continue;sum=sum+n*%d;if(n==%u)break;}"
+            "if(n!=%u||calls!=%u||seq!=%u)1/0;return sum;};",
+            order, skip, weight, stop, final, checks * 2, stopped ? 0 : order);
+        ++record_while_programs; semantic_case(expected, 0);
+    }
+    if (record_while_forms != 255) failed("record while model missed a constructor or field form");
+}
+static void record_while_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("invalid record while was accepted"); }
+    if (ctx->status != 65) failed("record while rejection returned an unexpected status");
+    ++record_while_rejections;
+}
+static void record_while_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned record while context rejected valid source");
+    Program *p = compile(ctx, "Box=record{ready:bool;};main:()->int;main=do{var n=0;"
+        "while (Box){ready=(let inner=Box{ready=n<3;};in inner.ready);}.ready:do{n++;}"
+        "while(false){}while false:do{}return n+39;};");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void record_while_recovery(void) {
+    static const char *const invalid[] = {
+        "Box=record{ready:bool;};main:()->int;main=do{while (Box){ready=42;}.ready:do{}return 42;};",
+        "Box=record{ready:bool;};main:()->int;main=do{while (Box){ready=false;ready=true;}.ready:do{}return 42;};",
+        "Box=record{ready:bool;};main:()->int;main=do{while (Box){ready=false;}.ready:do ;return 42;};",
+        "Box=record{ready:bool;};main:()->int;main=do{while (Box){ready=false;"
+    };
+    Context *ctx = context("record-while-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            record_while_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("record while rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "record-while-recovery";
+            record_while_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
 static void nix_loop_block_reject(Context *ctx, const char *text) {
     if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("Nix loop body without a block was accepted"); }
     if (ctx->status != 65) failed("Nix loop block rejection returned an unexpected status");
@@ -2730,6 +2798,13 @@ int main(void) {
         "while (accept) (42/visits++):do{}return 42;};"
         "recover:()->int;recover=do{var n=0;while (check) n:do{n++;}"
         "return if visits==0 then n+39 else 1/0;};accept:int->bool;accept=x:false;check:int->bool;check=n:n<3;");
+    record_while_cases();
+    record_while_recovery();
+    scoped_lifecycle(
+        "Box=record{ready:bool;};static int visits=0;main:()->int;main=do{"
+        "while (Box){ready=42/visits++>0;}.ready:do{}return 42;};"
+        "recover:()->int;recover=do{var n=0;while (Box){ready=n<3;}.ready:do{n++;}"
+        "return if visits==0 then n+39 else 1/0;};");
     nix_loop_block_recovery();
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=do{var n=0;while ((n<1)):do{n++;visits++;1/0;}return 42;};"
@@ -2786,5 +2861,7 @@ int main(void) {
     printf("fuzz: %zu postfix while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", postfix_while_rejections);
     printf("fuzz: %zu grouped-call while programs preserved complete arity and eager argument/predicate effects\n", call_while_programs);
     printf("fuzz: %zu grouped-call while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", call_while_rejections);
+    printf("fuzz: %zu record while programs preserved constructor order and bounded loop results\n", record_while_programs);
+    printf("fuzz: %zu record while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", record_while_rejections);
     return 0;
 }
