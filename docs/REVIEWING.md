@@ -189,6 +189,9 @@ separately; passing a feature-head run does not prove that run passed.
   module rules. No silent laziness, dynamic lookup or implicit module discovery.
 - **I/O and buffers:** EOF, every byte value, reported stream failures, shared
   array identity, bounds and fresh storage after traps or successful runs.
+  `inspect` must not execute its input or report success after stdout write/flush
+  errors. Test buffered failures and closed pipes for source/bytecode listings;
+  these are CLI file errors (74), not VM stream traps (70).
 - **Observers:** event order and arm identity, NULL-observer behavior and unchanged
   execution budgets. Observing a program must not change its result.
 - **Nix and CI:** pinned inputs, installed manifests, actual platform coverage,

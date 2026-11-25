@@ -186,6 +186,12 @@ initializers, C `let var`, declaration order and bounded results stay intact.
 Source/serialized trap recovery checks fresh state across the mixed body styles.
 The shared declaration helper gates name-first locals on the Nix-body mode, so
 that path cannot silently extend C parameter lists or imported/extern signatures.
+Inspection-output tests use 16 deterministic instruction-count models and one
+listing larger than 1 MiB. Source/serialized listings must agree without executing
+their division-by-zero entry points. `/dev/full` covers buffered flush failures
+and already-failed writes; closed pipes must return file-error status 74, not a
+signal or success. Inputs/artifacts stay unchanged, and fresh compile/inspect
+commands recover. The CLI checks stdout after inspection; IR/bytecode stays 1.9.
 
 ## Nix workflow
 
