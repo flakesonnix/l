@@ -231,6 +231,10 @@ separately; passing a feature-head run does not prove that run passed.
   A parenthesized whole condition must still accept `: do` in a Nix body;
   parentheses alone do not choose the C body grammar. Check calls/`let` inside
   groups and preserve C single-statement bodies when no colon follows.
+  Leading groups must also compose with infix operators before `: do`, using
+  ordinary precedence and single evaluation. Preserve unary `+`/`-` C bodies
+  without a condition colon; typed `let` annotations and nested delimiters must
+  not be mistaken for that colon. Do not build a throwaway condition AST.
   After `: do`, both Nix loop forms require `{ ... }`, including empty bodies;
   do not accept `do ;`, a declaration or another unbraced statement instead.
   Contextual `do {` is never a call argument.

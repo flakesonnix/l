@@ -1129,6 +1129,7 @@ try {
   state = 0x4e495748;
   for (let test = 0; test < 32; ++test) {
     const groupedLoops = {};
+    const infixLoops = {};
     const project = { 'std/loops.l': 'module std.loops;pub Count=alias int;pub static int ticks=0;'
       + 'pub tick:()->Count;tick=ticks++;' }, nodes = [];
     for (let n = 0; n < 8; ++n) {
@@ -1149,6 +1150,10 @@ try {
         .replace(`while i<${bound}:do{`, test % 2 ? `while (let current=i;in current<${bound}):do{` : `while ((i<${bound})):do{`);
       assert.notEqual(groupedLoops[`${name.replaceAll('.', '/')}.l`], project[`${name.replaceAll('.', '/')}.l`],
         'grouped while variant must change the generated condition');
+      infixLoops[`${name.replaceAll('.', '/')}.l`] = project[`${name.replaceAll('.', '/')}.l`]
+        .replace(`while i<${bound}:do{`, test % 2 ? `while (let current=i;in current)+1<=${bound}:do{` : `while (i)+1<=${bound}:do{`);
+      assert.notEqual(infixLoops[`${name.replaceAll('.', '/')}.l`], project[`${name.replaceAll('.', '/')}.l`],
+        'infix while variant must change the generated condition');
       nodes.push({ name, parents, bound, delta });
     }
     let ticks = 0;
@@ -1168,7 +1173,7 @@ try {
       project['app/main.l'] = `module app.main;${imports.join('')}main:()->int;main=do{var a=top::work::run 17;`
         + `var b=next::work::run (-23);return if a==${a}&&b==${b}&&t::ticks==${ticks} then 42 else 0;};`;
       const settings = config(); if (reverse) settings.module_roots.reverse();
-      for (const variant of [project, { ...project, ...groupedLoops }]) {
+      for (const variant of [project, { ...project, ...groupedLoops }, { ...project, ...infixLoops }]) {
         const f = program(variant, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
         assert.equal(bytes.readUInt32LE(16), 1, 'while loops add no implicit global storage');
         assert.equal(bytes.readUInt32LE(20), 0, 'while loops do not add runtime nominal metadata');

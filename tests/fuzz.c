@@ -40,6 +40,8 @@ static size_t nix_while_programs, nix_while_rejections;
 static size_t grouped_while_programs, grouped_while_rejections;
 static uint32_t grouped_while_forms;
 static size_t nix_loop_block_rejections;
+static size_t infix_while_programs, infix_while_rejections;
+static uint32_t infix_while_forms;
 static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms, nix_while_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
@@ -1521,6 +1523,68 @@ static void grouped_while_recovery(void) {
     }
     dispose(ctx);
 }
+/* Independent loop counts cover continued groups and ambiguous C unary bodies. */
+static void infix_while_cases(void) {
+    random_state = UINT32_C(0x494e4657);
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        unsigned form = test % 8, limit = random_number(7), skip = random_number(limit + 2), stop = random_number(limit + 2);
+        int32_t weight = (int32_t)random_number(20) + 1, expected = 0;
+        unsigned final = 0; bool stopped = false;
+        for (unsigned value = 1; value <= limit; ++value) {
+            final = value;
+            if (form < 6 && value == skip) continue;
+            expected += (int32_t)value * weight;
+            if (form < 6 && value == stop) { stopped = true; break; }
+        }
+        unsigned checks = final + !stopped;
+        infix_while_forms |= 1u << form;
+        source_length = 0;
+        append("static int checks=0;value:int->int;value=n:do{checks++;return n;};"
+            "check:int->bool;check=n:do{checks++;return n<%u;};"
+            "main:()->int;main=do{var n=0;var sum=0;while ", limit);
+        if (form == 0) append("(value n)+1<=%u", limit);
+        else if (form == 1) append("(value n)-1<%d", (int)limit - 1);
+        else if (form == 2) append("(value n)*2<%u", limit * 2);
+        else if (form == 3) append("(value n)/1<%u", limit);
+        else if (form == 4) append("(check n)&&true");
+        else if (form == 5) append("(value n)+(let bias:int=1;in bias)<=%u", limit);
+        else append("(check n)");
+        if (form < 6) append(":do{n++;if(n==%u)continue;sum=sum+n*%d;if(n==%u)break;}", skip, weight, stop);
+        else append("%clet old:int=n++;in sum=sum+n*%d;", form == 6 ? '+' : '-', weight);
+        append("if(n!=%u||checks!=%u)1/0;return sum;};", final, checks);
+        ++infix_while_programs; semantic_case(expected, 0);
+    }
+    if (infix_while_forms != 255) failed("infix while model missed a condition or body spelling");
+}
+static void infix_while_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("invalid infix while was accepted"); }
+    if (ctx->status != 65) failed("infix while rejection returned an unexpected status");
+    ++infix_while_rejections;
+}
+static void infix_while_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned infix while context rejected valid source");
+    Program *p = compile(ctx, "main:()->int;main=do{var n=0;while (let k=n;in k)+1<4:do{n++;}"
+        "while(false)+let k:int=42;in k;return n+39;};");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void infix_while_recovery(void) {
+    static const char *const invalid[] = {
+        "main:()->int;main=do{var n=0;while (n)+1:do{}return 42;};",
+        "main:()->int;main=do{var n=0;while (n)<3 do{n++;}return 42;};",
+        "main:()->int;main=do{var n=0;while (n)+1<4:do ;return 42;};",
+        "main:()->int;main=do{while(false)+42"
+    };
+    Context *ctx = context("infix-while-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            infix_while_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("infix while rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "infix-while-recovery";
+            infix_while_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
 static void nix_loop_block_reject(Context *ctx, const char *text) {
     if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("Nix loop body without a block was accepted"); }
     if (ctx->status != 65) failed("Nix loop block rejection returned an unexpected status");
@@ -2495,6 +2559,11 @@ int main(void) {
     nix_while_recovery();
     grouped_while_cases();
     grouped_while_recovery();
+    infix_while_cases();
+    infix_while_recovery();
+    scoped_lifecycle(
+        "static int visits=0;main:()->int;main=do{var n=0;while (n)+1<2:do{visits++;n++;1/0;}return 42;};"
+        "recover:()->int;recover=do{var n=0;while (n)+1<4:do{n++;}return if visits==0 then n+39 else 1/0;};");
     nix_loop_block_recovery();
     scoped_lifecycle(
         "static int visits=0;main:()->int;main=do{var n=0;while ((n<1)):do{n++;visits++;1/0;}return 42;};"
@@ -2545,5 +2614,7 @@ int main(void) {
     printf("fuzz: %zu grouped while programs preserved condition effects and Nix/C loop-body spellings\n", grouped_while_programs);
     printf("fuzz: %zu grouped while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", grouped_while_rejections);
     printf("fuzz: %zu Nix loop block rejection/cleanup/recompile cycles passed; valid nested blocks preserved source/bytecode results\n", nix_loop_block_rejections);
+    printf("fuzz: %zu infix while programs preserved precedence, condition effects and C unary bodies\n", infix_while_programs);
+    printf("fuzz: %zu infix while rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", infix_while_rejections);
     return 0;
 }

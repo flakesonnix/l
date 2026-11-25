@@ -116,6 +116,12 @@ Loop-body regressions reject non-block bodies after `: do` for bare/grouped
 `while` and range loops, including imported modules in both source-root orders.
 Forty-eight rejection/cleanup/recompile cycles then verify valid nested blocks
 from source and serialized bytecode; C-style single-statement loops stay valid.
+Infix-condition regressions continue a leading group through ordinary expression
+operators, including precedence, short-circuit effects and assignment. They add
+128 bounded loop models, infix variants of the existing while DAGs in both orders,
+and 16 rejection/cleanup/recompile cycles with source/serialized trap recovery.
+Ambiguous `+`/`-` C bodies are checked without speculative AST allocation;
+delimiter lookahead respects nested groups, record/array syntax and typed `let`.
 
 ## Nix workflow
 
