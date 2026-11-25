@@ -544,6 +544,7 @@ static bool nix_signature(Parser *p) {
 static Function *nix_function(Parser *p, Ast *ast, Token scope, bool exported) {
     if (ast->function_count++ >= L_MAX_FUNCTIONS) token_fail(p->ctx, peek(p), "too many functions (maximum 256)");
     Function *fn = allocate(p->ctx, sizeof(*fn));
+    fn->separate_signature = true;
     fn->module = ast->entry; fn->scope = scope; fn->exported = exported;
     fn->name = expect(p, TK_NAME, "expected function name");
     expect(p, ':', "expected ':' after function name");

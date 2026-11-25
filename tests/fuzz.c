@@ -56,6 +56,8 @@ static size_t indexed_call_programs, indexed_call_rejections;
 static uint32_t indexed_call_forms;
 static size_t hash_comment_programs, hash_comment_rejections, hash_comment_token_checks;
 static uint32_t hash_comment_forms;
+static size_t signature_scope_programs, signature_scope_rejections;
+static uint32_t signature_scope_forms;
 static uint32_t nix_function_forms, nix_function_branches, nix_binding_forms, nix_range_forms, nix_while_forms;
 static char source[MAX_INPUT];
 static size_t source_length;
@@ -2013,6 +2015,70 @@ static void indexed_call_recovery(void) {
     }
     dispose(ctx);
 }
+static void signature_scope_cases(void) {
+    random_state = UINT32_C(0x53494753);
+    for (unsigned test = 0; test < MODEL_CASES; ++test) {
+        unsigned form = test % 8;
+        int32_t a = (int32_t)random_number(41) - 20, b = (int32_t)random_number(41) - 20;
+        int32_t expected = a + b;
+        source_length = 0; signature_scope_forms |= 1u << form;
+        if (form == 0) append("Count=alias int;sum:Count->Count->Count;sum=Count:b:Count+b;main:()->int;main=sum (%d) (%d);", a, b);
+        else if (form == 1) append("types=namespace{pub Count=alias int;};sum:types::Count->types::Count->int;sum=types:b:types+b;"
+            "main:()->int;main=sum (%d) (%d);", a, b);
+        else if (form == 2) append("Box=record{x:int;};sum:Box->Box->int;sum=Box:b:do{Box.x=Box.x+b.x;return Box.x;};"
+            "main:()->int;main=do{var first=Box{x=%d;};var out=sum first Box{x=%d;};return if first.x==%d then out else 1/0;};", a, b, a);
+        else if (form == 3) {
+            expected = test % 3 ? a : b;
+            append("Kind=enum{Off;On;};pick:Kind->Kind->int;pick=Kind:b:if Kind==b then %d else %d;"
+                "main:()->int;main=pick Kind::Off Kind::%s;", a, b, test % 3 ? "Off" : "On");
+        } else if (form == 4) {
+            expected = a + 4;
+            append("Text=alias string;sum:Text->Text->int;sum=Text:b:Text.length+b.length+(%d);main:()->int;main=sum \"abc\" \"*\";", a);
+        } else if (form == 5) {
+            a = (int32_t)random_number(256); b = (int32_t)random_number(256); expected = a + b;
+            append("Octet=alias byte;sum:Octet->Octet->int;sum=Octet:b:int(Octet)+int(b);main:()->int;main=sum (byte(%d)) (byte(%d));", a, b);
+        } else if (form == 6) {
+            bool first = random_number(2) != 0, last = random_number(2) != 0;
+            expected = first && last ? a : b;
+            append("Flag=alias bool;pick:Flag->Flag->int;pick=Flag:b:if Flag&&b then %d else %d;main:()->int;main=pick %s %s;",
+                a, b, first ? "true" : "false", last ? "true" : "false");
+        } else {
+            int32_t c = (int32_t)random_number(41) - 20; expected += c;
+            append("t=namespace{pub Count=alias int;};sum:t::Count->t::Count->t::Count->int;sum=t:b:c:t+b+c;"
+                "main:()->int;main=sum (%d) (%d) (%d);", a, b, c);
+        }
+        ++signature_scope_programs; semantic_case(expected, 0);
+    }
+    if (signature_scope_forms != 255) failed("signature-scope model missed a type or qualification form");
+}
+static void signature_scope_reject(Context *ctx, const char *text) {
+    if (!setjmp(ctx->failure)) { (void)compile(ctx, text); failed("invalid signature-scope source was accepted"); }
+    if (ctx->status != 65) failed("signature-scope rejection returned an unexpected status");
+    ++signature_scope_rejections;
+}
+static void signature_scope_success(Context *ctx) {
+    if (setjmp(ctx->failure)) failed("cleaned signature-scope context rejected valid source");
+    Program *p = compile(ctx, "Count=alias int;sum:Count->Count->int;sum=Count:b:Count+b;main:()->int;main=sum 20 22;");
+    run_expected(p, 42, 0); run_expected(roundtrip(ctx, p), 42, 0);
+}
+static void signature_scope_recovery(void) {
+    static const char *const invalid[] = {
+        "Count=alias int;sum:Count->Count->int;sum=Count:Count:42;main:()->int;main=42;",
+        "Count=alias int;sum:Count->Count->int;sum=Count:b:do{Count value=42;return value;};main:()->int;main=42;",
+        "Count=alias int;sum:Count->Missing->int;sum=Count:b:42;main:()->int;main=42;",
+        "using Count=int;int sum(Count Count,Count b){return Count+b;}int main(){return 42;}"
+    };
+    Context *ctx = context("signature-scope-recovery");
+    for (unsigned attempt = 0; attempt < 4; ++attempt) {
+        for (unsigned n = 0; n < sizeof(invalid) / sizeof(*invalid); ++n) {
+            signature_scope_reject(ctx, invalid[n]); cleanup(ctx);
+            if (ctx->allocated || ctx->allocations) failed("signature-scope rejection could not be cleaned up");
+            memset(ctx, 0, sizeof(*ctx)); ctx->filename = "signature-scope-recovery";
+            signature_scope_success(ctx); cleanup(ctx);
+        }
+    }
+    dispose(ctx);
+}
 typedef struct { size_t first, last; } CommentRange;
 static void hash_comment(CommentRange *ranges, unsigned *count, unsigned form, bool newline) {
     static const char *const payloads[] = { "", " if then else let in do :: -> ; } ] )",
@@ -3116,6 +3182,11 @@ int main(void) {
         "static int reads=0;static int seen=0;main:()->int;main=do{int a[1];consume a[reads+++1];return 42;};"
         "recover:()->int;recover=do{int a[1];a[0]=42;consume a[reads++];return if reads==1&&seen==42 then 42 else 0;};"
         "consume:int->void;consume=value:do{seen=seen+value;};");
+    signature_scope_cases();
+    signature_scope_recovery();
+    scoped_lifecycle(
+        "Count=alias int;static int visits=0;main:()->int;main=do{visits++;return sum 42 0;};"
+        "recover:()->int;recover=if visits==0 then sum 84 2 else 1/0;sum:Count->Count->int;sum=Count:b:Count/b;");
     hash_comment_cases();
     hash_comment_recovery();
     scoped_lifecycle(
@@ -3187,5 +3258,7 @@ int main(void) {
     printf("fuzz: %zu indexed-call rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", indexed_call_rejections);
     printf("fuzz: %zu hash-comment programs preserved bounded results; %zu token/data/position checks matched padded whitespace\n", hash_comment_programs, hash_comment_token_checks);
     printf("fuzz: %zu hash-comment rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", hash_comment_rejections);
+    printf("fuzz: %zu signature-scope programs preserved signature types, parameter shadowing and value copies\n", signature_scope_programs);
+    printf("fuzz: %zu signature-scope rejection/cleanup/recompile cycles passed; source/bytecode trap recovery passed\n", signature_scope_rejections);
     return 0;
 }

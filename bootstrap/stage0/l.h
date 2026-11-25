@@ -125,6 +125,7 @@ struct Function {
     Function *next;
     Intrinsic intrinsic;
     bool is_extern;
+    bool separate_signature; /* Parameter names belong to the later definition; not serialized. */
 };
 struct Global {
     Token name, scope, type_name;

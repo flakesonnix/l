@@ -167,6 +167,13 @@ retain lexer safety and fresh execution state. Typed-function DAGs also run with
 comments before headers, between qualified names/calls and at EOF in both orders,
 without changing the independent oracle or adding storage/types. The L-written
 tokenizers keep their older comment contract; coverage remains Stage 0 C only.
+Signature-scope models add 128 bounded alias/namespace/record/enum/string/byte/bool
+programs, 16 rejection/cleanup/recompile cycles and source/serialized trap recovery.
+Separate Nix signatures resolve without the later definition's parameter names;
+body shadowing and C parameter-list scope are unchanged. A private AST flag records
+this distinction and is not serialized. Typed-function DAGs also route their tick
+addition through a helper whose first parameter shadows an imported type qualifier,
+retaining the same independent arithmetic/counter oracle, storage and nominal types.
 
 ## Nix workflow
 

@@ -265,6 +265,9 @@ separately; passing a feature-head run does not prove that run passed.
   byte-based positions and NUL rejection, and leave string data and C comments
   alone. Comments are whitespace, not token paste or preprocessor instructions;
   manifests and older L-written tokenizers keep their existing contracts.
+  A separate Nix signature must not see parameter names from its later definition.
+  Preserve body shadowing, duplicate-parameter/type/privacy checks and C-style
+  parameter-list scope; the spelling flag is AST-only, never bytecode metadata.
   After `: do`, both Nix loop forms require `{ ... }`, including empty bodies;
   do not accept `do ;`, a declaration or another unbraced statement instead.
   Contextual `do {` is never a call argument.

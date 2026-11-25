@@ -1031,6 +1031,7 @@ try {
     const unitTails = {};
     const conditionalStatements = {};
     const indexedStatements = {};
+    const signatureScopes = {};
     const project = { 'std/calls.l': 'module std.calls;pub Count=alias int;pub static int ticks=0;'
       + 'pub tick:()->Count;tick=ticks++;' }, nodes = [];
     for (let n = 0; n < 8; ++n) {
@@ -1082,11 +1083,18 @@ try {
         assert.notEqual(commented, text, 'hash-comment variant must change each module source');
         return [file, commented];
       }));
+      for (const [file, text] of Object.entries(project)) if (file !== 'app/main.l' && file !== 'std/calls.l') {
+        signatureScopes[file] = text.replace('work=namespace{',
+          'work=namespace{blend:t::Count->t::Count->t::Count;blend=t:other:t+other;')
+          .replaceAll('value=(value+t::tick ())%1009;', 'value=(blend value (t::tick ()))%1009;');
+        assert(signatureScopes[file].includes('blend=t:other:') && !signatureScopes[file].includes('value=(value+t::tick ())%1009;'),
+          'signature-scope variant must add and call the shadowing helper');
+      }
       for (const [variant, types] of [[project, 0], [{ ...project, ...unitTails,
         'std/calls.l': project['std/calls.l'] + 'pub Tick=record{value:Count;};pub next:()->Tick;next=Tick{value=ticks++;};' }, 1],
         [{ ...project, ...conditionalStatements }, 0], [{ ...project, ...indexedStatements,
           'std/calls.l': project['std/calls.l'] + 'pub advance:Count->void;advance=previous:do{if(previous!=ticks)1/0;ticks++;};' }, 0],
-        [hashComments, 0]]) {
+        [hashComments, 0], [{ ...project, ...signatureScopes }, 0]]) {
         const f = program(variant, 42, settings), bytes = readFileSync(resolve(f.directory, 'program.lbc'));
         assert.equal(bytes.readUInt32LE(16), 1, 'Nix functions add no implicit global storage');
         assert.equal(bytes.readUInt32LE(20), types, 'only the unit-result variant adds its shared nominal type');
