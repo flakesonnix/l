@@ -194,6 +194,9 @@ separately; passing a feature-head run does not prove that run passed.
   these are CLI file errors (74), not VM stream traps (70).
   Input close failures must also report 74 before parsing or execution. Keep
   read/size-error precedence, unchanged inputs/outputs and successful retries.
+  Allocation failure while reading must close the input before leaving the read,
+  including buffer growth and memory-limit rejection. Keep allocation-error
+  precedence even when that cleanup close also fails; check repeated retries.
 - **Observers:** event order and arm identity, NULL-observer behavior and unchanged
   execution budgets. Observing a program must not change its result.
 - **Nix and CI:** pinned inputs, installed manifests, actual platform coverage,
