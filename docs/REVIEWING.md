@@ -197,6 +197,8 @@ separately; passing a feature-head run does not prove that run passed.
   Allocation failure while reading must close the input before leaving the read,
   including buffer growth and memory-limit rejection. Keep allocation-error
   precedence even when that cleanup close also fails; check repeated retries.
+  A successful read that reports EOF must not grow an unused buffer. Keep exact
+  bytes/NUL, necessary-growth failure coverage, close errors and the input limit.
 - **Observers:** event order and arm identity, NULL-observer behavior and unchanged
   execution budgets. Observing a program must not change its result.
 - **Nix and CI:** pinned inputs, installed manifests, actual platform coverage,
