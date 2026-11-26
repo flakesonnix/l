@@ -149,6 +149,7 @@ unsigned char *read_file(Context *ctx, const char *path, size_t *size) {
             break;
         }
         if (capacity > 16u * 1024u * 1024u) { fclose(file); fail(ctx, 0, 0, "input exceeds 16 MiB limit"); }
+        if (feof(file)) break;
         size_t next = capacity * 2;
         unsigned char *larger = allocate_or_close(ctx, next + 1, file);
         memcpy(larger, bytes, length);

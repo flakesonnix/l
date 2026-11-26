@@ -207,6 +207,13 @@ manifests, imported modules and bytecode, preserving inputs/existing outputs and
 identical recompilation. Allocation failures still report 65 with their original
 diagnostic; closing the stream must not replace that error with 74. The ordinary
 allocator's public interface and context layout are unchanged.
+EOF-budget models add seven binary sizes, including 16 MiB minus one byte. Once
+a successful read reports EOF, the reader must not allocate a larger unused
+buffer. Each model checks exact bytes/NUL with only the necessary peak buffer
+budget, a failing final close (74, no published length), and a successful retry.
+Read errors and the 16 MiB rejection still precede EOF completion. Earlier
+allocation-failure fixtures now pad every selected input past the first buffer
+and use a 16 KiB direct fixture, so all tested growth allocations remain necessary.
 
 ## Nix workflow
 

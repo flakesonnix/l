@@ -150,6 +150,7 @@ static void close_failure(Context *ctx) {
     write_bytecode(ctx, p, "build/fault-output.lbc");
 }
 static size_t input_length, returned_length;
+static size_t input_budget;
 static void input_close_failure(Context *ctx) {
     fail_close = true;
     (void)read_file(ctx, "build/fault-input", &returned_length);
@@ -159,6 +160,12 @@ static void input_close_recovery(Context *ctx) {
     unsigned char *bytes = read_file(ctx, "build/fault-input", &length);
     if (length != input_length || bytes[length]) exit(1);
     for (size_t n = 0; n < length; ++n) if (bytes[n] != (unsigned char)n) exit(1);
+}
+static void input_eof_budget(Context *ctx) {
+    ctx->allocated = 128u * 1024u * 1024u - input_budget;
+    unsigned char *bytes = read_file(ctx, "build/fault-input", &returned_length);
+    if (returned_length != input_length || bytes[returned_length]) exit(1);
+    for (size_t n = 0; n < returned_length; ++n) if (bytes[n] != (unsigned char)n) exit(1);
 }
 static void read_failure_close(Context *ctx) { fail_close = true; read_failure(ctx); }
 static void read_zero_close(Context *ctx) { fail_close = true; read_zero(ctx); }
@@ -246,11 +253,18 @@ static void disarm_allocation(void) {
     if (allocation_file || fail_allocation || allocation_skip || allocation_closes != 1 || fail_close) exit(1);
     allocation_path = NULL; allocation_limit = NULL; allocation_close_failure = false;
 }
+static char *padded_input(Context *ctx, const char *head, unsigned char fill, const char *tail) {
+    size_t first = strlen(head), last = strlen(tail);
+    char *text = allocate(ctx, first + 5000 + last + 1);
+    memcpy(text, head, first); memset(text + first, fill, 5000); memcpy(text + first + 5000, tail, last + 1);
+    return text;
+}
 static void input_allocation_lifecycle(Context *ctx) {
-    const char *source = "module fault.fault_main;import fault.fault_dep as dep;int main(){return dep::answer();}";
-    const char *dependency = "module fault.fault_dep;pub int answer(){return 42;}";
-    const char *manifest = "{\"version\":1,\"package\":\"fault\",\"module_roots\":["
-        "{\"package\":\"fault\",\"prefix\":\"fault\",\"path\":\".\"}],\"dependencies\":[]}";
+    /* Every selected source/manifest/bytecode needs genuine growth before EOF. */
+    const char *source = padded_input(ctx, "module fault.fault_main;import fault.fault_dep as dep;int main(){return dep::answer()+\"", 'x', "\".length-5000;}");
+    const char *dependency = padded_input(ctx, "module fault.fault_dep;pub int answer(){return 42;}", ' ', "");
+    const char *manifest = padded_input(ctx, "{\"version\":1,\"package\":\"fault\",\"module_roots\":["
+        "{\"package\":\"fault\",\"prefix\":\"fault\",\"path\":\".\"}],\"dependencies\":[]}", ' ', "");
     put_file("build/fault_main.l", source); put_file("build/fault_dep.l", dependency);
     put_file("build/fault-package.json", manifest);
     char *compile[] = {"l", "compile", "build/fault_main.l", "--manifest", "build/fault-package.json", "-o", "build/fault-close.lbc", NULL};
@@ -492,7 +506,7 @@ int main(void) {
     }
     check(read_failure_close, 74); check(read_zero_close, 74); check(read_limit_close, 65);
     check(input_close_lifecycle, 0);
-    input_length = 9000;
+    input_length = 16384; /* Initial buffer plus three genuinely needed growth allocations. */
     FILE *file = fopen("build/fault-input", "wb");
     if (!file) return 1;
     for (size_t n = 0; n < input_length; ++n) if (fputc((unsigned char)n, file) == EOF) return 1;
@@ -507,6 +521,21 @@ int main(void) {
             check(input_close_recovery, 0);
         }
     check(input_allocation_lifecycle, 0);
+    const size_t eof_lengths[] = {1, 4095, 4097, 8191, 8193, 16383, 16u * 1024u * 1024u - 1};
+    for (unsigned n = 0; n < sizeof(eof_lengths) / sizeof(*eof_lengths); ++n) {
+        input_length = eof_lengths[n];
+        size_t capacity = 4096;
+        while (capacity < input_length) capacity *= 2;
+        input_budget = capacity == 4096 ? 4097 : capacity + capacity / 2 + 2;
+        file = fopen("build/fault-input", "wb");
+        if (!file) return 1;
+        for (size_t i = 0; i < input_length; ++i) if (fputc((unsigned char)i, file) == EOF) return 1;
+        if (fclose(file)) return 1;
+        returned_length = SIZE_MAX; check(input_eof_budget, 0);
+        fail_close = true; returned_length = SIZE_MAX; check(input_eof_budget, 74);
+        if (returned_length != SIZE_MAX) return 1;
+        check(input_eof_budget, 0);
+    }
     check(output_stat_failure, 0); check(manifest_stat_failure, 0); check(source_stat_failure, 0);
     check(bad_expr_analyze, 65); check(bad_stmt_analyze, 65);
     check(bad_expr_lower, 65); check(bad_stmt_lower, 65); check(low_literal, 65);
