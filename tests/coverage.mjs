@@ -33,7 +33,7 @@ invoke(resolve(directory, 'frontend-test'), []);
 for (const name of ['faults', 'verifier', 'observer', 'fuzz']) {
   if (!existsSync(resolve(root, `tests/${name}.c`))) continue;
   invoke(cc, ['-std=c11', '-Wall', '-Wextra', '-Wpedantic', '-Werror', '--coverage', ...objects,
-    `tests/${name}.c`, ...(name === 'faults' ? ['-Wl,--wrap=calloc,--wrap=fread,--wrap=ferror,--wrap=fclose,--wrap=stat'] : []),
+    `tests/${name}.c`, ...(name === 'faults' ? ['-Wl,--wrap=calloc,--wrap=fopen,--wrap=fread,--wrap=ferror,--wrap=fclose,--wrap=stat'] : []),
     '-o', resolve(directory, `${name}-test`)]);
   invoke(resolve(directory, `${name}-test`), []);
 }

@@ -8,6 +8,7 @@
 
 /* Linker interposition exercises real error handling without production hooks. */
 void *__real_calloc(size_t, size_t);
+FILE *__real_fopen(const char *, const char *);
 size_t __real_fread(void *, size_t, size_t, FILE *);
 int __real_ferror(FILE *);
 int __real_fclose(FILE *);
@@ -19,12 +20,32 @@ static unsigned close_skip;
 static const char *fail_stat_path;
 static int fail_stat_error;
 static FILE *io_stream;
+static const char *allocation_path;
+static FILE *allocation_file;
+static unsigned allocation_skip, allocation_closes;
+static bool allocation_close_failure, allocation_limited;
+static Context *allocation_limit;
 
 void *__wrap_calloc(size_t count, size_t size) {
-    if (fail_allocation) { fail_allocation = false; return NULL; }
+    if (fail_allocation && allocation_skip) --allocation_skip;
+    else if (fail_allocation) { fail_allocation = false; return NULL; }
     return __real_calloc(count, size);
 }
+FILE *__wrap_fopen(const char *path, const char *mode) {
+    FILE *file = __real_fopen(path, mode);
+    if (file && allocation_path && !strcmp(path, allocation_path) && !strcmp(mode, "rb")) {
+        if (allocation_file) exit(1);
+        allocation_file = file;
+        if (allocation_limit) {
+            if (!allocation_skip) allocation_limit->allocated = 128u * 1024u * 1024u;
+        } else fail_allocation = true;
+        if (allocation_close_failure) fail_close = true;
+    }
+    return file;
+}
 size_t __wrap_fread(void *data, size_t size, size_t count, FILE *file) {
+    if (file == allocation_file && allocation_limit && allocation_skip && !--allocation_skip)
+        allocation_limit->allocated = 128u * 1024u * 1024u;
     if (fail_read == 1) { fail_read = 2; return 0; }
     if (fail_read == 3) { fail_read = 0; return 0; }
     return __real_fread(data, size, count, file);
@@ -34,6 +55,7 @@ int __wrap_ferror(FILE *file) {
     return __real_ferror(file);
 }
 int __wrap_fclose(FILE *file) {
+    if (file == allocation_file) { allocation_file = NULL; ++allocation_closes; }
     int result = __real_fclose(file);
     if (fail_close && close_skip) --close_skip;
     else if (fail_close) { fail_close = false; return EOF; }
@@ -210,6 +232,59 @@ static void input_close_lifecycle(Context *ctx) {
     remove("build/fault_main.l"); remove("build/fault_dep.l"); remove("build/fault-package.json"); remove("build/fault-close.lbc");
     remove("build/fault-invalid.lbc");
     printf("input close lifecycle: %u CLI failure/recovery checks passed\n", commands);
+}
+static void input_allocation_failure(Context *ctx) {
+    allocation_path = "build/fault-input";
+    allocation_limit = allocation_limited ? ctx : NULL;
+    (void)read_file(ctx, allocation_path, &returned_length);
+}
+static void arm_allocation(const char *path, unsigned skip, bool close_failure) {
+    allocation_path = path; allocation_skip = skip; allocation_closes = 0;
+    allocation_close_failure = close_failure;
+}
+static void disarm_allocation(void) {
+    if (allocation_file || fail_allocation || allocation_skip || allocation_closes != 1 || fail_close) exit(1);
+    allocation_path = NULL; allocation_limit = NULL; allocation_close_failure = false;
+}
+static void input_allocation_lifecycle(Context *ctx) {
+    const char *source = "module fault.fault_main;import fault.fault_dep as dep;int main(){return dep::answer();}";
+    const char *dependency = "module fault.fault_dep;pub int answer(){return 42;}";
+    const char *manifest = "{\"version\":1,\"package\":\"fault\",\"module_roots\":["
+        "{\"package\":\"fault\",\"prefix\":\"fault\",\"path\":\".\"}],\"dependencies\":[]}";
+    put_file("build/fault_main.l", source); put_file("build/fault_dep.l", dependency);
+    put_file("build/fault-package.json", manifest);
+    char *compile[] = {"l", "compile", "build/fault_main.l", "--manifest", "build/fault-package.json", "-o", "build/fault-close.lbc", NULL};
+    if (l_main(7, compile)) exit(1);
+    size_t original_length;
+    unsigned char *original = read_file(ctx, "build/fault-close.lbc", &original_length);
+    unsigned commands = 0;
+    for (unsigned operation = 0; operation < 4; ++operation) {
+        char *args[] = {"l", "check", "build/fault_main.l", "--manifest", "build/fault-package.json", "-o", "build/fault-output.lbc", NULL};
+        const char *operations[] = {"check", "run", "inspect", "compile"};
+        const char *paths[] = {"build/fault_main.l", "build/fault-package.json", canonical_path(ctx, "build/fault_dep.l"), "build/fault-close.lbc"};
+        args[1] = (char *)operations[operation];
+        for (unsigned input = 0; input < (operation == 3 ? 3u : 4u); ++input) {
+            args[2] = input == 3 ? "build/fault-close.lbc" : "build/fault_main.l";
+            int argc = input == 3 ? 3 : operation == 3 ? 7 : 5;
+            for (unsigned buffer = 0; buffer < 2; ++buffer) for (unsigned close = 0; close < 2; ++close) {
+                put_file("build/fault-output.lbc", "unchanged");
+                arm_allocation(paths[input], buffer, close != 0);
+                if (l_main(argc, args) != 65) exit(1);
+                disarm_allocation();
+                same_file(ctx, "build/fault-output.lbc", "unchanged", 9);
+                same_file(ctx, "build/fault_main.l", source, strlen(source));
+                same_file(ctx, "build/fault_dep.l", dependency, strlen(dependency));
+                same_file(ctx, "build/fault-package.json", manifest, strlen(manifest));
+                same_file(ctx, "build/fault-close.lbc", original, original_length);
+                if (l_main(argc, args) != (operation == 1 ? 42 : 0)) exit(1);
+                if (operation == 3) same_file(ctx, "build/fault-output.lbc", original, original_length);
+                commands += 2;
+            }
+        }
+    }
+    release(ctx, original);
+    remove("build/fault_main.l"); remove("build/fault_dep.l"); remove("build/fault-package.json"); remove("build/fault-close.lbc");
+    printf("input allocation lifecycle: %u CLI failure/recovery checks passed\n", commands);
 }
 static void protected_output_failure(Context *ctx, const char *path, int error) {
     FILE *file = fopen("build/fault-output.lbc", "wb");
@@ -390,6 +465,7 @@ static void check(void (*action)(Context *), int expected) {
         fprintf(stderr, "fault test: expected %d, got %d\n", expected, ctx->status); exit(1);
     }
     if (fail_close || close_skip) exit(1);
+    if (allocation_file) { fputs("fault test: input stream was not closed\n", stderr); exit(1); }
     if (io_stream) { fclose(io_stream); io_stream = NULL; }
     cleanup(ctx); free(ctx);
     ++cases;
@@ -416,6 +492,21 @@ int main(void) {
     }
     check(read_failure_close, 74); check(read_zero_close, 74); check(read_limit_close, 65);
     check(input_close_lifecycle, 0);
+    input_length = 9000;
+    FILE *file = fopen("build/fault-input", "wb");
+    if (!file) return 1;
+    for (size_t n = 0; n < input_length; ++n) if (fputc((unsigned char)n, file) == EOF) return 1;
+    if (fclose(file)) return 1;
+    for (unsigned limited = 0; limited < 2; ++limited) for (unsigned buffer = 0; buffer < 4; ++buffer)
+        for (unsigned close = 0; close < 2; ++close) {
+            allocation_limited = limited != 0; returned_length = SIZE_MAX;
+            arm_allocation("build/fault-input", buffer, close != 0);
+            check(input_allocation_failure, 65);
+            disarm_allocation();
+            if (returned_length != SIZE_MAX) return 1;
+            check(input_close_recovery, 0);
+        }
+    check(input_allocation_lifecycle, 0);
     check(output_stat_failure, 0); check(manifest_stat_failure, 0); check(source_stat_failure, 0);
     check(bad_expr_analyze, 65); check(bad_stmt_analyze, 65);
     check(bad_expr_lower, 65); check(bad_stmt_lower, 65); check(low_literal, 65);

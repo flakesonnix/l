@@ -48,7 +48,7 @@ test: build/l
 	node tests/stage1-bindings.mjs ./build/l
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DL_NO_MAIN $(SOURCES) tests/frontend.c $(LDFLAGS) -o build/frontend-test
 	./build/frontend-test
-	$(CC) $(CPPFLAGS) $(CFLAGS) -DL_NO_MAIN $(SOURCES) tests/faults.c $(LDFLAGS) -Wl,--wrap=calloc,--wrap=fread,--wrap=ferror,--wrap=fclose,--wrap=stat -o build/faults-test
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DL_NO_MAIN $(SOURCES) tests/faults.c $(LDFLAGS) -Wl,--wrap=calloc,--wrap=fopen,--wrap=fread,--wrap=ferror,--wrap=fclose,--wrap=stat -o build/faults-test
 	./build/faults-test
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DL_NO_MAIN $(SOURCES) tests/verifier.c $(LDFLAGS) -o build/verifier-test
 	./build/verifier-test

@@ -199,6 +199,14 @@ Thirty-eight CLI failure/retry checks cover entry sources, manifests, imports an
 bytecode across applicable commands, unchanged inputs/existing outputs, identical
 recompiled artifacts and malformed-input rejection after recovery. Existing read
 errors and the input-size limit keep precedence over cleanup-close failures.
+Input-buffer allocation tests cover the first allocation and three growth steps,
+with both system-allocation failures and the compiler memory limit. Sixteen direct
+failure/retry models require exactly one real close and no published length, even
+when closing also fails. Another 120 CLI failure/retry checks cover entry sources,
+manifests, imported modules and bytecode, preserving inputs/existing outputs and
+identical recompilation. Allocation failures still report 65 with their original
+diagnostic; closing the stream must not replace that error with 74. The ordinary
+allocator's public interface and context layout are unchanged.
 
 ## Nix workflow
 
