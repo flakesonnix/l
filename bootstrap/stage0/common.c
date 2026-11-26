@@ -149,7 +149,7 @@ unsigned char *read_file(Context *ctx, const char *path, size_t *size) {
         bytes = larger;
         capacity = next;
     }
-    fclose(file);
+    if (fclose(file)) { ctx->status = 74; fail(ctx, 0, 0, "cannot close input file"); }
     bytes[length] = 0;
     *size = length;
     return bytes;

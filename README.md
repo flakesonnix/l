@@ -1532,6 +1532,9 @@ hermetic build system** or stage-2/3 bootstrap verification.
 
 CLI exit codes: program result modulo 256, usage `64`, compilation/format errors
 `65`, VM trap `70`, startup allocation failure `71`, file errors `74`.
+Compiler input open/read/close failures report `74`, including entry sources,
+manifests, imported modules and serialized bytecode. A failed close after a
+successful read rejects the input before parsing or execution.
 Program results can overlap these codes; diagnostics are written to stderr.
 
 ## Tests
