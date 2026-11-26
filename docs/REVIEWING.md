@@ -199,6 +199,8 @@ separately; passing a feature-head run does not prove that run passed.
   precedence even when that cleanup close also fails; check repeated retries.
   A successful read that reports EOF must not grow an unused buffer. Keep exact
   bytes/NUL, necessary-growth failure coverage, close errors and the input limit.
+  After module resolution succeeds, input failures must name the resolved source
+  file. Missing/dependency/visibility resolution errors still belong to the importer.
 - **Observers:** event order and arm identity, NULL-observer behavior and unchanged
   execution budgets. Observing a program must not change its result.
 - **Nix and CI:** pinned inputs, installed manifests, actual platform coverage,

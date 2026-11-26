@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 
@@ -78,6 +78,47 @@ async function brokenPipe(args, stream, expected = 70, message = /VM trap: outpu
 
 try {
   const ga = body => ({ 'app/main.l': `module app.main;${body}` });
+  // Resolved input failures name the actual input; unresolved imports name their importer.
+  for (const transitive of [false, true]) for (const nix of [false, true]) for (const reverse of [false, true]) {
+    const entry = `module app.main;import app.${transitive ? 'bridge' : 'dep'} as d;`
+      + (nix ? 'main:()->int;main=d::answer ();' : 'int main(){return d::answer();}');
+    const dependency = `module ${transitive ? 'std' : 'app'}.dep;pub int answer(){return 42;}`;
+    const files = { 'app/main.l': entry, [transitive ? 'std/dep.l' : 'app/dep.l']: dependency };
+    if (transitive) files['app/bridge.l'] = 'module app.bridge;import std.dep as d;pub int answer(){return d::answer();}';
+    const settings = config(); if (reverse) settings.module_roots.reverse();
+    const f = fixture(files, settings), target = resolve(f.directory, 'src', transitive ? 'std/dep.l' : 'app/dep.l');
+    const importer = transitive ? resolve(f.directory, 'src/app/bridge.l') : f.input;
+    const output = resolve(f.directory, 'output.lbc'), baseline = resolve(f.directory, 'baseline.lbc');
+    source(f, 0, 'compile', ['-o', baseline]);
+    const original = readFileSync(baseline), inputs = [f.input, f.manifest, ...(transitive ? [importer] : [])];
+    const contents = inputs.map(file => readFileSync(file));
+    for (const operation of ['check', 'run', 'inspect', 'compile']) {
+      unlinkSync(target); mkdirSync(target); // Linux permits opening a directory, then rejects fread.
+      writeFileSync(output, 'unchanged');
+      const extra = operation === 'compile' ? ['-o', output] : [];
+      const failure = source(f, 74, operation, extra, { cwd: '/' });
+      assert.equal(failure.stderr, `${target}: error: cannot read input file\n`);
+      assert.equal(failure.stdout, '');
+      assert.equal(readFileSync(output, 'utf8'), 'unchanged');
+      assert.deepEqual(readFileSync(baseline), original);
+      for (const [index, file] of inputs.entries()) assert.deepEqual(readFileSync(file), contents[index]);
+      rmdirSync(target); put(target, dependency);
+      source(f, operation === 'run' ? 42 : 0, operation, extra, { cwd: '/' });
+      if (operation === 'compile') assert.deepEqual(readFileSync(output), original);
+    }
+    const listing = source(f, 0, 'inspect').stdout;
+    assert.equal(command(0, ['inspect', baseline]).stdout, listing);
+    command(0, ['check', baseline]); command(42, ['run', baseline]);
+    unlinkSync(target); writeFileSync(output, 'unchanged');
+    for (const operation of ['check', 'compile']) {
+      const failure = source(f, 65, operation, operation === 'compile' ? ['-o', output] : []);
+      assert.ok(failure.stderr.startsWith(`${importer}:1:`), 'unresolved import diagnostics must retain the importer');
+      assert.match(failure.stderr, /module not found/); assert.equal(failure.stdout, '');
+      assert.equal(readFileSync(output, 'utf8'), 'unchanged');
+    }
+    put(target, dependency); source(f);
+    source(f, 0, 'compile', ['-o', output]); assert.deepEqual(readFileSync(output), original);
+  }
   // Inspect never executes the input and must report both buffered and prior write errors.
   for (const length of [0, 1, 2, 3, 7, 15, 31, 63, 127, 255, 383, 511, 4, 8, 32, 128]) {
     const f = fixture(ga('int helper(){int n=0;' + 'n=n+1;'.repeat(length) + 'return n;}int main(){return 1/0;}'));
