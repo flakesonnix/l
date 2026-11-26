@@ -192,6 +192,8 @@ separately; passing a feature-head run does not prove that run passed.
   `inspect` must not execute its input or report success after stdout write/flush
   errors. Test buffered failures and closed pipes for source/bytecode listings;
   these are CLI file errors (74), not VM stream traps (70).
+  Input close failures must also report 74 before parsing or execution. Keep
+  read/size-error precedence, unchanged inputs/outputs and successful retries.
 - **Observers:** event order and arm identity, NULL-observer behavior and unchanged
   execution budgets. Observing a program must not change its result.
 - **Nix and CI:** pinned inputs, installed manifests, actual platform coverage,

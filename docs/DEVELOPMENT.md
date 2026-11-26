@@ -192,6 +192,13 @@ their division-by-zero entry points. `/dev/full` covers buffered flush failures
 and already-failed writes; closed pipes must return file-error status 74, not a
 signal or success. Inputs/artifacts stay unchanged, and fresh compile/inspect
 commands recover. The CLI checks stdout after inspection; IR/bytecode stays 1.9.
+Input-close fault tests interpose `fclose` after actually closing the stream.
+Seven binary sizes around read-buffer growth boundaries check rejection without
+publishing a length, then retry with exact bytes and the trailing NUL intact.
+Thirty-eight CLI failure/retry checks cover entry sources, manifests, imports and
+bytecode across applicable commands, unchanged inputs/existing outputs, identical
+recompiled artifacts and malformed-input rejection after recovery. Existing read
+errors and the input-size limit keep precedence over cleanup-close failures.
 
 ## Nix workflow
 
