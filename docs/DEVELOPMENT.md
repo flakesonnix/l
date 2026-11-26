@@ -214,6 +214,12 @@ budget, a failing final close (74, no published length), and a successful retry.
 Read errors and the 16 MiB rejection still precede EOF completion. Earlier
 allocation-failure fixtures now pad every selected input past the first buffer
 and use a 16 KiB direct fixture, so all tested growth allocations remain necessary.
+Imported-input diagnostic tests add eight fixtures / 136 CLI checks across direct
+and transitive imports, C/Nix entry bodies and both source-root orders. A directory
+at the resolved module path triggers a real Linux read failure: all four commands
+must name that input, not its importer, while preserving inputs/existing outputs.
+Missing modules still name the importer. Replacing the directory with valid source
+restores source/bytecode agreement and byte-identical compilation from another cwd.
 
 ## Nix workflow
 

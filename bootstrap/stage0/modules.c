@@ -67,6 +67,7 @@ static void discover(Context *ctx, const ModuleConfig *config, Ast *ast) {
             if (!target) {
                 if (++count > L_MAX_MODULES) token_fail(ctx, item->name, "too many source modules (maximum 256)");
                 char *path = module_file(ctx, root, item->name);
+                ctx->filename = path;
                 size_t size; unsigned char *text = read_file(ctx, path, &size);
                 target = parse_module(ctx, path, text, size); target->package = root->package;
                 if (!token_equal(target->name, item->name)) {
